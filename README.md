@@ -336,6 +336,13 @@ Azure Bot, the Teams package and the service. One bot carries the mailbox
 (`BOT_<KEY>_CHANNELS="teams email"`), one the dashboard, and the assistant's
 tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 
+**When a chat starts over.** `AGENT_SESSION_RESET` — `none`, `daily@HOUR` (host
+time) or `idle@MINUTES` — with `BOT_<KEY>_SESSION_RESET` per bot. A reset empties
+the transcript only: memory, files, calendar and cron jobs live outside it. With
+an API model this is cost hygiene (the first turn after a pause pays for the whole
+transcript); with the bridge it is also what keeps a long chat from dragging a
+stale context around.
+
 **A bot may run on its own model.** `BOT_<KEY>_LLM_MODEL` (with `_LLM_PROVIDER`,
 `_LLM_NAME`, `_LLM_BASE_URL`, `_LLM_TOKEN_VAR`, `_LLM_REASONING_FIELD`,
 `_LLM_CONTEXT_WINDOW`) replaces the global endpoint for that bot's profile — a

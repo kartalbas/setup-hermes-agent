@@ -71,6 +71,18 @@ _channels_apply_one() {
     fi
 }
 
+# When the transcript starts over. The agent's at_hour is local time of the
+# host (TIMEZONE). Nothing outside the transcript is touched by a reset.
+_session_reset_configure() {
+    local spec=${BOT_KEY:+$(bot_field "$BOT_KEY" SESSION_RESET)}
+    spec=${spec:-$AGENT_SESSION_RESET}
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] session reset: ${spec}"
+        return 0
+    fi
+    yaml_merge <<<"$(session_reset_yaml "$spec")"
+}
+
 # Every adapter splits its allowlist on COMMAS — verified in the telegram,
 # email and teams adapters, all `split(",")`. Written space-separated, two
 # entries become one token that matches nobody. The gate fails closed, so it is
@@ -262,6 +274,7 @@ _providers_configure() {
 _policy_configure() {
     _config_set approvals.unattended_mode "$CHANNELS_UNATTENDED_MODE"
     _config_set approvals.cron_mode       "$CHANNELS_CRON_MODE"
+    _session_reset_configure
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
         # Kept as a denylist rather than a habit: the agent can otherwise be

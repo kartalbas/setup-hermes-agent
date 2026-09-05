@@ -117,3 +117,16 @@ setup() {
     _bots_validate; [ "${#_invalid[@]}" -eq 1 ]
     unset BOT_NEWS_LLM_MODEL BOT_NEWS_LLM_BASE_URL BOT_NEWS_LLM_TOKEN_VAR
 }
+
+@test "session reset specs render to the agent's block and bad ones are rejected" {
+    [ "$(session_reset_yaml none)" = $'session_reset:\n  mode: none' ]
+    [ "$(session_reset_yaml daily@4)" = $'session_reset:\n  mode: daily\n  at_hour: 4' ]   # agnostic-ok
+    [ "$(session_reset_yaml idle@90)" = $'session_reset:\n  mode: idle\n  idle_minutes: 90' ]   # agnostic-ok
+    ! session_reset_yaml weekly
+    _invalid=(); _check_session_reset X daily@24; [ "${#_invalid[@]}" -eq 1 ]   # agnostic-ok
+    _invalid=(); _check_session_reset X idle@0; [ "${#_invalid[@]}" -eq 1 ]   # agnostic-ok
+    _invalid=(); _check_session_reset X daily@4; [ "${#_invalid[@]}" -eq 0 ]   # agnostic-ok
+    AGENT_SESSION_RESET=daily@4 BOT_NEWS_SESSION_RESET=idle@60   # agnostic-ok
+    [ "$(bot_field secretary SESSION_RESET)" = daily@4 ]   # agnostic-ok
+    [ "$(bot_field news SESSION_RESET)" = idle@60 ]   # agnostic-ok
+}

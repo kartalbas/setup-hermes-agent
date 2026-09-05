@@ -187,6 +187,9 @@ config_defaults() {
     : "${BOT_PREFIX:=}"                    # display names are "<prefix> <Name>"
     : "${BOT_SERVICE_PREFIX:=agent}"       # units <prefix>-<key>.service, Azure bots <prefix>-<key>
     : "${BOT_PORT_BASE:=3978}"             # webhook ports: base, base+1, … unless a bot names its own
+    # When a chat starts over with an empty transcript: none | daily@HOUR | idle@MINUTES.
+    # Memory, files, calendar and cron jobs live outside the transcript and survive.
+    : "${AGENT_SESSION_RESET:=none}"
     : "${TUNNEL_PROTOCOL:=}"
     : "${TUNNEL_START_TIMEOUT:=90}"
     : "${TUNNEL_TOKEN_FILE:=/etc/cloudflared/token}"
@@ -395,6 +398,7 @@ config_validate() {
 
     _check_required SERVICE_USER "$SERVICE_USER" "set BOOTSTRAP_USER in config/bootstrap.conf"
     _bots_validate
+    _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then
         _check_required ASSISTANT_M365_ACCOUNT "${ASSISTANT_M365_ACCOUNT:-}" "the account the M365 assistant acts as"
         [[ ${ASSISTANT_M365_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_M365_ACCOUNT must be a sign-in address, got '${ASSISTANT_M365_ACCOUNT:-}'"
@@ -741,6 +745,7 @@ bot_field() {
         TEAMS_CLIENT_ID_VAR)     printf 'TEAMS_%s_CLIENT_ID' "$(bot_upper "$key")" ;;
         TEAMS_CLIENT_SECRET_VAR) printf 'TEAMS_%s_CLIENT_SECRET' "$(bot_upper "$key")" ;;
         DASHBOARD)     printf 'false' ;;
+        SESSION_RESET) printf '%s' "$AGENT_SESSION_RESET" ;;
         LLM_MODEL)     printf '' ;;                     # empty: the global LLM_ENDPOINT_1 applies
         LLM_PROVIDER)  printf 'custom' ;;
         LLM_NAME)      printf '%s-llm' "$key" ;;
@@ -823,6 +828,7 @@ _bots_validate() {
                        *) _bad "bot ${k}: unknown MCP server '${m}' (m365)" ;; esac
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
+        _check_session_reset "BOT_$(bot_upper "$k")_SESSION_RESET" "$(bot_field "$k" SESSION_RESET)"
         if [[ -n $(bot_field "$k" LLM_MODEL) ]]; then
             [[ $(bot_field "$k" LLM_PROVIDER) != custom || -n $(bot_field "$k" LLM_BASE_URL) ]] ||
                 _bad "bot ${k}: BOT_$(bot_upper "$k")_LLM_BASE_URL is needed for a custom provider"
@@ -865,4 +871,23 @@ bot_llm_restore() {
     # on the first bot's model once. -g restores the globals.
     eval "${_BOT_LLM_SAVED//declare -- /declare -g -- }"
     _BOT_LLM_SAVED=""
+}
+
+# session_reset_yaml SPEC -> the agent's session_reset block for none|daily@H|idle@M
+session_reset_yaml() {
+    case $1 in
+        none)      printf 'session_reset:\n  mode: none\n' ;;
+        daily@*)   printf 'session_reset:\n  mode: daily\n  at_hour: %s\n' "${1#daily@}" ;;
+        idle@*)    printf 'session_reset:\n  mode: idle\n  idle_minutes: %s\n' "${1#idle@}" ;;
+        *) return 1 ;;
+    esac
+}
+
+_check_session_reset() {      # _check_session_reset NAME VALUE
+    case $2 in
+        none) ;;
+        daily@*) [[ ${2#daily@} =~ ^([0-9]|1[0-9]|2[0-3])$ ]] || _bad "$1: hour must be 0-23, got '${2#daily@}'" ;;
+        idle@*)  [[ ${2#idle@} =~ ^[1-9][0-9]*$ ]] || _bad "$1: minutes must be a positive integer, got '${2#idle@}'" ;;
+        *) _bad "$1 must be none, daily@HOUR or idle@MINUTES, got '$2'" ;;
+    esac
 }

@@ -159,7 +159,7 @@ build_local_denylist() {
         while IFS= read -r v; do
             v=${v#*://}; v=${v%%[/:\"\' ]*}
             [[ -n $v && $v != localhost && $v != 127.0.0.1 ]] && terms+=("$v")
-        done < <(grep -ohE 'https?://[^[:space:]"'"'"']+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+' "$cfg" 2>/dev/null || true)
+        done < <(grep -ohE 'https?://[^[:space:]"'"'"']+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$cfg" 2>/dev/null || true)
     done
 
     # Generic values would match everything; drop them.
