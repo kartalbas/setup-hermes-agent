@@ -59,7 +59,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 ## 4 · Documents and reminders ("I hand over my letters")
 
 - [x] Photo intake, host side: the bridge hands images to the CLI as files; a photographed letter is read (sender, amount, deadline) and the Secretary proposes the calendar entry with advance reminders and the filing place (verified 2026-09-05 with a test letter)
-- [ ] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path
+- [ ] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path (Secretary now on Kimi K3 with native image input)
 - [ ] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration
 
 - [ ] Intake paths: attachment to the M365 mailbox, file in the Teams chat, OneDrive folder `Assistant/Inbox` — all readable through the tools above
@@ -78,12 +78,17 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Rename the existing pieces: the current bot became Secretary (secretary.simetrix.ch, Entra app "Simetrix Secretary", Azure bot simetrix-secretary); "Hermes Mail" stays an internal app name (not user-visible)
 - [x] All three bots reachable end to end (Direct Line probe: Azure → edge → tunnel → own gateway → allowlist), each on its own hostname and port
 - [ ] Web tools for Search and News verified through the bridge (first real messages pending)
-- [ ] Operator uploads the three Teams packages (`bot/build/<key>-teams-app.zip`) and types `/sethome` in each chat (web_search / web_extract / browser); News delivers its daily briefing by cron into its own chat
+- [x] Operator uploaded the three Teams packages and set `/sethome` in each chat; Secretary re-issued with a fresh bot identity so the chat carries its name (Teams pins a 1:1 bot chat's name to the first contact) (web_search / web_extract / browser); News delivers its daily briefing by cron into its own chat
 
 - [x] Decision (2026-09-05): one bot, Google only on explicit request. Alternatives were a second bot / gateway profile for private matters, or the WhatsApp bridge as the private channel. Several bots on one Bot Service identity are possible (Hermes multiplex profiles); each is a separate Teams app.
 - [x] Implemented by the tool descriptions and the system prompt note in part 2/3 (no second bot)
 
 ## 6 · Later, not forgotten
+
+- [x] Secretary runs on Kimi K3 over the Moonshot API (native tools, images, prompt cache); Search and News stay on the bridge — per-bot model configuration
+- [x] Daily session reset at 04:00 for all bots (`AGENT_SESSION_RESET`)
+- [x] Bridge stateless (ADR 0021); images handed to the CLI as files
+- [x] Old bot identity retired: Entra app 2494e2b2… deleted 2026-09-06
 
 - [ ] Old single-bot leftovers to retire: DNS record hermes.simetrix.ch, the vendor unit file hermes-gateway.service (disabled), TUNNEL_HOSTNAME as a config key
 - [ ] Removing a bot from BOTS should retire its Azure Bot, Entra app, DNS record, unit and profile (today: config only)
