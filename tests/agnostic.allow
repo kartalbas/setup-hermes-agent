@@ -67,3 +67,10 @@ developer.microsoft.com
 www.w3.org                        # xml namespaces in svg sources
 graph.microsoft.com               # the assistant's Graph endpoint
 www.google.com                    # maps links the Search bot hands out
+accounts.google.com               # oauth authorization endpoint
+oauth2.googleapis.com             # oauth token endpoint
+openidconnect.googleapis.com      # userinfo
+gmail.googleapis.com              # gmail api
+www.googleapis.com                # calendar and drive api
+console.cloud.google.com          # the one manual step
+packages.cloud.google.com         # gcloud apt repo

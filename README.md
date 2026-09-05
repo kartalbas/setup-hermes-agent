@@ -555,6 +555,37 @@ text layer is reported as such — OCR is not part of this release.
 
 ---
 
+## 1.11 · The assistant — Google, the private account
+
+The second world. The same server shape as 1.10, acting as the agent's own
+Gmail account, and used **only when you say so** ("privat", "privater Termin",
+or the Gmail address by name). Gmail (search, read, reply, send, labels,
+attachments as text), Google Calendar (view, create with Meet, update, delete),
+Drive (list, search, read, upload, folders, move, share).
+
+| Step | Who | When |
+|------|-----|------|
+| gcloud CLI installed | the run | once |
+| `gcloud auth login` as the agent's Google account, project set | **you**, once (`sudo -u <account> -H gcloud auth login --no-launch-browser`) | once |
+| Gmail, Calendar, Drive, People APIs enabled on the project | the run | idempotent |
+| OAuth client of type **Desktop app** | **you**, once, in the console — Google removed the API for this in 2026; the run prints the exact steps | once |
+| Sign-in as the Gmail account (paste-back: open a URL, paste the address you land on) | **you**, once, in the run or via `googlectl login` | once |
+| Code, env file, registration in the bots that list `google` | the run | idempotent |
+
+Publish the OAuth app ("In production") after adding the account as test user:
+in *Testing* status Google expires refresh tokens after seven days and the
+sign-in would be needed weekly.
+
+```bash
+ASSISTANT_GOOGLE_ENABLED=true
+ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
+GOOGLE_PROJECT="my-assistant-project"
+# secrets file: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET
+# bots: BOT_SECRETARY_MCP="m365 google"
+```
+
+---
+
 # PART 2 — Fill the configuration
 
 ## 2.1 · The five files
@@ -1044,6 +1075,18 @@ The run printed a URL and a code and waited `ASSISTANT_LOGIN_TIMEOUT` seconds.
 Run it again and enter the code in time; sign in as the mailbox account named in
 `ASSISTANT_M365_ACCOUNT`. `signed in as X, but this token must belong to Y`
 means the browser carried another identity — use a private window.
+
+### `google: OAuth client not in the secrets file`
+
+The one manual Google step. Console → Google Auth Platform (project from
+`GOOGLE_PROJECT`) → Clients → Create client → Desktop app; put id and secret into
+the secrets file under the names the message gives, rerun.
+
+### `Google issued no refresh token` / token refresh fails after a week
+
+The OAuth app is still in *Testing*. Google Auth Platform → Audience → Publish
+app, then `sudo -u <account> /usr/local/lib/hermes-assistant/googlectl login`
+once more.
 
 ### `admin consent failed`
 

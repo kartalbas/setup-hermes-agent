@@ -182,6 +182,16 @@ config_defaults() {
     : "${ASSISTANT_M365_SHARE_WITH:=}"                # comma-separated people who get access to it
     : "${ASSISTANT_M365_SHARE_ROLE:=write}"
 
+    # --- assistant, Google side: the private account -------------------------
+    : "${ASSISTANT_GOOGLE_ENABLED:=false}"
+    : "${ASSISTANT_GOOGLE_ACCOUNT:=}"                 # the Gmail account the server acts as
+    : "${GOOGLE_PROJECT:=}"                           # the Cloud project holding the OAuth client
+    : "${GOOGLE_APIS:=gmail calendar-json drive people}"
+    : "${ASSISTANT_GOOGLE_CLIENT_ID_VAR:=GOOGLE_OAUTH_CLIENT_ID}"
+    : "${ASSISTANT_GOOGLE_CLIENT_SECRET_VAR:=GOOGLE_OAUTH_CLIENT_SECRET}"
+    : "${ASSISTANT_GOOGLE_TIMEZONE:=${ASSISTANT_M365_TIMEZONE}}"
+    : "${ASSISTANT_GOOGLE_SCOPES:=openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive}"
+
     # --- bots: one Teams bot per role, each its own profile, service, hostname --
     : "${BOTS:=}"                          # space-separated keys, lowercase, e.g. "secretary search news"
     : "${BOT_PREFIX:=}"                    # display names are "<prefix> <Name>"
@@ -399,6 +409,11 @@ config_validate() {
     _check_required SERVICE_USER "$SERVICE_USER" "set BOOTSTRAP_USER in config/bootstrap.conf"
     _bots_validate
     _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
+    if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then
+        _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"
+        [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"
+        _check_required GOOGLE_PROJECT "${GOOGLE_PROJECT:-}" "the Cloud project holding the OAuth client"
+    fi
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then
         _check_required ASSISTANT_M365_ACCOUNT "${ASSISTANT_M365_ACCOUNT:-}" "the account the M365 assistant acts as"
         [[ ${ASSISTANT_M365_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_M365_ACCOUNT must be a sign-in address, got '${ASSISTANT_M365_ACCOUNT:-}'"
@@ -824,8 +839,9 @@ _bots_validate() {
             case $c in teams) ;; email) emails=$((emails + 1)) ;; *) _bad "bot ${k}: unknown channel '${c}' (teams, email)" ;; esac
         done
         for m in $(bot_field "$k" MCP); do
-            case $m in m365) is_true "${ASSISTANT_M365_ENABLED:-false}" || _bad "bot ${k}: MCP m365 needs ASSISTANT_M365_ENABLED=true" ;;
-                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365)" ;; esac
+            case $m in m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   || _bad "bot ${k}: MCP m365 needs ASSISTANT_M365_ENABLED=true" ;;
+                       google) is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" || _bad "bot ${k}: MCP google needs ASSISTANT_GOOGLE_ENABLED=true" ;;
+                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365, google)" ;; esac
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
         _check_session_reset "BOT_$(bot_upper "$k")_SESSION_RESET" "$(bot_field "$k" SESSION_RESET)"

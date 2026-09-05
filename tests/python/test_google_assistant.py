@@ -1,0 +1,109 @@
+"""The Google assistant against a fake API: the shapes that go out."""
+import base64
+import json
+import os
+import sys
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "bot", "mcp"))
+import google_assistant as ga  # noqa: E402
+
+
+class FakeGoogle:
+    def __init__(self, answers=None):
+        self.calls, self.answers, self.tz = [], answers or {}, "Europe/Zurich"
+        self.auth = mock.Mock(account="agent@gmail.example")
+
+    def call(self, method, url, **kw):
+        self.calls.append((method, url, kw))
+        for (m, prefix), ans in self.answers.items():
+            if m == method and url.startswith(prefix):
+                return ans(kw) if callable(ans) else ans
+        return {}
+
+    folder_id = ga.Google.folder_id
+    item_by_path = ga.Google.item_by_path
+
+
+def tool(srv, name):
+    return next(t for t in srv.tools if t.name == name)
+
+
+class Tools(unittest.TestCase):
+    def test_every_tool_is_prefixed_and_declares_its_required_fields(self):
+        srv = ga.build_server(FakeGoogle())
+        for t in srv.tools:
+            self.assertTrue(t.name.startswith("google_"))
+            spec = t.spec()["inputSchema"]
+            for req in spec.get("required", []):
+                self.assertIn(req, spec["properties"], t.name)
+        self.assertIn("PRIVATE", srv.instructions)
+
+    def test_send_builds_a_mime_message_with_recipients_and_attachment(self):
+        g = FakeGoogle({("POST", ga.GMAIL + "/messages/send"): {"id": "m1"}})
+        srv = ga.build_server(g)
+        tool(srv, "google_gmail_send").fn(to=["a@x.example"], cc=["c@x.example"], subject="Hi", body="Text",
+                                           attachments=[{"name": "n.txt", "content_base64": base64.b64encode(b"hallo").decode()}])
+        raw = g.calls[0][2]["json_body"]["raw"]
+        mime = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+        self.assertIn("To: a@x.example", mime) and self.assertIn("Cc: c@x.example", mime)
+        self.assertIn("Subject: Hi", mime)
+        self.assertIn('filename="n.txt"', mime)
+
+    def test_event_with_meet_asks_for_conference_data_and_notifies(self):
+        g = FakeGoogle({("POST", ga.CAL + "/calendars/primary/events"): {"id": "e1", "summary": "x"}})
+        srv = ga.build_server(g)
+        tool(srv, "google_calendar_event_create").fn(summary="x", start="2026-09-07T10:00:00", end="2026-09-07T11:00:00",
+                                                     attendees=["p@x.example"], meet=True, reminder_minutes=[10080, 1440])
+        _, _, kw = g.calls[0]
+        self.assertEqual(kw["params"]["conferenceDataVersion"], 1)
+        self.assertEqual(kw["params"]["sendUpdates"], "all")
+        self.assertEqual(kw["json_body"]["start"], {"dateTime": "2026-09-07T10:00:00", "timeZone": "Europe/Zurich"})
+        self.assertEqual(kw["json_body"]["reminders"]["overrides"][0]["minutes"], 10080)
+        self.assertIn("createRequest", kw["json_body"]["conferenceData"])
+
+    def test_drive_upload_resolves_the_folder_chain_and_creates_missing_parts(self):
+        def files(kw):
+            q = kw["params"]["q"]
+            if "name = 'Secretary'" in q:
+                return {"files": [{"id": "f1", "name": "Secretary"}]}
+            return {"files": []}          # 'Inbox' missing; file not existing
+        g = FakeGoogle({("GET", ga.DRIVE + "/files"): files,
+                        ("POST", ga.DRIVE + "/files"): {"id": "f2"},
+                        ("POST", ga.DRIVE_UPLOAD): {"id": "x", "name": "n.txt", "mimeType": "text/plain"}})
+        srv = ga.build_server(g)
+        out = tool(srv, "google_drive_upload").fn(path="Secretary/Inbox/n.txt", content="hallo")
+        self.assertEqual(out["name"], "n.txt") and self.assertFalse(out["replaced"])
+        mk = next(kw for m, u, kw in g.calls if m == "POST" and u == ga.DRIVE + "/files")
+        self.assertEqual(mk["json_body"], {"name": "Inbox", "mimeType": ga.FOLDER_MIME, "parents": ["f1"]})
+        up = next(kw for m, u, kw in g.calls if u == ga.DRIVE_UPLOAD)
+        self.assertIn(b"hallo", up["data"]) and self.assertEqual(up["params"]["uploadType"], "multipart")
+
+    def test_archive_removes_inbox_and_creates_unknown_labels(self):
+        g = FakeGoogle({("GET", ga.GMAIL + "/labels"): {"labels": [{"id": "L1", "name": "Privat"}]},
+                        ("POST", ga.GMAIL + "/labels"): {"id": "L2"}})
+        srv = ga.build_server(g)
+        tool(srv, "google_gmail_modify").fn(message_id="m", archive=True, add_labels=["Privat", "Neu"], mark_read=True)
+        mod = next(kw for m, u, kw in g.calls if u.endswith("/modify"))["json_body"]
+        self.assertEqual(mod["addLabelIds"], ["L1", "L2"])
+        self.assertIn("INBOX", mod["removeLabelIds"]) and self.assertIn("UNREAD", mod["removeLabelIds"])
+
+    def test_wrong_account_is_refused_before_anything_is_stored(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            env = {"GOOGLE_CLIENT_ID": "c", "GOOGLE_CLIENT_SECRET": "s", "GOOGLE_ACCOUNT": "agent@gmail.example",
+                   "GOOGLE_TOKEN_FILE": os.path.join(d, "t.json")}
+            with mock.patch.dict(os.environ, env), mock.patch.object(ga, "http", return_value={"email": "other@gmail.example"}):
+                with self.assertRaises(SystemExit):
+                    ga.Auth()._accept({"access_token": "a", "refresh_token": "r"})
+                self.assertFalse(os.path.exists(env["GOOGLE_TOKEN_FILE"]))
+
+    def test_iso_adds_the_offset_for_bare_local_times(self):
+        self.assertTrue(ga._iso("2026-09-07T10:00:00", "Europe/Zurich").endswith("+02:00"))
+        self.assertEqual(ga._iso("2026-09-07T10:00:00Z", "Europe/Zurich"), "2026-09-07T10:00:00Z")
+
+
+if __name__ == "__main__":
+    unittest.main()

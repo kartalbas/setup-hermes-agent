@@ -23,17 +23,32 @@ assistant_m365_token_file() { printf '%s/m365.token' "$ASSISTANT_STATE_DIR"; }
 
 assistant_apply() {
     local before=$CHANGE_COUNT
+    local any=false
+    is_true "${ASSISTANT_M365_ENABLED:-false}" && any=true
+    is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" && any=true
 
-    if ! is_true "${ASSISTANT_M365_ENABLED:-false}"; then
-        _assistant_disable m365
+    if [[ $any != true ]]; then
+        _assistant_disable_all m365
+        _assistant_disable_all google
         return 0
     fi
 
     _assistant_venv
     _assistant_install_code
-    _assistant_m365
+    if is_true "${ASSISTANT_M365_ENABLED:-false}"; then _assistant_m365; else _assistant_disable_all m365; fi
+    if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then _assistant_google; else _assistant_disable_all google; fi
     (( $(bot_count) == 0 )) && converge_unit "${SERVICE_NAME}.service" "$before"
     return 0
+}
+
+# enabled: false in every profile (or the default one).
+_assistant_disable_all() {
+    local name=$1 key
+    if (( $(bot_count) == 0 )); then _assistant_disable "$name"; return 0; fi
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        bot_context "$key"; _assistant_disable "$name"; bot_context_end
+    done < <(bots)
 }
 
 # ---------------------------------------------------------------------------
@@ -70,7 +85,7 @@ PY
 # unchanged bot is not a change and does not restart the gateway.
 _assistant_install_code() {
     local src="${SCRIPT_DIR}/bot/mcp" f
-    [[ -f ${src}/assistant_common.py && -f ${src}/m365_assistant.py ]] ||
+    [[ -f ${src}/assistant_common.py && -f ${src}/m365_assistant.py && -f ${src}/google_assistant.py ]] ||
         die "bot/mcp is incomplete under ${src}"
     ensure_dir "$ASSISTANT_LIB_DIR" 0755
     if [[ $DRY_RUN == true ]]; then
@@ -249,6 +264,119 @@ _assistant_m365_signin() {
     else
         defer_failure "assistant: the M365 token check failed: ${status}"
     fi
+}
+
+
+# ---------------------------------------------------------------------------
+# Google — the private account
+#
+# Same shape as Microsoft 365: env file, a `googlectl` wrapper, a one-time
+# sign-in, registration in the profiles that list "google". The sign-in is a
+# paste-back (Google's device flow does not cover Gmail/Calendar/Drive), so it
+# needs a terminal: run interactively it happens in the run, otherwise the run
+# names the command and carries on.
+# ---------------------------------------------------------------------------
+assistant_google_token_file() { printf '%s/google.token' "$ASSISTANT_STATE_DIR"; }
+assistant_google_env_file()   { printf '%s/google.env' "$ASSISTANT_STATE_DIR"; }
+assistant_googlectl()         { printf '%s/googlectl' "$ASSISTANT_LIB_DIR"; }
+
+_assistant_google() {
+    local account=$ASSISTANT_GOOGLE_ACCOUNT
+    if ! secret_nonempty "$ASSISTANT_GOOGLE_CLIENT_ID_VAR" || ! secret_nonempty "$ASSISTANT_GOOGLE_CLIENT_SECRET_VAR"; then
+        log_skip "google assistant waits for the OAuth client (see the google module above)"
+        _assistant_disable_all google
+        return 0
+    fi
+    log_info "assistant      google as ${account}"
+    _assistant_google_wrapper
+    _assistant_google_signin
+    _assistant_google_register_all
+}
+
+_assistant_google_env_lines() {
+    printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nGOOGLE_ACCOUNT=%s\nGOOGLE_TOKEN_FILE=%s\nGOOGLE_TIMEZONE=%s\nGOOGLE_SCOPES=%s\n' \
+        "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_ID_VAR")" "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_SECRET_VAR")" \
+        "$ASSISTANT_GOOGLE_ACCOUNT" "$(assistant_google_token_file)" "$ASSISTANT_GOOGLE_TIMEZONE" "$ASSISTANT_GOOGLE_SCOPES"
+}
+
+_assistant_google_wrapper() {
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] write $(assistant_google_env_file) and $(assistant_googlectl)"
+        return 0
+    fi
+    # The client secret is in here, hence 0600 and the service account only.
+    write_file "$(assistant_google_env_file)" 0600 "${SERVICE_USER}:${SERVICE_GROUP}" \
+        <<<"$(_assistant_google_env_lines | sed "s/^\([A-Z_0-9]*\)=\(.*\)$/\1='\2'/")"
+    write_file "$(assistant_googlectl)" 0755 <<EOF
+#!/usr/bin/env bash
+# Runs the Google assistant's commands with its configured environment:
+#   googlectl status | login | tools | serve
+set -euo pipefail
+set -a; . "$(assistant_google_env_file)"; set +a
+exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/google_assistant.py" "\$@"
+EOF
+}
+
+# The MCP entry reads the env file too, so the client secret is not written
+# into config.yaml.
+_assistant_google_fragment() {
+    cat <<EOF
+mcp_servers:
+  google:
+    enabled: true
+    command: "$(assistant_googlectl)"
+    args: ["serve"]
+    timeout: 120
+    connect_timeout: 30
+EOF
+}
+
+_assistant_google_register_all() {
+    if (( $(bot_count) == 0 )); then
+        [[ $DRY_RUN == true ]] && { log_info "[dry-run] register mcp_servers.google"; return 0; }
+        yaml_merge <<<"$(_assistant_google_fragment)"
+        return 0
+    fi
+    local key before
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        bot_context "$key"
+        before=$CHANGE_COUNT
+        if bot_has_mcp "$key" google; then
+            if [[ $DRY_RUN == true ]]; then log_info "[dry-run] register mcp_servers.google in ${BOT_KEY}"
+            else yaml_merge <<<"$(_assistant_google_fragment)"; fi
+        else
+            _assistant_disable google
+        fi
+        converge_unit "${BOT_SERVICE}.service" "$before"
+        bot_context_end
+    done < <(bots)
+}
+
+_assistant_google_signin() {
+    local ctl; ctl=$(assistant_googlectl)
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] would verify the Google token, or ask for the one-time sign-in"
+        return 0
+    fi
+    if sudo -u "$SERVICE_USER" "$ctl" status >/dev/null 2>&1; then
+        log_ok "google token verified: $(sudo -u "$SERVICE_USER" "$ctl" status 2>/dev/null | jq -r '.account')"
+        return 0
+    fi
+    if has_tty; then
+        log_info "  no usable Google token; the sign-in needs you — a URL to open AS ${ASSISTANT_GOOGLE_ACCOUNT}, and the address you land on pasted back"
+        # shellcheck disable=SC2024  # the redirect is the point: the paste-back reads the operator's terminal
+        if sudo -u "$SERVICE_USER" "$ctl" login </dev/tty; then
+            mark_changed
+            log_ok "google token stored for ${ASSISTANT_GOOGLE_ACCOUNT}"
+            return 0
+        fi
+        defer_failure "assistant: the Google sign-in for ${ASSISTANT_GOOGLE_ACCOUNT} did not complete"
+        return 0
+    fi
+    log_error "no Google token yet, and this run has no terminal for the paste-back sign-in. Run once, then re-run the installer:"
+    log_error "    sudo -u ${SERVICE_USER} ${ctl} login        (sign in AS ${ASSISTANT_GOOGLE_ACCOUNT})"
+    defer_failure "assistant: Google sign-in pending for ${ASSISTANT_GOOGLE_ACCOUNT}"
 }
 
 assistant_uninstall() {

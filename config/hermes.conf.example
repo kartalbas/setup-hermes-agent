@@ -292,3 +292,12 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # BOT_<KEY>_NAME, _HOSTNAME (<key>.<TUNNEL_ZONE>), _ROLE (bot/roles/<role>.md),
 # _TEAMS_CLIENT_ID_VAR / _TEAMS_CLIENT_SECRET_VAR (TEAMS_<KEY>_CLIENT_ID / _SECRET),
 # _TOOLSET, _DESCRIPTION all have derived defaults.
+
+# ---------------------------------------------------------------------------
+# The assistant, Google side (README 1.11) — the agent's private Gmail account,
+# used only when the operator says "privat". Needs gcloud signed in as that
+# account and, once, an OAuth Desktop client in the secrets file.
+# ---------------------------------------------------------------------------
+ASSISTANT_GOOGLE_ENABLED=false
+ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
+GOOGLE_PROJECT="my-assistant-project"

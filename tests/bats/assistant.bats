@@ -67,3 +67,18 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     [ -x "${ASSISTANT_LIB_DIR}/m365ctl" ]
     rm -rf "$ASSISTANT_STATE_DIR"
 }
+
+@test "the google registration runs the wrapper, keeping the client secret out of config.yaml" {
+    out=$(_assistant_google_fragment)
+    [[ $out == *'command: "/usr/local/lib/hermes-assistant/googlectl"'* ]]
+    [[ $out == *'args: ["serve"]'* ]]
+    [[ $out != *SECRET* ]]
+}
+
+@test "a bot may list google only when the google side is enabled" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    ASSISTANT_GOOGLE_ENABLED=false BOT_SECRETARY_MCP="google"
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 1 ]
+    ASSISTANT_GOOGLE_ENABLED=true
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
+}
