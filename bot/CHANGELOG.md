@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Secretary on a fresh bot identity so Teams names the chat after the app
+
 ## 0.2.0 — 2026-09-05
 
 - three bots (Secretary, Search, News), each its own Teams app, profile and service

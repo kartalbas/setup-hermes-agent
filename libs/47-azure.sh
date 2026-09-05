@@ -73,7 +73,12 @@ _az_bot_app_ensure() {
             return 0
         fi
         log_info "  creating Entra app '${BOT_DISPLAY_NAME}'"
-        app_id=$(az ad app create --display-name "$BOT_DISPLAY_NAME" --sign-in-audience AzureADMyOrg --query appId -o tsv) ||
+        # Not `az ad app create`: with an existing app of the same display name
+        # it returns THAT app instead of creating one, and a bot meant to get
+        # a fresh identity silently kept the old. Graph's POST always creates.
+        app_id=$(az rest --method POST --url https://graph.microsoft.com/v1.0/applications \
+                   --body "$(jq -nc --arg n "$BOT_DISPLAY_NAME" '{displayName: $n, signInAudience: "AzureADMyOrg"}')" \
+                   --query appId -o tsv) ||
             die "could not create the Entra app for ${BOT_KEY}"
         _secrets_append "$id_var" "$app_id"
         mark_changed; log_ok "Entra app '${BOT_DISPLAY_NAME}' created (${app_id:0:8}…), ${id_var} written"
