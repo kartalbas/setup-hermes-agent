@@ -1,0 +1,107 @@
+# shellcheck shell=bash disable=SC2034
+#
+# Template. Copy to the name without .example and fill in the blanks;
+# that copy is gitignored.
+# Allowlists and credentials are variable NAMES; values live in SECRETS_FILE.
+# So CHANNEL_X_ALLOWLIST_VAR="FOO" means "the allowlist is in SECRETS_FILE under
+# FOO" — this file never holds the value itself, which is why it can be read by
+# anyone who can read the repository.
+
+# =============================================================================
+#  SITE VALUES — fill these in. Credentials live in SECRETS_FILE, not here.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# The agent can have TWO mailboxes — typically a consumer one that works with
+# an app password, and a corporate one that does not. Name both, then say which
+# one the email channel actually uses. Every mail setting below says PRIVATE or
+# WORK, so it is never in doubt which account is meant, and switching is one
+# line rather than an edit of six.
+#
+# One mailbox is fine: fill in the pair you have and point CHANNEL_EMAIL_ACCOUNT
+# at it. The unused pair may stay empty.
+# ---------------------------------------------------------------------------
+
+# PRIVATE — a consumer mailbox. Usually reachable with an app password.
+CHANNEL_EMAIL_PRIVATE_ADDRESS=""
+CHANNEL_EMAIL_PRIVATE_IMAP_HOST=""
+CHANNEL_EMAIL_PRIVATE_SMTP_HOST=""
+CHANNEL_EMAIL_PRIVATE_PASSWORD_VAR="EMAIL_PRIVATE_PASSWORD"
+
+# WORK — a corporate mailbox. Microsoft 365 disables IMAP basic authentication
+# tenant-wide and it cannot be re-enabled, so this one is reached through the
+# local OAuth relay (MAILPROXY_ENABLED in hermes.conf). Leave the hosts as the
+# real upstream ones: when the relay is on, the run redirects them to loopback
+# by itself and the address below stays what the relay authenticates as.
+#   CHANNEL_EMAIL_WORK_IMAP_HOST="outlook.office365.com"
+#   CHANNEL_EMAIL_WORK_SMTP_HOST="smtp.office365.com"
+CHANNEL_EMAIL_WORK_ADDRESS=""
+CHANNEL_EMAIL_WORK_IMAP_HOST=""
+CHANNEL_EMAIL_WORK_SMTP_HOST=""
+CHANNEL_EMAIL_WORK_PASSWORD_VAR="EMAIL_WORK_PASSWORD"
+
+# Which of the two the agent reads and sends from.
+CHANNEL_EMAIL_ACCOUNT="work"        # private|work
+
+# YOUR address — not the agent's. Where it sends things nobody asked for in the
+# moment: scheduled reports, and appointment proposals as calendar invitations
+# you accept. Make it a different mailbox from the agent's own: pointed at
+# itself, the agent reads its own report on the next IMAP poll and answers it.
+CHANNEL_EMAIL_HOME_ADDRESS=""
+
+# =============================================================================
+
+# --- Telegram ---------------------------------------------------- outbound
+CHANNEL_TELEGRAM_ENABLED=true
+CHANNEL_TELEGRAM_TOKEN_VAR="TELEGRAM_BOT_TOKEN"
+CHANNEL_TELEGRAM_ALLOWLIST_VAR="TELEGRAM_ALLOWED_IDS"
+CHANNEL_TELEGRAM_ALLOW_ALL=false
+
+# --- Email ------------------------------------------------------- outbound
+# Also the calendar path: appointment proposals go out as .ics invitations, so
+# accepting one writes it to your calendar and the agent never needs calendar
+# write access of its own.
+#
+# The address, hosts and password variable are per-mailbox and live in the SITE
+# VALUES block at the top. What follows applies to whichever one is selected.
+CHANNEL_EMAIL_ENABLED=true
+CHANNEL_EMAIL_IMAP_PORT=993
+CHANNEL_EMAIL_SMTP_PORT=587
+CHANNEL_EMAIL_IMAP_SECURITY="tls"
+CHANNEL_EMAIL_SMTP_SECURITY="starttls"
+CHANNEL_EMAIL_TLS_VERIFY=true
+CHANNEL_EMAIL_ALLOWLIST_VAR="EMAIL_ALLOWED_SENDERS"
+CHANNEL_EMAIL_ALLOW_ALL=false
+# CHANNEL_EMAIL_HOME_ADDRESS is in the SITE VALUES block at the top.
+CHANNEL_EMAIL_POLL_INTERVAL=15
+CHANNEL_EMAIL_SKIP_ATTACHMENTS=true
+CHANNEL_EMAIL_PROBE_LOGIN=true
+
+# --- WhatsApp ---------------------------------- outbound (bridge), no tunnel
+# Bridge, not the Cloud API: the Cloud API only sends outside a 24h window via
+# pre-approved templates, which suits an assistant that messages you first
+# badly. Cost of the bridge: use a number dedicated to the agent, never a
+# personal one — automation on a personal number risks losing that number.
+CHANNEL_WHATSAPP_ENABLED=true
+CHANNEL_WHATSAPP_MODE="bridge"          # bridge|cloud
+# Read only when MODE="cloud", which also requires an inbound tunnel.
+CHANNEL_WHATSAPP_TOKEN_VAR="WHATSAPP_CLOUD_TOKEN"
+CHANNEL_WHATSAPP_PHONE_ID_VAR="WHATSAPP_PHONE_NUMBER_ID"
+CHANNEL_WHATSAPP_ALLOWLIST_VAR="WHATSAPP_ALLOWED_SENDERS"
+CHANNEL_WHATSAPP_ALLOW_ALL=false
+
+# --- Microsoft Teams ------------------------------- webhook, NEEDS a tunnel
+CHANNEL_TEAMS_ENABLED=true
+CHANNEL_TEAMS_CLIENT_ID_VAR="TEAMS_CLIENT_ID"
+CHANNEL_TEAMS_CLIENT_SECRET_VAR="TEAMS_CLIENT_SECRET"
+CHANNEL_TEAMS_TENANT_ID_VAR="AZURE_TENANT_ID"
+CHANNEL_TEAMS_ALLOWLIST_VAR="TEAMS_ALLOWED_OBJECT_IDS"
+CHANNEL_TEAMS_ALLOW_ALL=false
+CHANNEL_TEAMS_PORT=3978
+
+# --- unattended behaviour -----------------------------------------------
+# Inbound messages can start a turn with nobody watching, and their bodies are
+# untrusted input to a model that can send mail and run commands.
+CHANNELS_UNATTENDED_MODE="deny"
+CHANNELS_CRON_MODE="deny"
+CHANNELS_APPROVALS_DENY="hermes*update* curl*|*sh wget*|*sh"

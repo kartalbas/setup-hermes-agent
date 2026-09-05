@@ -1,0 +1,95 @@
+# Plan — the personal assistant, end to end
+
+One configuration, one installer, one repository. Every item below is either
+delivered by `install.sh` from this repository or is a one-time act by the
+operator that the README describes step by step. Nothing is done by hand on a
+host. Tick items here as they land; a second host must reach the same state
+from `bootstrap.sh` + `config/` + `install.sh` alone.
+
+Legend: `[x]` done and verified on the first host · `[ ]` open · `[?]` decision needed
+
+## 1 · Foundation (done today)
+
+- [x] Idempotent provisioner: a converged run reports "nothing changed" (79 skips, 0 changes)
+- [x] Cloudflare tunnel over http2, Universal SSL / edge certificate verified
+- [x] Azure Bot Service declared in Bicep, identity checked (swapped ids detected), Teams channel
+- [x] Teams app package built from configuration (`build/hermes-teams-app.zip`), deterministic, python-only
+- [x] Teams end to end: message → tunnel → gateway → bridge (agy) → answer in Teams
+- [x] Teams allowlist by the operator's Entra object id (not the mailbox account's)
+- [x] Teams toolset repaired (`hermes-teams` does not exist in the pinned release → `CHANNEL_TEAMS_TOOLSET`)
+- [x] E-mail over the OAuth relay (TLS on loopback, cert in the system store), allowlist comma-separated
+- [x] E-mail sender check made configurable (`CHANNEL_EMAIL_REQUIRE_AUTHENTICATED_SENDER`) — Exchange stamps no header on tenant-internal mail
+- [x] Dashboard as own service behind nginx, login only once
+- [x] Bridge (agy) with tool calling via the tool contract
+- [x] Repository layout: `libs/` (installer libraries), `bot/` (the bot's own code: bridge, Teams app, MCP assistants), `bot/build/` gitignored
+- [x] Bot versioning: `bot/VERSION`, `bot/CHANGELOG.md`, `bot/release.sh` (bump, date the changelog, tag `bot-v…`); the installer stamps the version and the Teams manifest carries it
+- [x] Teams icons rendered from `bot/assets/simetrix-appicon.svg` by `bot/assets/render-icons.sh` (PNGs committed; the installer needs no renderer)
+- [x] Bridge key marker applied on the host
+- [ ] Operator sends one mail from the work address and one from the private address in the allowlist → both answered
+- [ ] Operator types `/sethome` once in the Teams bot chat (cron results and reminders land there)
+
+## 2 · Assistant capabilities — Microsoft 365 (the M365 mailbox — `CHANNEL_EMAIL_WORK_ADDRESS`, the default)
+
+Own MCP server in the repository (`src/mcp/m365_assistant.py`, Python, Graph REST), provisioned by a new
+installer module (`assistant`) into a venv under `/var/lib/hermes-assistant`, registered under `mcp_servers`.
+
+- [x] Sign-in: device-code flow as the M365 mailbox account, refresh token in `/var/lib/hermes-assistant/m365.token` (0600)
+- [x] Entra: delegated scopes added to app "Hermes Mail" and admin-consented by the installer (`az`): Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, OnlineMeetings.ReadWrite, Files.ReadWrite, User.Read, offline_access
+- [x] Mail: search, read, reply, send (with attachments), move/archive, read attachment text
+- [x] Calendar: view, find free slots, create / update / cancel events, invitations go out by mail automatically
+- [ ] Teams meetings: event with Teams link; set roles — co-organizer (tenant users, e.g. the operator) and presenter (external guests) via `PATCH /me/onlineMeetings/{id}`
+- [x] OneDrive: list, search, read (text of pdf/docx/txt), upload, move/rename, folders, share link
+- [x] The Secretary's folder in the agent's OneDrive, created by the run and shared (edit) with the operator — `ASSISTANT_M365_ROOT_FOLDER`, `ASSISTANT_M365_SHARE_WITH`
+- [x] Verification in the run: `whoami` over Graph, tools listed by the gateway, failure deferred (not fatal for other modules)
+- [x] Tests: MCP protocol (tools/list schema), each tool's request shape against a fake Graph, text extraction, module bats
+- [x] README part: what the assistant can do, how to sign in once, troubleshooting; ADR 0019
+
+## 3 · Assistant capabilities — Google (the private Gmail account — `ASSISTANT_GOOGLE_ACCOUNT`, only when the operator says so)
+
+Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own token.
+
+- [ ] Operator creates the Google OAuth client once (Desktop app) and puts `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` into `config/secrets.conf` — for-dummies guide in the README
+- [ ] Sign-in: installed-app flow headless — the run prints the URL, the operator signs in as the private Gmail account and pastes the redirected URL back; refresh token in `google.token`
+- [ ] Gmail: search, read, reply, send, label/archive, attachment text
+- [ ] Google Calendar: view, create (with Meet link) / update / delete
+- [ ] Drive: list, search, read (text), upload, move, folders, share link
+- [ ] Tool descriptions state "Google — use only when the user explicitly asks for the private Google account"
+- [ ] Tests, README, verification as in part 2
+
+## 4 · Documents and reminders ("I hand over my letters")
+
+- [ ] Photo intake: a letter photographed and uploaded in Teams — image → text (vision through the bridge or OCR), then classify: what is it, does it need a calendar entry, which deadlines and how many advance reminders
+- [ ] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration
+
+- [ ] Intake paths: attachment to the M365 mailbox, file in the Teams chat, OneDrive folder `Assistant/Inbox` — all readable through the tools above
+- [ ] Text extraction for pdf / docx / txt (scanned PDFs without text: state the limit; OCR is a later toggle)
+- [ ] Reminders: verify the cron toolset is available on Teams and delivers to the home channel; document the phrasing ("erinnere mich am …")
+- [ ] Filing: the agent stores processed letters in OneDrive folders it names, and returns the location
+- [ ] Memory: dates and facts from letters survive session resets (Hermes memory toolset verified on Teams)
+
+## 5 · Private and work separation
+
+- [x] Routing rule (2026-09-05): business is the default and goes to Microsoft 365; "privat" / "privater Termin" / the Gmail account by name goes to Google. Written into both servers' instructions and tool descriptions so the model picks the right world itself
+- [x] Decision (2026-09-05): one bot per role, each its own 1:1 chat in Teams (own Entra app, Azure Bot F0, Teams app, gateway service, tunnel hostname). Bots are a LIST in configuration — add, rename, remove later without code changes
+- [x] Decision (2026-09-05): three bots to start — **Secretary** (appointments, meetings, invitations, reminders, invoices, hour reports, letters, translation — "I say what I want, it does it"), **Search** (phone numbers, addresses, coordinates as maps links, website analysis, reports), **News** (daily briefing across countries: war, technology, finance). Display-name prefix "Simetrix"
+- [x] Decision (2026-09-05): nothing user-visible is named "Hermes" — bot names, Teams apps, Entra apps, hostnames are ours; everything the operator writes in German is rendered in English in the product
+- [x] Installer refactor: from one gateway to a bot list (`BOTS`), per bot: Entra app (created by `az`), Azure Bot via Bicep, Teams package, gateway service instance with its own profile (persona file under `bot/roles/<name>.md`, toolsets, MCP servers), port and tunnel hostname; shared assistant servers
+- [x] Rename the existing pieces: the current bot became Secretary (secretary.simetrix.ch, Entra app "Simetrix Secretary", Azure bot simetrix-secretary); "Hermes Mail" stays an internal app name (not user-visible)
+- [x] All three bots reachable end to end (Direct Line probe: Azure → edge → tunnel → own gateway → allowlist), each on its own hostname and port
+- [ ] Web tools for Search and News verified through the bridge (first real messages pending)
+- [ ] Operator uploads the three Teams packages (`bot/build/<key>-teams-app.zip`) and types `/sethome` in each chat (web_search / web_extract / browser); News delivers its daily briefing by cron into its own chat
+
+- [x] Decision (2026-09-05): one bot, Google only on explicit request. Alternatives were a second bot / gateway profile for private matters, or the WhatsApp bridge as the private channel. Several bots on one Bot Service identity are possible (Hermes multiplex profiles); each is a separate Teams app.
+- [x] Implemented by the tool descriptions and the system prompt note in part 2/3 (no second bot)
+
+## 6 · Later, not forgotten
+
+- [ ] Old single-bot leftovers to retire: DNS record hermes.simetrix.ch, the vendor unit file hermes-gateway.service (disabled), TUNNEL_HOSTNAME as a config key
+- [ ] Removing a bot from BOTS should retire its Azure Bot, Entra app, DNS record, unit and profile (today: config only)
+- [ ] Per-bot icons (`bot/assets/<key>.svg` → `bot/teams-app/<key>/`), today all three share the Simetrix icon
+
+- [ ] WhatsApp bridge channel (private mobile contact without a public bot)
+- [ ] Dashboard over TLS (today: plain HTTP on the LAN, installer warns)
+- [ ] Sporadic `IMAP fetch error: EOF` (self-healing; ~2 per 15 min) — root cause
+- [ ] Commit the repository (nothing is committed yet) and push to the private remote
+- [ ] Second VM: bootstrap → config → `az login` → `install.sh` → upload Teams package → `/sethome` → sign-ins (M365 device code, Google paste) — everything else automatic; run it and fix whatever is not

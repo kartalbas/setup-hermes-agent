@@ -1,0 +1,38 @@
+# Real configuration — only the examples are tracked.
+# Deliberately broad: a hermes.conf.bak left by an editor or a hand-made copy
+# carries exactly the same site data as the file it was copied from.
+config/*
+!config/*.example
+# The tool catalogue is not site data, so it is tracked and has no .example.
+!config/install.conf
+# The account definition is likewise structure, not secrets.
+!config/bootstrap.conf
+# Explanation of the credential directory is tracked; its contents never are.
+!config/credentials/
+config/credentials/*
+!config/credentials/README.md
+
+# config/secrets.conf is covered by config/* above. Belt and braces for the
+# usual accidents:
+*.secrets
+secrets.env
+*.pem
+*.key
+cert.pem
+credentials.json
+
+# Runtime state written by install.sh
+.state/
+*.log
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
+
+# Scratch material dropped in for a conversation (screenshots etc.) — never committed.
+temp/
+
+# Generated artefacts (Teams app package etc.)
+bot/build/
+__pycache__/

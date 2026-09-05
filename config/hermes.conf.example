@@ -1,0 +1,284 @@
+# shellcheck shell=bash disable=SC2034
+#
+# Template. Copy to the name without .example and fill in the blanks;
+# that copy is gitignored.
+# Secrets are referenced by variable NAME only; values live in SECRETS_FILE.
+
+# =============================================================================
+#  SITE VALUES — fill these in. Everything else below has a working default.
+#
+#  Credentials are NOT here; they live in the file named by SECRETS_FILE at the
+#  bottom of this file. Editing that one file plus these two blocks is the whole
+#  job.
+# =============================================================================
+
+# IANA timezone. Scheduled reports and calendar invitations are generated in
+# this zone, so getting it wrong produces appointments at the wrong hour and the
+# symptom shows up far from the cause.
+TIMEZONE="Europe/Zurich"
+
+# The public name Microsoft Teams will post to, and the DNS zone containing it.
+# The hostname does not need to exist yet — the run creates the record.
+#   TUNNEL_HOSTNAME="hermes.your-zone.example"
+#   TUNNEL_ZONE="your-zone.example"
+TUNNEL_HOSTNAME=""
+TUNNEL_ZONE=""
+
+# =============================================================================
+
+# --- target -------------------------------------------------------------
+# TIMEZONE is set in the SITE VALUES block at the top of this file.
+
+FIREWALL_MANAGE=true
+FIREWALL_ALLOW_PORTS="22"
+
+# --- service ------------------------------------------------------------
+SERVICE_SCOPE="system"
+SERVICE_NAME="hermes-gateway"
+SERVICE_HARDEN_NO_NEW_PRIVS=true
+SERVICE_START_LIMIT_INTERVAL=600
+SERVICE_START_LIMIT_BURST=20
+SERVICE_WATCHDOG_SECONDS=90
+JOURNAL_MAX_USE="1G"
+
+HERMES_HOME=""
+
+# --- upstream -----------------------------------------------------------
+HERMES_REF="v2026.8.31"
+HERMES_REF_KIND="tag"
+HERMES_SKIP_BROWSER=true
+HERMES_SKIP_SKILLS=false
+
+# --- inference ----------------------------------------------------------
+# One endpoint: the local bridge. It is loopback, so it needs no credential —
+# the subscription lives in the CLI behind it, signed in as the service account.
+LLM_ENDPOINT_COUNT=1
+LLM_STRATEGY="single"
+
+LLM_ENDPOINT_1_PROVIDER="custom"
+LLM_ENDPOINT_1_NAME="bridge"
+LLM_ENDPOINT_1_BASE_URL=""
+LLM_ENDPOINT_1_MODEL="gemini-3.8-flash-high"
+LLM_ENDPOINT_1_TOKEN_VAR=""
+
+# Left at the endpoint's own defaults: the previous values were tuned to a
+# self-hosted model that no longer exists.
+LLM_CONTEXT_WINDOW=0
+LLM_MAX_OUTPUT=0
+LLM_REASONING_FIELD=""
+LLM_VERIFY_TOKEN=true
+
+# --- mail relay ---------------------------------------------------------
+# A local OAuth2 IMAP/SMTP relay in front of a corporate mailbox. Microsoft 365
+# disables IMAP basic authentication tenant-wide and it cannot be re-enabled, so
+# an M365 mailbox is unreachable without this — the adapter speaks plain
+# IMAP/SMTP to loopback and the relay holds the OAuth token.
+#
+# Only needed when CHANNEL_EMAIL_ACCOUNT="work". With it on, the run redirects
+# the work mailbox's hosts to loopback by itself; leave the real hosts in
+# channels.conf.
+MAILPROXY_ENABLED=true
+
+# device = you approve a sign-in once in a browser, the relay refreshes from
+#          then on. Works with a delegated app registration and no admin.
+# client  = client credentials; unattended from the start, but needs an admin
+#          to grant application permissions on the tenant.
+MAILPROXY_FLOW="device"          # device|client
+
+# --- the bridge ---------------------------------------------------------
+AGY_SHIM_ENABLED=true
+AGY_SHIM_BINARY="agy"
+AGY_SHIM_HOST="127.0.0.1"
+AGY_SHIM_PORT=8787
+
+# The allowlist IS the control. The caller decides when to escalate; it does
+# not get to decide what to escalate to, and it cannot drop to a cheaper tier.
+AGY_SHIM_MODELS="gemini-3.8-flash-high,gemini-3.1-pro-high"
+AGY_SHIM_MODEL_ALIASES="fast=gemini-3.8-flash-high,smart=gemini-3.1-pro-high"
+AGY_SHIM_UNKNOWN_MODEL="reject"
+
+# Measured: ~239 MB per live conversation. Six is what 7 GB tolerates next to
+# everything else on this host.
+AGY_SHIM_MAX_PROCESSES=6
+AGY_SHIM_MAX_CONCURRENT=3
+AGY_SHIM_IDLE_TIMEOUT=900
+AGY_SHIM_COMPACT_AT=120000
+
+# --- hosted providers, prepared but not active --------------------------
+# Raise LLM_ENDPOINT_COUNT and uncomment a block to bring one in. A hosted
+# provider takes no base_url — it is identified by name — and the key goes in
+# SECRETS_FILE under the variable named here. Position decides the role:
+# slot 1 is the model in use, later slots are the fallback chain in order.
+#
+# Nothing here needs a key until you decide to use it: a slot whose key is
+# missing is skipped with a note rather than failing the run.
+#
+#LLM_ENDPOINT_3_PROVIDER="anthropic"      # key: ANTHROPIC_API_KEY
+#LLM_ENDPOINT_3_NAME="claude"
+#LLM_ENDPOINT_3_MODEL="claude-opus-4"
+#LLM_ENDPOINT_3_TOKEN_VAR="ANTHROPIC_API_KEY"
+#
+#LLM_ENDPOINT_4_PROVIDER="openai"         # key: OPENAI_API_KEY
+#LLM_ENDPOINT_4_NAME="openai"
+#LLM_ENDPOINT_4_MODEL="gpt-4"
+#LLM_ENDPOINT_4_TOKEN_VAR="OPENAI_API_KEY"
+#
+#LLM_ENDPOINT_5_PROVIDER="google"         # key: GOOGLE_API_KEY
+#LLM_ENDPOINT_5_NAME="gemini"
+#LLM_ENDPOINT_5_MODEL="gemini-3-flash-preview"
+#LLM_ENDPOINT_5_TOKEN_VAR="GOOGLE_API_KEY"
+#
+#LLM_ENDPOINT_6_PROVIDER="kimi-coding"    # Moonshot; key: KIMI_API_KEY
+#LLM_ENDPOINT_6_NAME="kimi"
+#LLM_ENDPOINT_6_MODEL="kimi-k2"
+#LLM_ENDPOINT_6_TOKEN_VAR="KIMI_API_KEY"
+#
+#LLM_ENDPOINT_7_PROVIDER="zai"            # z.ai / GLM; key: GLM_API_KEY
+#LLM_ENDPOINT_7_NAME="glm"
+#LLM_ENDPOINT_7_MODEL="glm-4"
+#LLM_ENDPOINT_7_TOKEN_VAR="GLM_API_KEY"
+#
+#LLM_ENDPOINT_8_PROVIDER="openrouter"     # aggregator; key: OPENROUTER_API_KEY
+#LLM_ENDPOINT_8_NAME="openrouter"
+#LLM_ENDPOINT_8_MODEL="anthropic/claude-sonnet-4"
+#LLM_ENDPOINT_8_TOKEN_VAR="OPENROUTER_API_KEY"
+
+# --- dashboard ----------------------------------------------------------
+# The agent's web UI. It holds API keys, so it binds to loopback and is never
+# published directly. To reach it from another machine, the provisioner puts an
+# authenticating reverse proxy in front of it on the address below.
+DASHBOARD_ENABLED=true
+DASHBOARD_PORT=9119                  # loopback only; not exposed
+DASHBOARD_PROXY=true
+DASHBOARD_PROXY_BIND=""
+DASHBOARD_PROXY_PORT=80
+# Basic authentication at the proxy. The dashboard enforces its own login
+# whenever DASHBOARD_PROXY_BIND is non-loopback, so this is normally a second
+# prompt for the same door. Turning it off is safe there and leaves one login;
+# the run refuses to finish if neither layer is gating.
+DASHBOARD_PROXY_AUTH=true
+
+DASHBOARD_PROXY_USER="admin"
+DASHBOARD_PROXY_PASSWORD_VAR="DASHBOARD_PASSWORD"
+
+# --- terminal sandbox ---------------------------------------------------
+# Native, not containerised: the developer tools below are installed on the
+# host, and an agent executing inside a container cannot see them.
+#
+# The trade is explicit — there is no sandbox between the agent and this
+# machine's credentials. See docs/decisions/0004.
+TERMINAL_BACKEND="local"
+
+# --- docker -------------------------------------------------------------
+# Nothing needs the container runtime once the sandbox is gone.
+DOCKER_MANAGE=false
+DOCKER_LOG_MAX_SIZE="10m"
+DOCKER_LOG_MAX_FILE=3
+DOCKER_LIVE_RESTORE=true
+DOCKER_ADDRESS_POOL_BASE=""
+DOCKER_ADDRESS_POOL_SIZE=24
+
+# --- inbound tunnel (Teams only) ----------------------------------------
+TUNNEL_MODE="api"
+TUNNEL_PROVIDER="cloudflare"
+TUNNEL_NAME="hermes-agent"
+# TUNNEL_HOSTNAME and TUNNEL_ZONE are in the SITE VALUES block at the top.
+TUNNEL_INGRESS_TARGET="http://127.0.0.1:3978"
+TUNNEL_INGRESS_PATH="/api/messages"
+TUNNEL_API_TOKEN_VAR="CF_API_TOKEN"
+
+# Transport to the Cloudflare edge. Empty lets cloudflared choose: it prefers
+# QUIC over UDP/7844 and falls back to HTTP/2 over TCP/443 by itself. Set
+# "http2" where UDP to the edge is degraded — the symptom is repeated
+# "failed to dial to edge with quic" in the daemon's log.
+TUNNEL_PROTOCOL=""                   # ""|quic|http2
+
+# The vendor unit is Type=notify with a 15s start deadline, which is shorter
+# than a QUIC-to-HTTP/2 fallback takes. This drop-in replaces it.
+TUNNEL_START_TIMEOUT=90
+
+# When the run itself switches Universal SSL on, Cloudflare still has to issue
+# the edge certificate — minutes, occasionally an hour. This is how long the run
+# waits for the first handshake to succeed before deferring the failure and
+# finishing everything else. A re-run later completes the check.
+TUNNEL_EDGE_TLS_WAIT=300
+TUNNEL_ACCOUNT_ID_VAR="CF_ACCOUNT_ID"
+
+# --- azure: the Bot Service that fronts Teams ---------------------------
+# Declared in src/azure/bot.bicep and deployed with the Azure CLI, so the bot,
+# its endpoint (the tunnel hostname) and its Teams channel come from this
+# repository rather than from portal clicks. The two Entra app registrations
+# are verified against the IDs in the secrets file, not created: creating them
+# would produce a client secret that only the run has seen, and secrets flow
+# from the repository to the host, never back.
+#
+# Requires `az login` by the operator first — a browser sign-in, like the CLI
+# and the mail relay. The run installs the Azure CLI itself if it is missing.
+#
+# The Bot Service's msaAppId is immutable. If the existing bot carries a
+# different app or tenant ID than the secrets file says, the run refuses and
+# explains; set AZURE_BOT_RECREATE=true for one run to delete and recreate it
+# (the Teams app then has to be added to a chat again).
+AZURE_MANAGE=false
+AZURE_SUBSCRIPTION_ID=""
+AZURE_RESOURCE_GROUP=""
+AZURE_LOCATION="westeurope"           # for the resource group; the bot itself is global
+AZURE_BOT_SKU="F0"                    # F0 free | S1 paid
+AZURE_BOT_RECREATE=false
+
+# --- backup -------------------------------------------------------------
+BACKUP_MANAGE=true
+BACKUP_DEST=""
+BACKUP_ON_CALENDAR="daily"
+BACKUP_RANDOM_DELAY="1h"
+BACKUP_KEEP=14
+
+# --- git identity -------------------------------------------------------
+# The agent commits as this. A shared mailbox address is fine and often better
+# than a personal one — it makes agent-authored commits obvious in a log.
+GIT_USER_NAME=""
+GIT_USER_EMAIL=""
+
+# Repositories owned by another account that the agent may still work in.
+# Without this git refuses with "dubious ownership", which reads like a bug.
+GIT_SAFE_DIRECTORIES=""
+
+# GPG/SSH key id to sign commits with; empty disables signing.
+GIT_SIGNING_KEY=""
+
+# --- secrets ------------------------------------------------------------
+# Empty means config/secrets.conf next to this file — gitignored, mode 0600.
+# Point it elsewhere only if you keep credentials outside the working tree.
+SECRETS_FILE=""
+
+LOG_LEVEL="info"
+
+# ---------------------------------------------------------------------------
+# The assistant — the agent's hands in Microsoft 365 (README 1.10). It acts as
+# its own mailbox account and signs in once with a device code during the run.
+# ---------------------------------------------------------------------------
+ASSISTANT_M365_ENABLED=false
+ASSISTANT_M365_ACCOUNT="agent@example.com"
+ASSISTANT_M365_TIMEZONE="Europe/Zurich"
+ASSISTANT_M365_ROOT_FOLDER="Secretary"           # the agent's working folder in its OneDrive
+ASSISTANT_M365_SHARE_WITH="you@example.com"     # who gets access to it (comma-separated)
+ASSISTANT_M365_SHARE_ROLE="write"
+
+# ---------------------------------------------------------------------------
+# Bots — one per role (README 1.5). Each bot is its own Teams app and 1:1 chat,
+# its own gateway service and profile (persona, memory, tools), its own
+# hostname on the tunnel. A new bot is one word in BOTS plus bot/roles/<key>.md;
+# the run creates its Entra app and writes the client id and secret into the
+# secrets file.
+# ---------------------------------------------------------------------------
+BOTS="secretary search news"
+BOT_PREFIX="Acme"                      # display names: "Acme Secretary", …
+BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
+BOT_PORT_BASE=3978                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
+
+BOT_SECRETARY_CHANNELS="teams email"   # the one bot that also reads the mailbox
+BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
+BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
+# BOT_<KEY>_NAME, _HOSTNAME (<key>.<TUNNEL_ZONE>), _ROLE (bot/roles/<role>.md),
+# _TEAMS_CLIENT_ID_VAR / _TEAMS_CLIENT_SECRET_VAR (TEAMS_<KEY>_CLIENT_ID / _SECRET),
+# _TOOLSET, _DESCRIPTION all have derived defaults.

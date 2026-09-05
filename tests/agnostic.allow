@@ -1,0 +1,69 @@
+# Hosts the provisioner is allowed to reference in tracked files.
+#
+# This list is the control. Adding a host here shows up in review as a
+# deliberate decision; without it, an external hostname committed by accident
+# would pass unnoticed. Keep it minimal and justify each entry.
+#
+# One host per line. Comments and blank lines ignored. Exact match, plus
+# subdomains via a leading dot.
+
+# --- the agent itself ---
+hermes-agent.nousresearch.com     # vendor installer
+github.com                        # vendor repository
+raw.githubusercontent.com         # vendor source and docs
+
+# --- subscription CLIs the agent delegates to (src/33-clis.sh) ---
+antigravity.google                # agy installer
+claude.ai                         # claude installer
+
+# --- toolchain the vendor installer pulls ---
+astral.sh                         # uv
+.astral.sh
+pypi.org                          # python packages
+files.pythonhosted.org
+nodejs.org                        # node runtime
+registry.npmjs.org                # npm packages
+
+# --- container runtime ---
+download.docker.com               # docker engine apt repository
+registry-1.docker.io              # sandbox image
+auth.docker.io
+index.docker.io
+
+# --- developer tool downloads (src/58-devtools.sh) ---
+dl.k8s.io                         # kubectl
+get.helm.sh                       # helm
+releases.hashicorp.com            # vault, terraform
+api.releases.hashicorp.com        # their version index
+.githubusercontent.com            # github release assets redirect here
+
+# --- mail relay (src/55-mailproxy.sh) ---
+login.microsoftonline.com         # oauth token and device-code endpoints
+outlook.office.com                # imap/smtp scopes
+outlook.office365.com             # imap
+smtp.office365.com                # smtp
+
+# --- inbound tunnel ---
+api.cloudflare.com                # tunnel and DNS API
+pkg.cloudflare.com                # cloudflared apt repository
+.cfargotunnel.com                 # tunnel CNAME target
+github.com/cloudflare             # cloudflared releases
+
+# --- documentation examples only ---
+# RFC 2606 / RFC 6761 reserved names, safe to appear in comments and example
+# config precisely because they can never resolve to a real host.
+example.com
+example.org
+example.net
+.example                          # reserved TLD, e.g. host.example
+.invalid
+.test
+example.invalid
+packages.microsoft.com
+docs.botframework.com
+directline.botframework.com
+teams.microsoft.com
+developer.microsoft.com
+www.w3.org                        # xml namespaces in svg sources
+graph.microsoft.com               # the assistant's Graph endpoint
+www.google.com                    # maps links the Search bot hands out
