@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Teams manifest: `supportsFiles` so the chat offers the attach button (letters, invoices, photos)
+
 ## 0.2.1 — 2026-09-06
 
 - Secretary on a fresh bot identity so Teams names the chat after the app

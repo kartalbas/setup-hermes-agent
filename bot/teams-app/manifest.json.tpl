@@ -20,7 +20,7 @@
     {
       "botId": "${TEAMS_APP_ID}",
       "scopes": ["personal"],
-      "supportsFiles": false,
+      "supportsFiles": true,
       "isNotificationOnly": false
     }
   ],

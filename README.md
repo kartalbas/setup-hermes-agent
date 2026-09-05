@@ -368,6 +368,8 @@ updates the installed app in place. The run refuses to build a changed package
 under an unchanged version, because that is what produces duplicates and
 "already exists".
 
+The manifest declares `supportsFiles`, which is what puts the attach button into a 1:1 bot chat — without it, nothing can be uploaded to the bot.
+
 Recreating the bot resource discards the installation; a deep link then answers
 "You do not have permission to use this app here" — upload the package again.
 The package's app id is derived from the bot's client id, not equal to it: Teams
