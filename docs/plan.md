@@ -58,7 +58,8 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 ## 4 · Documents and reminders ("I hand over my letters")
 
-- [ ] Photo intake: a letter photographed and uploaded in Teams — image → text (vision through the bridge or OCR), then classify: what is it, does it need a calendar entry, which deadlines and how many advance reminders
+- [x] Photo intake, host side: the bridge hands images to the CLI as files; a photographed letter is read (sender, amount, deadline) and the Secretary proposes the calendar entry with advance reminders and the filing place (verified 2026-09-05 with a test letter)
+- [ ] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path
 - [ ] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration
 
 - [ ] Intake paths: attachment to the M365 mailbox, file in the Teams chat, OneDrive folder `Assistant/Inbox` — all readable through the tools above

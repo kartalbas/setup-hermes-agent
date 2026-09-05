@@ -153,3 +153,21 @@ plain = {"id": "y", "type": "function", "function": {"name": "m365_whoami", "arg
 assert m.unwrap_nested_call(plain) == plain
 PY
 }
+
+@test "data-url images become files the CLI can read, named in the prompt" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys, base64, os, tempfile
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+msgs = [{"role": "user", "content": [{"type": "text", "text": "Was steht da?"},
+                                      {"type": "image_url", "image_url": {"url": "data:image/png;base64," + png}}]}]
+out, images = m.extract_images(msgs)
+assert len(images) == 1 and images[0][1] == "png"
+assert out[0]["content"][1] == {"type": "text", "text": "[IMAGE:1]"}
+d = tempfile.mkdtemp()
+text = m.place_images("Was steht da?\n[IMAGE:1]", images, d)
+assert os.path.exists(os.path.join(d, "image-1.png")) and "read the file" in text and "[IMAGE:1]" not in text
+plain, none = m.extract_images([{"role": "user", "content": "hi"}])
+assert none == [] and plain[0]["content"] == "hi"
+PY
+}

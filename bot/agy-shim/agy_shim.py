@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import base64
+import binascii
 import json
 import logging
 import os
@@ -392,10 +394,13 @@ class Pool:
             old.close()
 
     def _complete_stateless(self, history: list[str], message: str,
-                            system: str, model: str) -> tuple[str, dict, dict]:
+                            system: str, model: str,
+                            images: list[tuple[bytes, str]]) -> tuple[str, dict, dict]:
         proc = self._take_spare(model)
         try:
             text = stateless_message(system, history, message)
+            if images:
+                text = place_images(text, images, proc.workdir)
             proc.full_prefix = text          # re-sent whole if a built-in tool is denied
             proc.identity = identity_name(system)
             started = time.time()
@@ -411,13 +416,14 @@ class Pool:
             threading.Thread(target=proc.close, daemon=True).start()
 
     def complete(self, key: str, history: list[str], message: str,
-                 system: str = "", model: str = "") -> tuple[str, dict, dict]:
+                 system: str = "", model: str = "",
+                 images: list[tuple[bytes, str]] | None = None) -> tuple[str, dict, dict]:
         acquired = self.slots.acquire(timeout=self.args.queue_timeout)
         if not acquired:
             raise TimeoutError("too many conversations in flight")
         try:
             if self.args.stateless:
-                return self._complete_stateless(history, message, system, model)
+                return self._complete_stateless(history, message, system, model, images or [])
             proc = self._get_or_start(key, history, system, model)
 
             # A first turn on a fresh conversation carries the system prompt.
@@ -475,6 +481,58 @@ def conversation_key(messages: list[dict]) -> str:
         if m.get("role") == "user":
             break                    # system prompt(s) plus the first user turn
     return hashlib.sha256("\n".join(opening).encode()).hexdigest()
+
+
+IMAGE_PLACEHOLDER = "[IMAGE:{n}]"
+_MIME_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/webp": "webp",
+             "image/gif": "gif", "image/heic": "heic", "image/heif": "heif"}
+
+
+def extract_images(messages: list[dict]) -> tuple[list[dict], list[tuple[bytes, str]]]:
+    """Pull data-URL images out of the content arrays.
+
+    The CLI reads an image from a FILE named in the prompt (verified), not from
+    an inline data URL. So each image part becomes a placeholder in the text
+    and a (bytes, extension) pair the completion path writes into the CLI's
+    working directory, replacing the placeholder with the path."""
+    images: list[tuple[bytes, str]] = []
+    out: list[dict] = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = ((part.get("image_url") or {}).get("url") or "")
+                if url.startswith("data:") and ";base64," in url:
+                    head, b64 = url.split(";base64,", 1)
+                    mime = head[5:].split(";")[0].lower()
+                    try:
+                        data = base64.b64decode(b64)
+                    except (ValueError, binascii.Error):
+                        parts.append({"type": "text", "text": "[image could not be decoded]"})
+                        continue
+                    images.append((data, _MIME_EXT.get(mime, "png")))
+                    parts.append({"type": "text", "text": IMAGE_PLACEHOLDER.format(n=len(images))})
+                else:
+                    parts.append({"type": "text", "text": f"[image at {url[:200]}]"})
+            else:
+                parts.append(part)
+        out.append({**m, "content": parts})
+    return out, images
+
+
+def place_images(text: str, images: list[tuple[bytes, str]], workdir: str) -> str:
+    """Write the images next to the CLI and name them in the text."""
+    for n, (data, ext) in enumerate(images, 1):
+        path = os.path.join(workdir, f"image-{n}.{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        text = text.replace(IMAGE_PLACEHOLDER.format(n=n),
+                            f"[attached image {n}: read the file {path}]")
+    return text
 
 
 def flatten(content) -> str:
@@ -814,6 +872,7 @@ class Handler(BaseHTTPRequestHandler):
         if not messages:
             return self._error(400, "messages is required", "invalid_request_error")
 
+        messages, images = extract_images(messages)
         system, history, message = split_history(messages)
         if not message.strip():
             return self._error(400, "the final message is empty", "invalid_request_error")
@@ -844,7 +903,7 @@ class Handler(BaseHTTPRequestHandler):
         ).hexdigest()[:8] if tools else "notools"
         key = conversation_key(messages) + ":" + model + ":" + tool_sig
         try:
-            text, usage, meta = self.pool.complete(key, history, message, system, model)
+            text, usage, meta = self.pool.complete(key, history, message, system, model, images)
         except TimeoutError as exc:
             return self._error(504, str(exc))
         except Exception as exc:
