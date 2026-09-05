@@ -245,6 +245,31 @@ EVENT_SELECT = ("id,subject,start,end,isAllDay,location,organizer,isOrganizer,at
                 "onlineMeeting,isCancelled,showAs,categories,webLink,bodyPreview")
 
 
+def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: str,
+                   chunk: int = 10 * 1024 * 1024) -> Dict[str, Any]:
+    """Resumable upload for files above the simple-upload limit: one session,
+    chunks of a multiple of 320 KiB (Graph's requirement), the last answer is
+    the item."""
+    session = graph.call("POST", f"{graph.drive_path(path)}/createUploadSession",
+                         json_body={"item": {"@microsoft.graph.conflictBehavior": if_exists}})
+    url = session["uploadUrl"]
+    sent = 0
+    item: Dict[str, Any] = {}
+    with open(local, "rb") as f:
+        while sent < size:
+            data = f.read(chunk)
+            end = sent + len(data) - 1
+            payload, _ = http("PUT", url, data=data, raw=True, timeout=300,
+                              headers={"Content-Range": f"bytes {sent}-{end}/{size}", "Content-Length": str(len(data))})
+            sent = end + 1
+            if payload:
+                try:
+                    item = json.loads(payload.decode("utf-8"))
+                except ValueError:
+                    item = {}
+    return item
+
+
 def share_with(graph: "Graph", path: str, emails: List[str], role: str = "write", message: str = "",
                send_invitation: bool = True) -> Dict[str, Any]:
     """Grant people access to an item — idempotent: existing grants are kept."""
@@ -620,6 +645,35 @@ def build_server(graph: Graph) -> McpServer:
         item = graph.call("PUT", f"{graph.drive_path(path)}/content", data=data, content_type="application/octet-stream",
                           params={"@microsoft.graph.conflictBehavior": if_exists})
         return _item_shape(item)
+
+    @srv.tool("m365_drive_upload_file",
+              "Upload a file that exists on this machine (e.g. a PDF you generated) to OneDrive by path, then delete the local copy. "
+              "Use this for every document you produce: nothing stays on the server. Large files are uploaded in chunks.",
+              {"properties": {"local_path": {"type": "string"}, "path": {"type": "string", "description": "destination path in OneDrive, e.g. Secretary/Reports/2026/2026-09-06 trip plan.pdf"},
+                              "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}, "keep_local": {"type": "boolean"}},
+               "required": ["local_path", "path"]})
+    def drive_upload_file(local_path: str, path: str, if_exists: str = "replace", keep_local: bool = False) -> Dict[str, Any]:
+        local = os.path.expanduser(local_path)
+        if not os.path.isfile(local):
+            raise ValueError(f"no such file on this machine: {local_path}")
+        size = os.path.getsize(local)
+        folder, _, name = path.strip("/").rpartition("/")
+        if not name:
+            raise ValueError("path must name a file")
+        if folder:
+            graph.ensure_folder(folder)
+        if size <= UPLOAD_LIMIT:
+            with open(local, "rb") as f:
+                data = f.read()
+            item = graph.call("PUT", f"{graph.drive_path(path)}/content", data=data, content_type="application/octet-stream",
+                              params={"@microsoft.graph.conflictBehavior": if_exists})
+        else:
+            item = upload_session(graph, path, local, size, if_exists)
+        out = _item_shape(item)
+        if not keep_local:
+            os.remove(local)
+            out["local_removed"] = True
+        return out
 
     @srv.tool("m365_drive_mkdir", "Create a folder path in OneDrive (existing parts are kept).",
               {"properties": {"path": {"type": "string"}}, "required": ["path"]})

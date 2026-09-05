@@ -249,3 +249,24 @@ class Sharing(unittest.TestCase):
         out = m365.share_with(g, "Secretary", ["boss@example.com"])
         self.assertEqual(out["granted_now"], [])
         self.assertFalse(any(m == "POST" for m, _, _ in g.calls))
+
+
+class LocalFiles(unittest.TestCase):
+    def test_upload_file_puts_a_small_local_file_and_removes_it(self):
+        import tempfile
+        d = tempfile.mkdtemp(); local = os.path.join(d, "plan.pdf")
+        open(local, "wb").write(b"%PDF-1.4 fake")
+        g = FakeGraph({("GET", "/me/drive/root:/Secretary:"): {"id": "f0", "name": "Secretary", "folder": {}},
+                       ("GET", "/me/drive/root:/Secretary/Reports:"): {"id": "f", "name": "Reports", "folder": {}},
+                       ("PUT", "/me/drive/root:/Secretary/Reports/plan.pdf:/content"): {"id": "i", "name": "plan.pdf", "size": 13}})
+        srv = m365.build_server(g)
+        out = tool(srv, "m365_drive_upload_file").fn(local_path=local, path="Secretary/Reports/plan.pdf")
+        self.assertEqual(out["name"], "plan.pdf") and self.assertTrue(out["local_removed"])
+        self.assertFalse(os.path.exists(local))
+        put = next(kw for m, p, kw in g.calls if m == "PUT")
+        self.assertEqual(put["data"], b"%PDF-1.4 fake")
+
+    def test_upload_file_refuses_a_missing_local_file(self):
+        srv = m365.build_server(FakeGraph())
+        with self.assertRaises(ValueError):
+            tool(srv, "m365_drive_upload_file").fn(local_path="/nowhere/x.pdf", path="Secretary/x.pdf")

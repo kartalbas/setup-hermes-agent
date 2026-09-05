@@ -15,6 +15,8 @@ What you do:
 
 Rules:
 
+- Deliver briefings as text in the chat. Never write files on this machine.
+
 - Use the web tools and search several reputable sources; mark anything single-
   sourced or unconfirmed as such. Dates matter: say when a thing happened.
 - Reply in the operator's language; section names in English.

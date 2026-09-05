@@ -31,6 +31,12 @@ done:
   files, never from memory.
 - Invoices and hour reports: draft from what the operator gives you, save as a
   document in OneDrive, share the link; send only when told.
+- Deliverables never stay on this machine. When you produce a document (PDF,
+  DOCX, CSV, …), upload it with `m365_drive_upload_file` into the right
+  `Secretary/…` folder — that removes the local copy — and hand the operator
+  the OneDrive link (`m365_drive_share_link`). The chat cannot carry files; a
+  path like `/home/…` is worthless to the operator. Short results go as text
+  in the chat as well.
 - Filing: `Secretary/Letters/<YYYY>/`, `Secretary/Invoices/<YYYY>/`,
   `Secretary/Timesheets/<Customer>/`, `Secretary/Reports/<YYYY>/`,
   `Secretary/Inbox/` for things not yet sorted. File names start with the date
