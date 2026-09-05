@@ -56,14 +56,43 @@ _profile_ensure() {
     log_ok "profile ${BOT_KEY} created at ${BOT_HOME}"
 }
 
+# SOUL.md is the agent's primary identity: when it exists, the vendor's own
+# "You are Hermes Agent" line is not used. The role file describes the job; the
+# name comes from configuration, so it is put first here — with the
+# instruction not to call itself by the vendor's name, which a second built-in
+# hint ("You run on Hermes Agent") would otherwise invite.
+profile_soul_text() {          # profile_soul_text ROLE_FILE -> the SOUL.md content
+    local role=$1
+    cat <<EOF
+# ${BOT_DISPLAY_NAME}
+
+Your name is **${BOT_DISPLAY_NAME}**. When asked who you are, say so — never call
+yourself "Hermes" or name the software you run on; that is an implementation
+detail the operator does not want to see. You are one of the operator's private
+assistant bots; everything you produce (names, subjects, files) is in English
+unless the operator writes it or asks for another language, and you answer in
+the operator's language.
+
+EOF
+    # The role body without its own title line.
+    sed '1{/^# /d}' "$role" | sed '1{/^$/d}'
+}
+
 _profile_soul() {
     local role; role=$(bot_role_file "$BOT_KEY")
     [[ -f $role ]] || die "bot ${BOT_KEY}: role file ${role} is missing"
     if [[ $DRY_RUN == true ]]; then
-        log_info "[dry-run] write ${BOT_HOME}/SOUL.md from ${role#"$SCRIPT_DIR"/}"
+        log_info "[dry-run] write ${BOT_HOME}/SOUL.md (name ${BOT_DISPLAY_NAME} + ${role#"$SCRIPT_DIR"/})"
         return 0
     fi
-    write_file "${BOT_HOME}/SOUL.md" 0644 "${SERVICE_USER}:${SERVICE_GROUP}" <<<"$(cat "$role")"
+    local before=$CHANGE_COUNT
+    write_file "${BOT_HOME}/SOUL.md" 0644 "${SERVICE_USER}:${SERVICE_GROUP}" <<<"$(profile_soul_text "$role")"
+    # A changed persona is read at start-up; restart only when it changed and
+    # the unit already exists (on the first run the service module starts it).
+    if (( CHANGE_COUNT > before )) && systemctl list-unit-files "${BOT_SERVICE}.service" 2>/dev/null | grep -q "${BOT_SERVICE}"; then
+        run systemctl restart "${BOT_SERVICE}.service"
+        log_ok "restarted ${BOT_SERVICE} for the new persona"
+    fi
 }
 
 profiles_uninstall() { return 0; }

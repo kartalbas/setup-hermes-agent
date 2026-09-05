@@ -84,3 +84,13 @@ setup() {
     grep -q '^SyslogIdentifier=acme-news' "$tmp/unit.service"
     rm -rf "$tmp"
 }
+
+@test "SOUL.md starts with the configured name and forbids the vendor's" {
+    bot_context news
+    out=$(profile_soul_text "$(bot_role_file news)")
+    [[ $out == "# Acme News"* ]]
+    [[ $out == *'Your name is **Acme News**'* ]]
+    [[ $out == *'never call'*'"Hermes"'* ]]
+    [[ $out == *"You are a news desk"* ]]
+    ! grep -q '^# News$' <<<"$out"
+}
