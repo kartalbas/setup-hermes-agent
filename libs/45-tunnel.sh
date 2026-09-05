@@ -400,7 +400,11 @@ _cf_service_install() {
     log_redact_register "$token"
     [[ -n $token && $token != null ]] || die "could not obtain a tunnel token"
 
-    if systemctl list-unit-files cloudflared.service 2>/dev/null | grep -q cloudflared; then
+    # The unit file itself is the fact; `systemctl list-unit-files` answered
+    # empty once during a daemon-reload and the install was attempted again,
+    # which the vendor refuses ("already installed") and the run died on.
+    if [[ -f /etc/systemd/system/cloudflared.service ]] ||
+       systemctl list-unit-files cloudflared.service 2>/dev/null | grep -q cloudflared; then
         log_skip "cloudflared service already installed"
     else
         run cloudflared service install "$token"

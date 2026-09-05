@@ -73,7 +73,7 @@ class AgentProcess:
     like the model being slow rather than like a bug here.
     """
 
-    def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str]):
+    def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str], agents_md: str = ""):
         self.model = model
         # Its own directory, and destroyed with it.
         #
@@ -84,6 +84,13 @@ class AgentProcess:
         # multi-channel assistant that means one conversation's content
         # surfacing in another's replies.
         self.workdir = tempfile.mkdtemp(prefix="agy-shim-", dir=workdir)
+        # AGENTS.md in the working directory is read by the CLI as its
+        # project instructions — system level, unlike anything we can put in a
+        # user turn. This is where the bot's identity and the tool protocol's
+        # "you have no tools" actually stick.
+        if agents_md:
+            with open(os.path.join(self.workdir, "AGENTS.md"), "w", encoding="utf-8") as f:
+                f.write(agents_md)
         self.created = time.time()
         self.last_used = self.created
         self.turns = 0
@@ -217,8 +224,14 @@ class AgentProcess:
                 detail = self.stderr_tail()
                 if "permission" in detail.lower():
                     if _retry:
-                        log.warning("model reached for a denied built-in tool; sending the reminder once")
-                        return self.turn(self.TOOL_REMINDER, max(30.0, deadline - time.time()), _retry=False)
+                        # The whole operating context again, not just a nudge:
+                        # a fresh conversation that reached for its own tools
+                        # answered the nudge from its default persona, with the
+                        # system prompt apparently already out of mind.
+                        log.warning("model reached for a denied built-in tool; re-sending the operating context once")
+                        again = getattr(self, "full_prefix", "")
+                        return self.turn((again + "\n\n" if again else "") + self.TOOL_REMINDER,
+                                         max(30.0, deadline - time.time()), _retry=False)
                     raise RuntimeError(
                         "the model needed a tool it is not permitted to use, and "
                         "produced no answer even after the reminder. " + detail)
@@ -258,6 +271,7 @@ class Pool:
     def __init__(self, args):
         self.args = args
         self.procs: dict[str, AgentProcess] = {}
+        self.spares: dict[str, AgentProcess] = {}   # pre-warmed, stateless mode
         self.lock = threading.Lock()
         self.slots = threading.Semaphore(args.max_concurrent)
         threading.Thread(target=self._reaper, daemon=True).start()
@@ -292,7 +306,8 @@ class Pool:
                 self.procs.pop(oldest[0]).close()
 
             proc = AgentProcess(self.args.binary, model,
-                                self.args.workdir, self.args.extra_args)
+                                self.args.workdir, self.args.extra_args,
+                                agents_md=agents_md_text(system))
             self.procs[key] = proc
 
         # Seeding costs a model round-trip, so it happens only when there is
@@ -305,7 +320,13 @@ class Pool:
         else:
             # Nothing to replay: the system prompt rides along with the first
             # real message instead of burning a turn of its own.
-            proc.pending_prefix = system
+            # The CLI has an identity of its own and answers "who are you" with
+            # it unless told, in the conversation, that here it acts as someone
+            # else. The frame makes the agent's system prompt (which carries the
+            # bot's name from SOUL.md) the authority on that.
+            proc.pending_prefix = IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL
+            proc.full_prefix = proc.pending_prefix       # kept for the reminder
+            proc.identity = identity_name(system)
         return proc
 
     @staticmethod
@@ -342,16 +363,66 @@ class Pool:
                     self.args.timeout)
         return fresh
 
+    # -- stateless: one fresh CLI conversation per request ---------------------
+    def _spawn(self, model: str) -> AgentProcess:
+        return AgentProcess(self.args.binary, model, self.args.workdir,
+                            self.args.extra_args, agents_md=agents_md_text(""))
+
+    def _take_spare(self, model: str) -> AgentProcess:
+        """A pre-warmed process for this model, or a fresh one. Start-up is the
+        one cost of statelessness, so the next process is started right after
+        one is taken."""
+        with self.lock:
+            proc = self.spares.pop(model, None)
+        if proc is None or not proc.alive():
+            proc = self._spawn(model)
+        threading.Thread(target=self._warm, args=(model,), daemon=True).start()
+        return proc
+
+    def _warm(self, model: str):
+        try:
+            fresh = self._spawn(model)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not pre-warm a process for %s: %s", model, exc)
+            return
+        with self.lock:
+            old = self.spares.get(model)
+            self.spares[model] = fresh
+        if old is not None:
+            old.close()
+
+    def _complete_stateless(self, history: list[str], message: str,
+                            system: str, model: str) -> tuple[str, dict, dict]:
+        proc = self._take_spare(model)
+        try:
+            text = stateless_message(system, history, message)
+            proc.full_prefix = text          # re-sent whole if a built-in tool is denied
+            proc.identity = identity_name(system)
+            started = time.time()
+            with proc.lock:
+                result = proc.turn(text, self.args.timeout)
+            usage = result.get("usage", {}) or {}
+            log.info("stateless [%s] history=%d in=%s cached=%s out=%s %.1fs",
+                     model, len(history), usage.get("input_tokens"),
+                     usage.get("cache_read_tokens"), usage.get("output_tokens"),
+                     time.time() - started)
+            return result.get("response", ""), usage, {"turns": 1, "model": model}
+        finally:
+            threading.Thread(target=proc.close, daemon=True).start()
+
     def complete(self, key: str, history: list[str], message: str,
                  system: str = "", model: str = "") -> tuple[str, dict, dict]:
         acquired = self.slots.acquire(timeout=self.args.queue_timeout)
         if not acquired:
             raise TimeoutError("too many conversations in flight")
         try:
+            if self.args.stateless:
+                return self._complete_stateless(history, message, system, model)
             proc = self._get_or_start(key, history, system, model)
 
             # A first turn on a fresh conversation carries the system prompt.
             prefix = getattr(proc, "pending_prefix", "")
+            message = identity_line(getattr(proc, "identity", "")) + message
             if prefix:
                 message = prefix + "\n\n" + message
                 proc.pending_prefix = ""
@@ -378,6 +449,8 @@ class Pool:
     def stats(self) -> dict:
         with self.lock:
             return {
+                "mode": "stateless" if self.args.stateless else "stateful",
+                "spares": sorted(self.spares),
                 "conversations": len(self.procs),
                 "detail": [
                     {"key": k[:8], "model": p.model, "turns": p.turns,
@@ -435,6 +508,98 @@ def flatten(content) -> str:
 #   {"type":"tool_call","name":"list_dir","arguments":{"path":"/etc"}}
 # rather than trying to list the directory itself.
 # ---------------------------------------------------------------------------
+
+IDENTITY_FRAME_HEAD = (
+    "=== OPERATING CONTEXT — overrides your defaults ===\n"
+    "In this conversation you ARE the assistant defined by the SYSTEM PROMPT below, "
+    "acting for its operator. Adopt its name, role and rules completely. Never present "
+    "yourself as Antigravity, Gemini, Google, DeepMind, a coding assistant or any CLI; "
+    "when asked who you are, answer with the name the system prompt gives you and "
+    "nothing about the software underneath.\n\n=== SYSTEM PROMPT ===\n")
+IDENTITY_FRAME_TAIL = "\n=== END SYSTEM PROMPT ==="
+
+_NAME_RE = re.compile(r"Your name is \*\*(.+?)\*\*")
+
+
+def identity_name(system: str) -> str:
+    """The bot's name as the agent's SOUL.md states it, or ''."""
+    m = _NAME_RE.search(system or "")
+    return m.group(1).strip() if m else ""
+
+
+def identity_line(name: str) -> str:
+    """Placed IMMEDIATELY BEFORE the user's message on every turn.
+
+    Position is what makes this work: the same words at the head of a
+    50k-token system prompt were ignored, and a trailing note was too. A short
+    operating-context line right before the question is followed reliably
+    (verified with the CLI directly)."""
+    if not name:
+        return ""
+    return (f"OPERATING CONTEXT: In this conversation you are {name}, a private assistant "
+            "bot acting for the operator; never present yourself as Antigravity, Gemini, "
+            "Google or any software. Follow the SYSTEM PROMPT and the TOOL PROTOCOL you "
+            "were given. Message from the user:\n")
+
+
+def agents_md_text(system: str) -> str:
+    """Project instructions for the CLI: who it is here, and that it has no tools."""
+    name = identity_name(system)
+    who = (f"You are **{name}**, a private assistant bot. When asked who you are, answer "
+           f"\"{name}\" and nothing about the software underneath — never Antigravity, "
+           "Gemini, Google, DeepMind, a coding assistant or a CLI.") if name else \
+          ("You are the assistant defined by the caller's system prompt; take your name from "
+           "it and never present yourself as Antigravity, Gemini, Google or a coding assistant.")
+    return (
+        "# Operating instructions\n\n"
+        f"{who}\n\n"
+        "You are not in a code project. There are no files to read, no commands to run, "
+        "no repository: your built-in tools are disabled and every attempt is denied. "
+        "The caller executes functions for you when the message carries a TOOL PROTOCOL; "
+        "follow it exactly and answer with the single JSON object it asks for.\n\n"
+        "The first message of the conversation carries the SYSTEM PROMPT that defines your "
+        "role and rules; it is the authority for everything except this identity note.\n"
+    )
+
+
+def unwrap_nested_call(call: dict) -> dict:
+    """{"name":"tool_call","arguments":{"name":X,"arguments":Y}} -> a call of X.
+
+    The model sometimes wraps the protocol's own envelope one level too deep;
+    the agent then reports "tool_call requires a 'name' argument" and the turn
+    is lost. Unwrap instead."""
+    fn = (call or {}).get("function") or {}
+    if fn.get("name") != "tool_call":
+        return call
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except ValueError:
+        return call
+    inner = args.get("name")
+    if not inner:
+        return call
+    inner_args = args.get("arguments", {})
+    if not isinstance(inner_args, str):
+        inner_args = json.dumps(inner_args, separators=(",", ":"))
+    log.info("unwrapped a nested tool_call -> %s", inner)
+    return {**call, "function": {"name": inner, "arguments": inner_args}}
+
+
+def stateless_message(system: str, history: list[str], message: str) -> str:
+    """The whole exchange as one message for a fresh CLI conversation.
+
+    Stateless by design: the CLI keeps no memory between requests, so nothing
+    can drift — no summarised-away system prompt, no persona creeping back in
+    a conversation that outlived its instructions. The operating context comes
+    first, the transcript so far in the middle, and the identity line sits
+    immediately before the user's message, where it is followed."""
+    parts = [IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL]
+    if history:
+        parts.append("=== CONVERSATION SO FAR (oldest first) ===\n" + "\n\n".join(history)
+                     + "\n=== END CONVERSATION ===")
+    parts.append(identity_line(identity_name(system)) + message)
+    return "\n\n".join(parts)
+
 
 def tool_contract(tools: list) -> str:
     """Render OpenAI tool definitions as instructions the CLI can follow."""
@@ -686,6 +851,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(502, f"{type(exc).__name__}: {exc}")
 
         content, tool_calls = parse_decision(text) if tools else (text, [])
+        tool_calls = [unwrap_nested_call(c) for c in tool_calls]
         choice_message = {"role": "assistant", "content": content or None}
         finish = "stop"
         if tool_calls:
@@ -781,6 +947,10 @@ def main() -> int:
     p.add_argument("--extra-args", default=os.environ.get("AGY_SHIM_EXTRA_ARGS", ""),
                    help="additional arguments passed to the CLI")
     p.add_argument("--log-level", default=os.environ.get("AGY_SHIM_LOG_LEVEL", "info"))
+    p.add_argument("--stateful", dest="stateless", action="store_false",
+                   default=os.environ.get("AGY_SHIM_STATELESS", "true").lower() not in ("0", "false", "no"),
+                   help="keep one CLI conversation per chat (legacy); default is stateless: "
+                        "a fresh CLI conversation per request, so nothing drifts")
     args = p.parse_args()
     args.extra_args = args.extra_args.split() if args.extra_args else []
     args.models = [m.strip() for m in args.models.split(",") if m.strip()]

@@ -1134,6 +1134,15 @@ Setting a non-loopback public URL also engages the dashboard's own
 authentication, which is right: once it answers on a routable address it should
 not depend on the proxy in front of it for its security.
 
+### The bot answers as the vendor's coding assistant, or "forgets" its role
+
+The bridge is stateless since bot 0.2.x (ADR 0021): every request is a fresh
+CLI conversation carrying the whole context, with the bot's name placed right
+before the user's message. If a bot still introduces itself wrongly, check the
+bridge's `/stats` says `"mode": "stateless"` and that the profile's `SOUL.md`
+begins with the bot's display name — the name is read from its
+`Your name is **…**` line.
+
 ### `The model provider failed after retries` — and the agent never acts
 
 The CLI behind the bridge is an agent, not a model API. Asked for something

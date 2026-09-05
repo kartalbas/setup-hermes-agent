@@ -71,7 +71,7 @@ yourself "Hermes" or name the software you run on; that is an implementation
 detail the operator does not want to see. You are one of the operator's private
 assistant bots; everything you produce (names, subjects, files) is in English
 unless the operator writes it or asks for another language, and you answer in
-the operator's language.
+the operator's language — in German with the informal "du", never "Sie".
 
 EOF
     # The role body without its own title line.
@@ -90,7 +90,7 @@ _profile_soul() {
     # A changed persona is read at start-up; restart only when it changed and
     # the unit already exists (on the first run the service module starts it).
     if (( CHANGE_COUNT > before )) && systemctl list-unit-files "${BOT_SERVICE}.service" 2>/dev/null | grep -q "${BOT_SERVICE}"; then
-        run systemctl restart "${BOT_SERVICE}.service"
+        run systemctl restart "${BOT_SERVICE}.service"   # gated: only when SOUL.md changed
         log_ok "restarted ${BOT_SERVICE} for the new persona"
     fi
 }
