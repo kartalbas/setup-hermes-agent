@@ -32,7 +32,9 @@ channels_apply() {
         CHANNEL_TEAMS_CLIENT_SECRET_VAR=$BOT_TEAMS_CLIENT_SECRET_VAR
         CHANNEL_TEAMS_PORT=$BOT_PORT
         CHANNEL_TEAMS_TOOLSET=$(bot_field "$key" TOOLSET)
+        bot_llm_apply "$key"
         _channels_apply_one "$BOT_SERVICE"
+        bot_llm_restore
         bot_context_end
     done < <(bots)
 }

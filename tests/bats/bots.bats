@@ -94,3 +94,26 @@ setup() {
     [[ $out == *"You are a news desk"* ]]
     ! grep -q '^# News$' <<<"$out"
 }
+
+@test "a bot's own model replaces endpoint 1 for its pass and is restored afterwards" {
+    LLM_ENDPOINT_COUNT=1 LLM_STRATEGY=single LLM_ENDPOINT_1_PROVIDER=custom LLM_ENDPOINT_1_NAME=bridge
+    LLM_ENDPOINT_1_BASE_URL=http://127.0.0.1:8787/v1 LLM_ENDPOINT_1_MODEL=gemini LLM_ENDPOINT_1_TOKEN_VAR=""
+    LLM_REASONING_FIELD="" LLM_CONTEXT_WINDOW=512000
+    BOT_SECRETARY_LLM_MODEL=kimi-k3 BOT_SECRETARY_LLM_NAME=kimi BOT_SECRETARY_LLM_BASE_URL=https://api.example.com/v1
+    BOT_SECRETARY_LLM_TOKEN_VAR=KIMI_API_KEY BOT_SECRETARY_LLM_REASONING_FIELD=reasoning_content
+    bot_llm_apply secretary
+    [ "$LLM_ENDPOINT_1_MODEL" = kimi-k3 ]; [ "$LLM_ENDPOINT_1_NAME" = kimi ]; [ "$LLM_ENDPOINT_1_TOKEN_VAR" = KIMI_API_KEY ]
+    [ "$LLM_REASONING_FIELD" = reasoning_content ]
+    bot_llm_restore
+    [ "$LLM_ENDPOINT_1_MODEL" = gemini ]; [ "$LLM_ENDPOINT_1_NAME" = bridge ]; [ "$LLM_REASONING_FIELD" = "" ]
+    bot_llm_apply news            # no own model: nothing changes
+    [ "$LLM_ENDPOINT_1_MODEL" = gemini ]
+    bot_llm_restore
+}
+
+@test "a bot model needs a base url for a custom provider and a present key" {
+    _invalid=(); BOT_NEWS_LLM_MODEL=x; _bots_validate; [ "${#_invalid[@]}" -ge 1 ]; unset BOT_NEWS_LLM_MODEL
+    _invalid=(); BOT_NEWS_LLM_MODEL=x BOT_NEWS_LLM_BASE_URL=https://api.example.com/v1 BOT_NEWS_LLM_TOKEN_VAR=NOPE
+    _bots_validate; [ "${#_invalid[@]}" -eq 1 ]
+    unset BOT_NEWS_LLM_MODEL BOT_NEWS_LLM_BASE_URL BOT_NEWS_LLM_TOKEN_VAR
+}

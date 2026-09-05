@@ -336,6 +336,13 @@ Azure Bot, the Teams package and the service. One bot carries the mailbox
 (`BOT_<KEY>_CHANNELS="teams email"`), one the dashboard, and the assistant's
 tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 
+**A bot may run on its own model.** `BOT_<KEY>_LLM_MODEL` (with `_LLM_PROVIDER`,
+`_LLM_NAME`, `_LLM_BASE_URL`, `_LLM_TOKEN_VAR`, `_LLM_REASONING_FIELD`,
+`_LLM_CONTEXT_WINDOW`) replaces the global endpoint for that bot's profile — a
+real model API for the bot that needs exact tool calling and images, the bridge
+for the others. The key stays in the secrets file under the name `_LLM_TOKEN_VAR`
+gives.
+
 **Install each bot in Teams — once, after the first run.** A bot is not visible
 in Teams until it is installed as a Teams *app*. The run generates one package
 per bot at `bot/build/<key>-teams-app.zip` (manifest + icons, deterministic).

@@ -741,6 +741,13 @@ bot_field() {
         TEAMS_CLIENT_ID_VAR)     printf 'TEAMS_%s_CLIENT_ID' "$(bot_upper "$key")" ;;
         TEAMS_CLIENT_SECRET_VAR) printf 'TEAMS_%s_CLIENT_SECRET' "$(bot_upper "$key")" ;;
         DASHBOARD)     printf 'false' ;;
+        LLM_MODEL)     printf '' ;;                     # empty: the global LLM_ENDPOINT_1 applies
+        LLM_PROVIDER)  printf 'custom' ;;
+        LLM_NAME)      printf '%s-llm' "$key" ;;
+        LLM_BASE_URL)  printf '' ;;
+        LLM_TOKEN_VAR) printf '' ;;
+        LLM_REASONING_FIELD) printf '' ;;
+        LLM_CONTEXT_WINDOW)  printf '%s' "${LLM_CONTEXT_WINDOW:-0}" ;;
         TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;
         *) die "bot_field: unknown field '${field}'" ;;
     esac
@@ -816,6 +823,12 @@ _bots_validate() {
                        *) _bad "bot ${k}: unknown MCP server '${m}' (m365)" ;; esac
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
+        if [[ -n $(bot_field "$k" LLM_MODEL) ]]; then
+            [[ $(bot_field "$k" LLM_PROVIDER) != custom || -n $(bot_field "$k" LLM_BASE_URL) ]] ||
+                _bad "bot ${k}: BOT_$(bot_upper "$k")_LLM_BASE_URL is needed for a custom provider"
+            local tv; tv=$(bot_field "$k" LLM_TOKEN_VAR)
+            [[ -z $tv ]] || secret_nonempty "$tv" || _bad "bot ${k}: secret '${tv}' (its LLM key) is missing or empty in the secrets file"
+        fi
     done < <(bots)
     (( ${#keys[@]} == 0 )) && return 0
     [[ -n ${BOT_PREFIX:-} ]] || _bad "BOT_PREFIX is empty; bots are displayed as '<prefix> <Name>'"
@@ -823,4 +836,33 @@ _bots_validate() {
     (( emails <= 1 )) || _bad "bots: the email channel can be on one bot only (one mailbox)"
     (( ${dashboards:-0} <= 1 )) || _bad "bots: BOT_<KEY>_DASHBOARD=true on one bot only"
     return 0
+}
+
+# A bot's own model, applied as LLM endpoint 1 for the duration of its pass.
+# bot_llm_apply KEY saves the global endpoint settings; bot_llm_restore puts
+# them back. Bots without BOT_<KEY>_LLM_MODEL keep the global endpoint.
+bot_llm_apply() {
+    local key=$1 model; model=$(bot_field "$key" LLM_MODEL)
+    _BOT_LLM_SAVED=$(declare -p LLM_ENDPOINT_COUNT LLM_STRATEGY LLM_ENDPOINT_1_PROVIDER LLM_ENDPOINT_1_NAME \
+                       LLM_ENDPOINT_1_BASE_URL LLM_ENDPOINT_1_MODEL LLM_ENDPOINT_1_TOKEN_VAR \
+                       LLM_REASONING_FIELD LLM_CONTEXT_WINDOW 2>/dev/null)
+    [[ -n $model ]] || return 0
+    LLM_ENDPOINT_COUNT=1
+    LLM_STRATEGY=single
+    LLM_ENDPOINT_1_PROVIDER=$(bot_field "$key" LLM_PROVIDER)
+    LLM_ENDPOINT_1_NAME=$(bot_field "$key" LLM_NAME)
+    LLM_ENDPOINT_1_BASE_URL=$(bot_field "$key" LLM_BASE_URL)
+    LLM_ENDPOINT_1_MODEL=$model
+    LLM_ENDPOINT_1_TOKEN_VAR=$(bot_field "$key" LLM_TOKEN_VAR)
+    LLM_REASONING_FIELD=$(bot_field "$key" LLM_REASONING_FIELD)
+    LLM_CONTEXT_WINDOW=$(bot_field "$key" LLM_CONTEXT_WINDOW)
+}
+
+bot_llm_restore() {
+    [[ -n ${_BOT_LLM_SAVED:-} ]] || return 0
+    # declare -p prints `declare -- NAME=…`; evaluated inside a function that
+    # would create LOCALS and leave the globals untouched — which put every bot
+    # on the first bot's model once. -g restores the globals.
+    eval "${_BOT_LLM_SAVED//declare -- /declare -g -- }"
+    _BOT_LLM_SAVED=""
 }
