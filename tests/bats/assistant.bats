@@ -127,3 +127,22 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     [[ $out == *$'\nGOOGLE_READ_ACCOUNTS=you@gmail.example'* ]]
     [[ $out == *'GOOGLE_READ_SCOPES=openid email https://www.googleapis.com/auth/gmail.readonly'* ]]
 }
+
+@test "the assistant module never nests sudo: server commands run through runuser" {
+    ! grep -qE 'sudo -u "\$SERVICE_USER"' "$REPO_ROOT/libs/62-assistant.sh"
+    grep -qE 'runuser -u "\$SERVICE_USER" -- "\$ctl" login' "$REPO_ROOT/libs/62-assistant.sh"
+}
+
+@test "the code stamp changes with the installed servers and their env files, and remembers restarts" {
+    ASSISTANT_STATE_DIR=$(mktemp -d); ASSISTANT_LIB_DIR="${ASSISTANT_STATE_DIR}/lib"; mkdir -p "$ASSISTANT_LIB_DIR"
+    printf 'print(1)\n' >"${ASSISTANT_LIB_DIR}/a.py"
+    one=$(_assistant_code_stamp)
+    printf 'GOOGLE_READ_ACCOUNTS=x\n' >"${ASSISTANT_STATE_DIR}/google.env"
+    two=$(_assistant_code_stamp)
+    [ "$one" != "$two" ] && [ "$(_assistant_code_stamp)" = "$two" ]
+    _RESTARTED_UNITS=()
+    ! unit_restarted_this_run x.service
+    _RESTARTED_UNITS+=(x.service)
+    unit_restarted_this_run x.service
+    rm -rf "$ASSISTANT_STATE_DIR"
+}

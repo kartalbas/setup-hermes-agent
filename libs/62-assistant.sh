@@ -4,6 +4,12 @@
 # Google): MCP servers from bot/mcp/, installed into their own virtualenv and
 # registered in the agent's config.yaml under mcp_servers.
 #
+# The servers' commands run as the service account through runuser, never a
+# nested sudo: this host's sudo (sudo-rs, `Defaults use_pty`) gives every sudo
+# its own pseudo-terminal, and a sign-in that reads the operator's paste from
+# /dev/tty inside sudo-inside-sudo waited on a terminal nobody typed into —
+# and Ctrl-C never reached it (2026-09-07).
+#
 # One account per world. The Microsoft 365 server acts as the agent's mailbox
 # account and signs in once with a device code — the same shape as the mail
 # relay, for the same reason: no client secret on the host, a refresh token
@@ -41,7 +47,49 @@ assistant_apply() {
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then _assistant_google; else _assistant_disable_all google; fi
     if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then _assistant_github; else _assistant_disable_all github; fi
     (( $(bot_count) == 0 )) && converge_unit "${SERVICE_NAME}.service" "$before"
+    _assistant_restart_stale
     return 0
+}
+
+# The MCP servers are children of the gateway, started with the server code
+# and env files of that moment. New code or a rewritten env file therefore
+# needs the bots that use them restarted — which an unchanged config.yaml
+# never triggers. A stamp per bot records what its servers were last started
+# with; a bot already restarted in this run only gets the stamp.
+_assistant_code_stamp() {         # -> short hash over the installed servers and their env files
+    local f files=()
+    for f in "$ASSISTANT_LIB_DIR"/*.py "$(assistant_m365_env_file)" "$(assistant_google_env_file)" "$(assistant_github_env_file)"; do
+        [[ -f $f ]] && files+=("$f")
+    done
+    (( ${#files[@]} > 0 )) || { printf 'none'; return 0; }
+    cat "${files[@]}" | sha256sum | cut -c1-16
+}
+
+_assistant_restart_stale() {
+    (( $(bot_count) > 0 )) || return 0
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] would restart bots whose MCP servers were started with older code or environment"
+        return 0
+    fi
+    local stamp key stamp_file; stamp=$(_assistant_code_stamp)
+    while IFS= read -r key; do
+        [[ -n $key && -n $(bot_field "$key" MCP) ]] || continue
+        bot_context "$key"
+        stamp_file="${ASSISTANT_STATE_DIR}/started-${key}.stamp"
+        if [[ $(cat "$stamp_file" 2>/dev/null) == "$stamp" ]]; then
+            log_skip "${BOT_SERVICE}: MCP servers run the installed code"
+        else
+            if unit_restarted_this_run "${BOT_SERVICE}.service"; then
+                log_skip "${BOT_SERVICE} restarted in this run already"
+            else
+                log_info "restarting ${BOT_SERVICE}: its MCP servers were started with older code or environment"
+                run systemctl restart "${BOT_SERVICE}.service"
+                mark_changed
+            fi
+            write_file "$stamp_file" 0644 <<<"$stamp"
+        fi
+        bot_context_end
+    done < <(bots)
 }
 
 # enabled: false in every profile (or the default one).
@@ -132,7 +180,7 @@ _assistant_m365_read_mailboxes() {
             continue
         fi
         [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; mailbox checks after the sign-in"; return 0; }
-        if out=$(sudo -u "$SERVICE_USER" "$(assistant_m365ctl)" check-mailbox "$mb" 2>&1); then
+        if out=$(runuser -u "$SERVICE_USER" -- "$(assistant_m365ctl)" check-mailbox "$mb" 2>&1); then
             log_ok "mailbox readable  ${mb} (inbox: $(jq -r '.inbox_total' <<<"$out" 2>/dev/null) messages)"
         else
             log_error "the assistant cannot read the mailbox ${mb}: $(jq -r '.reason // .' <<<"$out" 2>/dev/null || printf '%s' "$out")"
@@ -160,7 +208,7 @@ _assistant_m365_mail_rules() {
             continue
         fi
         [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; mail rules after the sign-in"; return 0; }
-        if out=$(sudo -u "$SERVICE_USER" "$(assistant_m365ctl)" ensure-mail-rule "$alias" "$folder" 2>&1); then
+        if out=$(runuser -u "$SERVICE_USER" -- "$(assistant_m365ctl)" ensure-mail-rule "$alias" "$folder" 2>&1); then
             if [[ $(jq -r '.rule_created or .folder_created' <<<"$out" 2>/dev/null) == true ]]; then
                 mark_changed; log_ok "mail rule: ${alias} -> ${folder} (bot ${key})"
             else
@@ -205,7 +253,7 @@ _assistant_m365_folder() {
     fi
     [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; the folder is created after the sign-in"; return 0; }
     local out
-    if out=$(sudo -u "$SERVICE_USER" "$(assistant_m365ctl)" \
+    if out=$(runuser -u "$SERVICE_USER" -- "$(assistant_m365ctl)" \
             ensure-folder "$ASSISTANT_M365_ROOT_FOLDER" "${ASSISTANT_M365_SHARE_WITH:-}" "$ASSISTANT_M365_SHARE_ROLE" 2>&1); then
         local granted
         granted=$(jq -r '.share.granted_now // [] | join(",")' <<<"$out" 2>/dev/null)
@@ -307,10 +355,10 @@ _assistant_m365_signin() {
     fi
 
     local ctl; ctl=$(assistant_m365ctl)
-    if ! sudo -u "$SERVICE_USER" "$ctl" status >/dev/null 2>&1; then
+    if ! runuser -u "$SERVICE_USER" -- "$ctl" status >/dev/null 2>&1; then
         log_info "  no usable M365 token; starting the device-code sign-in (once)"
         log_info "  Sign in AS ${account} in a PRIVATE browser window; the code appears below."
-        if ! sudo -u "$SERVICE_USER" "$ctl" login "$ASSISTANT_LOGIN_TIMEOUT"; then
+        if ! runuser -u "$SERVICE_USER" -- "$ctl" login "$ASSISTANT_LOGIN_TIMEOUT"; then
             defer_failure "assistant: the M365 sign-in for ${account} did not complete; run the installer again and enter the code"
             return 0
         fi
@@ -318,7 +366,7 @@ _assistant_m365_signin() {
     fi
 
     local status
-    if status=$(sudo -u "$SERVICE_USER" "$ctl" status 2>&1); then
+    if status=$(runuser -u "$SERVICE_USER" -- "$ctl" status 2>&1); then
         log_ok "m365 token verified: $(jq -r '.account' <<<"$status" 2>/dev/null || printf '%s' "$status")"
     else
         defer_failure "assistant: the M365 token check failed: ${status}"
@@ -420,14 +468,14 @@ _assistant_google_signin() {
         log_info "[dry-run] would verify the Google token, or ask for the one-time sign-in"
         return 0
     fi
-    if sudo -u "$SERVICE_USER" "$ctl" status >/dev/null 2>&1; then
-        log_ok "google token verified: $(sudo -u "$SERVICE_USER" "$ctl" status 2>/dev/null | jq -r '.account')"
+    if runuser -u "$SERVICE_USER" -- "$ctl" status >/dev/null 2>&1; then
+        log_ok "google token verified: $(runuser -u "$SERVICE_USER" -- "$ctl" status 2>/dev/null | jq -r '.account')"
         return 0
     fi
     if has_tty; then
         log_info "  no usable Google token; the sign-in needs you — a URL to open AS ${ASSISTANT_GOOGLE_ACCOUNT}, and the address you land on pasted back"
         # shellcheck disable=SC2024  # the redirect is the point: the paste-back reads the operator's terminal
-        if sudo -u "$SERVICE_USER" "$ctl" login </dev/tty; then
+        if runuser -u "$SERVICE_USER" -- "$ctl" login </dev/tty; then
             mark_changed
             log_ok "google token stored for ${ASSISTANT_GOOGLE_ACCOUNT}"
             return 0
@@ -451,14 +499,14 @@ _assistant_google_signin_readers() {
             log_info "[dry-run] would verify the read-only Gmail token for ${acct}, or ask for its sign-in"
             continue
         fi
-        if sudo -u "$SERVICE_USER" "$ctl" status "$acct" >/dev/null 2>&1; then
+        if runuser -u "$SERVICE_USER" -- "$ctl" status "$acct" >/dev/null 2>&1; then
             log_ok "google read token verified: ${acct}"
             continue
         fi
         if has_tty; then
             log_info "  no token for ${acct}; the sign-in needs you — open the URL AS ${acct} (read-only Gmail), paste the address you land on"
             # shellcheck disable=SC2024  # the redirect is the point: the paste-back reads the operator's terminal
-            if sudo -u "$SERVICE_USER" "$ctl" login "$acct" </dev/tty; then
+            if runuser -u "$SERVICE_USER" -- "$ctl" login "$acct" </dev/tty; then
                 mark_changed
                 log_ok "google read token stored for ${acct}"
                 continue
@@ -564,7 +612,7 @@ EOF
 _assistant_github_verify() {
     [[ $DRY_RUN == true ]] && return 0
     local out
-    out=$(sudo -u "$SERVICE_USER" "$(assistant_githubctl)" --version 2>&1) ||
+    out=$(runuser -u "$SERVICE_USER" -- "$(assistant_githubctl)" --version 2>&1) ||
         die "github-mcp-server does not start: ${out}"
     log_ok "github mcp     ${out} (toolsets: ${ASSISTANT_GITHUB_TOOLSETS})"
 }

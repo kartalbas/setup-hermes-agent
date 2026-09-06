@@ -639,8 +639,9 @@ if the app is still in *Testing* status the account must be listed as a test
 user first (published apps take any account). Later, without the run:
 
 ```bash
-sudo -u <account> /usr/local/lib/hermes-assistant/googlectl login you@gmail.example    # sign in AS you@gmail.example
-sudo -u <account> /usr/local/lib/hermes-assistant/googlectl status you@gmail.example
+sudo -i                                                                           # one root shell, one terminal
+runuser -u <account> -- /usr/local/lib/hermes-assistant/googlectl login you@gmail.example    # sign in AS you@gmail.example
+runuser -u <account> -- /usr/local/lib/hermes-assistant/googlectl status you@gmail.example
 ```
 
 ---
@@ -1175,6 +1176,17 @@ The run printed a URL and a code and waited `ASSISTANT_LOGIN_TIMEOUT` seconds.
 Run it again and enter the code in time; sign in as the mailbox account named in
 `ASSISTANT_M365_ACCOUNT`. `signed in as X, but this token must belong to Y`
 means the browser carried another identity — use a private window.
+
+### The run waits at `Pasted address:`, the paste does nothing, Ctrl-C does not abort
+
+Seen with `sudo-rs` and `Defaults use_pty` (Ubuntu's default): every `sudo`
+gets its own pseudo-terminal, and a sign-in started as `sudo -u <account>`
+inside `sudo ./install.sh` read its `/dev/tty` on a terminal your keyboard never
+reached. The run now starts the servers' commands with `runuser`, which adds no
+terminal. If a run is stuck there: from a second terminal
+`sudo kill "$(pgrep -f 'google_assistant.py login')"` — the run then records
+the sign-in as pending and finishes. Do the sign-in by hand (1.11, the
+`sudo -i` + `runuser` form) and re-run.
 
 ### `assistant: the mailbox … is not readable by … yet`
 

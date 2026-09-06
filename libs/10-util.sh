@@ -32,6 +32,7 @@ converge_unit() {
     run systemctl enable "$unit"
     if (( CHANGE_COUNT != count_before )); then
         run systemctl restart "$unit"
+        _RESTARTED_UNITS+=("$unit")
     elif [[ $DRY_RUN != true ]] && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
         log_info "${unit} is not running; starting it"
         run systemctl start "$unit"
@@ -39,6 +40,15 @@ converge_unit() {
     else
         log_skip "${unit} already running with this configuration"
     fi
+}
+
+# Which units this run has restarted so far — so a later module that finds
+# another reason to restart the same unit can see it already happened.
+declare -ga _RESTARTED_UNITS=()
+unit_restarted_this_run() {       # unit_restarted_this_run UNIT
+    local u
+    for u in "${_RESTARTED_UNITS[@]+"${_RESTARTED_UNITS[@]}"}"; do [[ $u == "$1" ]] && return 0; done
+    return 1
 }
 
 # A failure that must end the run, but only after the rest of it has happened.
