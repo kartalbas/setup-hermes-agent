@@ -31,6 +31,19 @@ done:
   files, never from memory.
 - Invoices and hour reports: draft from what the operator gives you, save as a
   document in OneDrive, share the link; send only when told.
+- Receipts and incoming invoices in the operator's own mailboxes: the mail
+  tools name the mailboxes you may read (`mailbox` on `m365_mail_*`, `account`
+  on `google_gmail_*`). There you only search, read and extract — never send,
+  move, mark or delete. Typical job: collect the receipts of a period, extract
+  vendor, date, amount, currency and VAT from body and attachments, produce a
+  CSV (`date,vendor,description,amount,currency,vat,source`) plus a short
+  summary, file it as `Secretary/Receipts/<YYYY>/<YYYY-MM>.csv` and hand over
+  the link. Say which mailbox each figure came from. Run these analyses
+  through `delegate_task` — one task per mailbox and period, with the full
+  brief (mailbox, period, what to extract, where to file) — and report the
+  sub-agent's result; the sub-agents run on the operator's subscription model,
+  so the mail content itself stays off any API. Do not read those mailboxes
+  message by message yourself.
 - Deliverables never stay on this machine. When you produce a document (PDF,
   DOCX, CSV, …), upload it with `m365_drive_upload_file` into the right
   `Secretary/…` folder — that removes the local copy — and hand the operator

@@ -33,11 +33,59 @@ channels_apply() {
         CHANNEL_TEAMS_CLIENT_SECRET_VAR=$BOT_TEAMS_CLIENT_SECRET_VAR
         CHANNEL_TEAMS_PORT=$BOT_PORT
         CHANNEL_TEAMS_TOOLSET=$(bot_field "$key" TOOLSET)
+        # Read from the global endpoints, so before bot_llm_apply replaces them.
+        _DELEGATION_FRAGMENT=$(_delegation_fragment "$key")
+        _delegation_key_env "$key"
         bot_llm_apply "$key"
         _channels_apply_one "$BOT_SERVICE"
         bot_llm_restore
+        _DELEGATION_FRAGMENT=""
         bot_context_end
     done < <(bots)
+}
+
+# ---------------------------------------------------------------------------
+# Sub-agents on another endpoint
+#
+# The agent's delegate_task tool runs sub-agents on the `delegation:` block of
+# the profile: empty values mean "inherit the parent's model". A bot that runs
+# on an API model can point its sub-agents at a global LLM_ENDPOINT_n — the
+# bridge, say — so the work it hands off (reading the operator's own mail) runs
+# on the subscription and its content never reaches the API. Two shapes only:
+# a keyless custom endpoint (base_url + the marker) or a hosted provider (by
+# name, key in .env). Validation refuses the third, a custom endpoint with a
+# key, because the block has no key_env and the key would land in config.yaml.
+# ---------------------------------------------------------------------------
+_delegation_fragment() {          # _delegation_fragment KEY -> yaml (always a block; empty values = inherit)
+    local key=$1 n provider base model
+    n=$(bot_field "$key" DELEGATION_ENDPOINT)
+    if [[ -z $n ]]; then
+        printf 'delegation:\n  model: ""\n  provider: ""\n  base_url: ""\n  api_key: ""\n'
+        return 0
+    fi
+    provider=$(endpoint_field "$n" PROVIDER); provider=${provider:-custom}
+    base=$(endpoint_field "$n" BASE_URL)
+    model=$(endpoint_field "$n" MODEL)
+    printf 'delegation:\n  model: "%s"\n' "$model"
+    if [[ $provider == custom ]]; then
+        printf '  provider: ""\n  base_url: "%s"\n  api_mode: "chat_completions"\n  api_key: "%s"\n' "$base" "bridge-does-not-check-keys"
+    else
+        printf '  provider: "%s"\n  base_url: ""\n  api_key: ""\n' "$provider"
+    fi
+}
+
+# A hosted delegation provider reads its key from the variable the agent
+# expects; the bot's pass writes only its own model's key, so this one is
+# added here (the profile's .env, bot_context being active).
+_delegation_key_env() {           # _delegation_key_env KEY
+    local key=$1 n provider tv
+    n=$(bot_field "$key" DELEGATION_ENDPOINT)
+    [[ -n $n ]] || return 0
+    provider=$(endpoint_field "$n" PROVIDER); provider=${provider:-custom}
+    [[ $provider != custom ]] || return 0
+    tv=$(endpoint_field "$n" TOKEN_VAR)
+    [[ $DRY_RUN == true ]] && { log_info "[dry-run] delegation key $(_provider_key_var "$provider") from ${tv}"; return 0; }
+    _env_upsert "$(_provider_key_var "$provider")" "$(secret_get "$tv")"
 }
 
 # Providers, policy and channels for the profile the config helpers point at;
@@ -264,6 +312,7 @@ _providers_configure() {
     [[ -n $frag_providers ]] && fragment+="providers:"$'\n'"${frag_providers}"
     fragment+="$frag_model"
     [[ -n $frag_fallback ]] && fragment+="fallback_providers:"$'\n'"${frag_fallback}"
+    [[ -n ${_DELEGATION_FRAGMENT:-} ]] && fragment+="$_DELEGATION_FRAGMENT"
     yaml_merge <<<"$fragment"
 
     return 0

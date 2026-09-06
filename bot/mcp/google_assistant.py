@@ -16,6 +16,8 @@ Environment (the installer sets it in the MCP server entry):
     GOOGLE_TOKEN_FILE where the token lives (0600)
     GOOGLE_TIMEZONE   default for calendar reads and writes (IANA name)
     GOOGLE_SCOPES     space-separated OAuth scopes
+    GOOGLE_READ_ACCOUNTS  other Google accounts whose Gmail may be READ (own token each,
+                      `googlectl login ACCOUNT`); GOOGLE_READ_SCOPES their scopes (gmail.readonly)
 """
 
 from __future__ import annotations
@@ -60,13 +62,40 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 # Auth — authorization code with PKCE, paste-back
 # ---------------------------------------------------------------------------
 
+READ_SCOPES = "openid email https://www.googleapis.com/auth/gmail.readonly"
+
+
+def parse_list(value: str) -> List[str]:
+    """Comma- or space-separated addresses, lower-cased, empty entries dropped."""
+    return [v.strip().lower() for v in value.replace(",", " ").split() if v.strip()]
+
+
+def read_accounts() -> List[str]:
+    """Other Google accounts whose Gmail the assistant may READ (GOOGLE_READ_ACCOUNTS).
+    Each has its own token, obtained by signing in AS that account with the
+    read-only scopes; the primary account's token is never used for them."""
+    return parse_list(os.environ.get("GOOGLE_READ_ACCOUNTS", ""))
+
+
 class Auth:
-    def __init__(self) -> None:
+    def __init__(self, account: Optional[str] = None) -> None:
         self.client_id = env_required("GOOGLE_CLIENT_ID")
         self.client_secret = env_required("GOOGLE_CLIENT_SECRET")
-        self.account = env_required("GOOGLE_ACCOUNT").lower()
-        self.store = TokenStore(env_required("GOOGLE_TOKEN_FILE"))
-        self.scopes = os.environ.get("GOOGLE_SCOPES", "").strip() or DEFAULT_SCOPES
+        primary = env_required("GOOGLE_ACCOUNT").lower()
+        token_file = env_required("GOOGLE_TOKEN_FILE")
+        if not account or account.lower() == primary:
+            self.account, self.read_only = primary, False
+            self.store = TokenStore(token_file)
+            self.scopes = os.environ.get("GOOGLE_SCOPES", "").strip() or DEFAULT_SCOPES
+        else:
+            acct = account.lower()
+            if acct not in read_accounts():
+                raise SystemExit(f"{acct} is not a configured read account (GOOGLE_READ_ACCOUNTS: "
+                                 f"{', '.join(read_accounts()) or 'none'})")
+            self.account, self.read_only = acct, True
+            # One token file per account, next to the primary one.
+            self.store = TokenStore(os.path.join(os.path.dirname(token_file) or ".", f"google-{acct}.token"))
+            self.scopes = os.environ.get("GOOGLE_READ_SCOPES", "").strip() or READ_SCOPES
 
     def login(self) -> Dict[str, Any]:
         verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode()
@@ -115,7 +144,8 @@ class Auth:
         if self.store.access_token_valid():
             return str(self.store.data["access_token"])
         if not self.store.refresh_token:
-            raise RuntimeError(f"no token for {self.account}: run `googlectl login` once as the service account")
+            raise RuntimeError(f"no token for {self.account}: run `googlectl login"
+                               f"{' ' + self.account if self.read_only else ''}` once as the service account")
         tok = form_post(TOKEN, {"client_id": self.client_id, "client_secret": self.client_secret,
                                 "refresh_token": self.store.refresh_token, "grant_type": "refresh_token"})
         if "access_token" not in tok:
@@ -243,14 +273,34 @@ def _file_shape(f: Dict[str, Any]) -> Dict[str, Any]:
 # The server
 # ---------------------------------------------------------------------------
 
-def build_server(g: Google) -> McpServer:
+def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpServer:
     tz, acct = g.tz, g.auth.account
+    readers = dict(readers or {})
+    readable = sorted(readers)
     srv = McpServer(
         name="google-assistant", version=VERSION,
         instructions=(f"Google for the PRIVATE account {acct}: Gmail, Google Calendar, Drive. Use these tools ONLY "
                       "when the user says 'privat', 'private', 'privater Termin' or names the Gmail account; business "
                       f"goes to the m365_* tools. Times are interpreted in {tz} unless a timezone is given (ISO 8601). "
-                      "Sending mail, creating or deleting events and deleting files are visible to others — confirm when ambiguous."))
+                      "Sending mail, creating or deleting events and deleting files are visible to others — confirm when ambiguous."
+                      + (f" The operator's own Gmail accounts {', '.join(readable)} can be READ with the `account` parameter "
+                         "of the Gmail search/read/attachment/labels tools (receipts, invoices, letters); nothing is sent "
+                         "or modified there." if readable else "")))
+
+    # The Gmail read tools take `account` only when read accounts exist; the
+    # write tools never do — they act as the primary account.
+    ACCOUNT = ({"account": {"type": "string", "description": "READ another Gmail account instead of the assistant's own: one of "
+                                                              + ", ".join(readable) + " (the operator's own mail — search, read, attachments only)"}}
+               if readable else {})
+
+    def gm(account: str) -> Google:
+        a = (account or "").strip().lower()
+        if not a or a == acct:
+            return g
+        if a not in readers:
+            hint = f"readable accounts: {', '.join(readable)}" if readable else "no other account is configured (ASSISTANT_GOOGLE_READ_ACCOUNTS)"
+            raise RuntimeError(f"account {a} is not one the assistant may read; {hint}")
+        return readers[a]
 
     @srv.tool("google_whoami", "Which Google account the assistant acts as, and whether the token works.", {"properties": {}})
     def whoami() -> Dict[str, Any]:
@@ -259,19 +309,20 @@ def build_server(g: Google) -> McpServer:
 
     # -- Gmail -------------------------------------------------------------
     @srv.tool("google_gmail_search", "Search or list Gmail messages (Gmail search syntax: from:, subject:, newer_than:7d, has:attachment, is:unread). Default: inbox, newest first.",
-              {"properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 50}}})
-    def gmail_search(query: str = "in:inbox", max_results: int = 10) -> Dict[str, Any]:
-        r = g.call("GET", f"{GMAIL}/messages", params={"q": query or "in:inbox", "maxResults": max_results})
+              {"properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 50}, **ACCOUNT}})
+    def gmail_search(query: str = "in:inbox", max_results: int = 10, account: str = "") -> Dict[str, Any]:
+        c = gm(account)
+        r = c.call("GET", f"{GMAIL}/messages", params={"q": query or "in:inbox", "maxResults": max_results})
         out = []
         for ref in r.get("messages") or []:
-            m = g.call("GET", f"{GMAIL}/messages/{ref['id']}", params={"format": "metadata", "metadataHeaders": ["Subject", "From", "To", "Date"]})
+            m = c.call("GET", f"{GMAIL}/messages/{ref['id']}", params={"format": "metadata", "metadataHeaders": ["Subject", "From", "To", "Date"]})
             out.append(_msg_shape(m))
-        return {"query": query, "count": len(out), "more": bool(r.get("nextPageToken")), "messages": out}
+        return {"account": account or acct, "query": query, "count": len(out), "more": bool(r.get("nextPageToken")), "messages": out}
 
     @srv.tool("google_gmail_read", "Read one message: text body and attachment list.",
-              {"properties": {"message_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}}, "required": ["message_id"]})
-    def gmail_read(message_id: str, max_chars: int = 20000) -> Dict[str, Any]:
-        m = g.call("GET", f"{GMAIL}/messages/{message_id}", params={"format": "full"})
+              {"properties": {"message_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}, **ACCOUNT}, "required": ["message_id"]})
+    def gmail_read(message_id: str, max_chars: int = 20000, account: str = "") -> Dict[str, Any]:
+        m = gm(account).call("GET", f"{GMAIL}/messages/{message_id}", params={"format": "full"})
         out = _msg_shape(m)
         body = _body_text(m.get("payload") or {})
         out["body"] = body[:max_chars]
@@ -281,9 +332,9 @@ def build_server(g: Google) -> McpServer:
 
     @srv.tool("google_gmail_attachment_text", "Text of a Gmail attachment (pdf, docx, plain text).",
               {"properties": {"message_id": {"type": "string"}, "attachment_id": {"type": "string"}, "name": {"type": "string", "description": "file name (decides the parser)"},
-                              "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}}, "required": ["message_id", "attachment_id", "name"]})
-    def gmail_attachment_text(message_id: str, attachment_id: str, name: str, max_chars: int = 20000) -> Dict[str, Any]:
-        a = g.call("GET", f"{GMAIL}/messages/{message_id}/attachments/{attachment_id}")
+                              "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}, **ACCOUNT}, "required": ["message_id", "attachment_id", "name"]})
+    def gmail_attachment_text(message_id: str, attachment_id: str, name: str, max_chars: int = 20000, account: str = "") -> Dict[str, Any]:
+        a = gm(account).call("GET", f"{GMAIL}/messages/{message_id}/attachments/{attachment_id}")
         return extract_text(name, _unb64url(a.get("data") or ""), max_chars)
 
     def build_mime(to: List[str], subject: str, body: str, cc: Optional[List[str]], bcc: Optional[List[str]],
@@ -359,14 +410,15 @@ def build_server(g: Google) -> McpServer:
         g.call("POST", f"{GMAIL}/messages/{message_id}/modify", json_body={"addLabelIds": add, "removeLabelIds": rem})
         return {"id": message_id, "added": add_labels or [], "removed": (remove_labels or []) + (["INBOX"] if archive else [])}
 
-    @srv.tool("google_gmail_labels", "List Gmail labels (folders) with unread counts.", {"properties": {}})
-    def gmail_labels() -> Dict[str, Any]:
+    @srv.tool("google_gmail_labels", "List Gmail labels (folders) with unread counts.", {"properties": {**ACCOUNT}})
+    def gmail_labels(account: str = "") -> Dict[str, Any]:
+        c = gm(account)
         out = []
-        for l in g.call("GET", f"{GMAIL}/labels").get("labels") or []:
+        for l in c.call("GET", f"{GMAIL}/labels").get("labels") or []:
             if l.get("type") == "user" or l.get("id") in ("INBOX", "STARRED", "SENT", "DRAFTS", "SPAM", "TRASH"):
-                d = g.call("GET", f"{GMAIL}/labels/{l['id']}")
+                d = c.call("GET", f"{GMAIL}/labels/{l['id']}")
                 out.append({"name": d.get("name"), "unread": d.get("messagesUnread"), "total": d.get("messagesTotal")})
-        return {"labels": out}
+        return {"account": account or acct, "labels": out}
 
     # -- Calendar ----------------------------------------------------------
     @srv.tool("google_calendar_view", f"Events between two instants (ISO 8601, {tz} unless an offset is given), recurring instances expanded.",
@@ -546,31 +598,39 @@ def _iso(dt: str, tz: str) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _readers(tz: str) -> Dict[str, Google]:
+    return {a: Google(Auth(a), tz) for a in read_accounts()}
+
+
 def main(argv: List[str]) -> int:
+    # login [ACCOUNT] | status [ACCOUNT] | tools | serve — ACCOUNT selects one of
+    # the read accounts; without it the primary account is meant.
     cmd = argv[1] if len(argv) > 1 else "serve"
-    auth = Auth()
     tz = os.environ.get("GOOGLE_TIMEZONE", "").strip() or "Europe/Zurich"
+    auth = Auth(argv[2] if cmd in ("login", "status") and len(argv) > 2 else None)
     if cmd == "login":
         me = auth.login()
-        print(json.dumps({"signed_in": True, "account": me.get("email")}))
+        print(json.dumps({"signed_in": True, "account": me.get("email"), "read_only": auth.read_only}))
         return 0
     if cmd == "status":
         if not auth.store.refresh_token:
-            print(json.dumps({"ok": False, "account": auth.account, "reason": "no token stored; run `googlectl login` as the service account"}))
+            print(json.dumps({"ok": False, "account": auth.account, "read_only": auth.read_only,
+                              "reason": f"no token stored; run `googlectl login{' ' + auth.account if auth.read_only else ''}` as the service account"}))
             return 1
         try:
             me = Google(auth, tz).call("GET", USERINFO)
         except Exception as e:  # noqa: BLE001
-            print(json.dumps({"ok": False, "account": auth.account, "reason": str(e)[:400]}))
+            print(json.dumps({"ok": False, "account": auth.account, "read_only": auth.read_only, "reason": str(e)[:400]}))
             return 1
         ok = (me.get("email") or "").lower() == auth.account
-        print(json.dumps({"ok": ok, "account": me.get("email"), "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path}))
+        print(json.dumps({"ok": ok, "account": me.get("email"), "read_only": auth.read_only, "scopes": auth.store.data.get("scopes"),
+                          "token_file": auth.store.path, "read_accounts": read_accounts()}))
         return 0 if ok else 1
     if cmd == "tools":
-        print(json.dumps([t.spec() for t in build_server(Google(auth, tz)).tools], indent=1))
+        print(json.dumps([t.spec() for t in build_server(Google(auth, tz), _readers(tz)).tools], indent=1))
         return 0
     if cmd == "serve":
-        build_server(Google(auth, tz)).serve_stdio()
+        build_server(Google(auth, tz), _readers(tz)).serve_stdio()
         return 0
     sys.stderr.write(__doc__ or "")
     return 2

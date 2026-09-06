@@ -30,7 +30,7 @@ class FakeGraph:
         self.calls = []
         self.answers = answers or {}
         self.tz = "Europe/Zurich"
-        self.auth = mock.Mock(account="agent@example.com")
+        self.auth = mock.Mock(account="agent@example.com", read_mailboxes=[])
 
     def call(self, method, path, **kw):
         self.calls.append((method, path, kw))
@@ -44,6 +44,8 @@ class FakeGraph:
 
     # the real helpers, bound to the fake
     folder_id = m365.Graph.folder_id
+    mailbox_path = m365.Graph.mailbox_path
+    mailbox_probe = m365.Graph.mailbox_probe
     drive_path = m365.Graph.drive_path
     ensure_folder = m365.Graph.ensure_folder
 
@@ -288,3 +290,51 @@ class MailRules(unittest.TestCase):
         out2 = m365.ensure_mail_rule(g2, "news@example.com", "News")
         self.assertFalse(out2["rule_created"]) and self.assertFalse(out2["folder_created"])
         self.assertFalse(any(m == "POST" for m, _, _ in g2.calls))
+
+
+class ReadMailboxes(unittest.TestCase):
+    """The operator's mailboxes: read there, never write there."""
+
+    def graph(self, readable):
+        g = FakeGraph({("GET", "/users/you@example.com/mailFolders/inbox"): {"id": "in", "totalItemCount": 7, "unreadItemCount": 2}})
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=readable)
+        return g
+
+    def test_without_a_read_list_the_mail_tools_have_no_mailbox_parameter(self):
+        srv = m365.build_server(self.graph([]))
+        for name in ("m365_mail_search", "m365_mail_read", "m365_mail_folders"):
+            self.assertNotIn("mailbox", next(t for t in srv.tools if t.name == name).spec()["inputSchema"]["properties"])
+        self.assertNotIn("READ", srv.instructions)
+
+    def test_a_read_mailbox_is_addressed_under_users_and_only_by_the_read_tools(self):
+        g = self.graph(["you@example.com"])
+        srv = m365.build_server(g)
+        tool = {t.name: t for t in srv.tools}
+        tool["m365_mail_search"].fn(folder="inbox", mailbox="You@example.com")
+        self.assertEqual(g.calls[-1][1], "/users/you@example.com/mailFolders/inbox/messages")
+        tool["m365_mail_folders"].fn(mailbox="you@example.com")
+        self.assertEqual(g.calls[-1][1], "/users/you@example.com/mailFolders")
+        tool["m365_mail_read"].fn(message_id="m1", mailbox="you@example.com")
+        self.assertEqual(g.calls[-1][1], "/users/you@example.com/messages/m1")
+        for name in ("m365_mail_send", "m365_mail_reply", "m365_mail_move", "m365_mail_mark"):
+            self.assertNotIn("mailbox", tool[name].spec()["inputSchema"]["properties"], name)
+        self.assertIn("you@example.com", tool["m365_mail_search"].spec()["inputSchema"]["properties"]["mailbox"]["description"])
+        self.assertIn("you@example.com", srv.instructions)
+
+    def test_an_unlisted_mailbox_is_refused_before_graph_is_asked(self):
+        g = self.graph(["you@example.com"])
+        srv = m365.build_server(g)
+        with self.assertRaises(RuntimeError) as cm:
+            next(t for t in srv.tools if t.name == "m365_mail_search").fn(mailbox="boss@example.com")
+        self.assertIn("boss@example.com", str(cm.exception))
+        self.assertEqual(g.calls, [])
+        # the assistant's own address is the same as no mailbox at all
+        self.assertEqual(g.mailbox_path("Agent@example.com"), "/me")
+
+    def test_the_probe_reports_the_inbox_counts(self):
+        out = self.graph(["you@example.com"]).mailbox_probe("you@example.com")
+        self.assertEqual((out["readable"], out["inbox_total"], out["inbox_unread"]), (True, 7, 2))
+
+    def test_parse_list_accepts_commas_and_spaces(self):
+        self.assertEqual(m365.parse_list(" A@x.example,b@x.example  c@x.example "), ["a@x.example", "b@x.example", "c@x.example"])
+        self.assertEqual(m365.parse_list(""), [])

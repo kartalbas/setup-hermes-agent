@@ -44,6 +44,11 @@ WELL_KNOWN_FOLDERS = {"inbox", "archive", "deleteditems", "drafts", "sentitems",
 FOLDER_ALIASES = {"deleted": "deleteditems", "trash": "deleteditems", "sent": "sentitems", "junk": "junkemail", "spam": "junkemail"}
 
 
+def parse_list(value: str) -> List[str]:
+    """Comma- or space-separated addresses, lower-cased, empty entries dropped."""
+    return [v.strip().lower() for v in value.replace(",", " ").split() if v.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
@@ -55,6 +60,11 @@ class Auth:
         self.account = env_required("M365_ACCOUNT").lower()
         self.store = TokenStore(env_required("M365_TOKEN_FILE"))
         self.scopes = os.environ.get("M365_SCOPES", "").strip() or DEFAULT_SCOPES
+        # Other mailboxes of the tenant the assistant may READ (search, read,
+        # attachments, folders) — never send, move or mark there. Each needs
+        # Full Access delegation for the assistant's account on the Exchange
+        # side and the Mail.Read.Shared scope on the app; the installer checks both.
+        self.read_mailboxes = parse_list(os.environ.get("M365_READ_MAILBOXES", ""))
 
     def _token_url(self) -> str:
         return f"{LOGIN}/{self.tenant}/oauth2/v2.0/token"
@@ -142,12 +152,32 @@ class Graph:
         return payload
 
     # -- helpers ------------------------------------------------------------
-    def folder_id(self, name: str) -> str:
+    def mailbox_path(self, mailbox: Optional[str] = None) -> str:
+        """`/me` for the assistant's own mailbox; `/users/<address>` for one of
+        the operator's mailboxes the configuration lets it read. Anything else
+        is refused here, before Graph is asked."""
+        mb = (mailbox or "").strip().lower()
+        if not mb or mb == self.auth.account:
+            return "/me"
+        allowed = list(self.auth.read_mailboxes or [])
+        if mb not in allowed:
+            hint = f"readable mailboxes: {', '.join(allowed)}" if allowed else \
+                "no other mailbox is configured (ASSISTANT_M365_READ_MAILBOXES)"
+            raise RuntimeError(f"mailbox {mb} is not one the assistant may read; {hint}")
+        return f"/users/{urllib.parse.quote(mb, safe='@')}"
+
+    def mailbox_probe(self, mailbox: str) -> Dict[str, Any]:
+        """The installer's check: can the assistant see the inbox of MAILBOX?"""
+        base = self.mailbox_path(mailbox)
+        f = self.call("GET", f"{base}/mailFolders/inbox", params={"$select": "id,displayName,totalItemCount,unreadItemCount"})
+        return {"mailbox": mailbox.lower(), "readable": True, "inbox_total": f.get("totalItemCount"), "inbox_unread": f.get("unreadItemCount")}
+
+    def folder_id(self, name: str, mailbox: Optional[str] = None) -> str:
         key = name.strip().lower().replace(" ", "")
         key = FOLDER_ALIASES.get(key, key)
         if key in WELL_KNOWN_FOLDERS:
             return key
-        found = self.call("GET", "/me/mailFolders", params={
+        found = self.call("GET", f"{self.mailbox_path(mailbox)}/mailFolders", params={
             "$filter": f"displayName eq '{name.replace(chr(39), chr(39) * 2)}'", "$select": "id,displayName"})
         items = found.get("value") or []
         if not items:
@@ -327,7 +357,10 @@ def build_server(graph: Graph) -> McpServer:
                       "'private', 'privater Termin' or names the Gmail account, use the google_* tools instead. "
                       f"Times are interpreted in {tz} unless a timezone is given; "
                       "use ISO 8601 (2026-09-05T18:00:00). Sending mail, creating or cancelling meetings and "
-                      "deleting files are visible to other people — confirm with the user when the request is ambiguous."))
+                      "deleting files are visible to other people — confirm with the user when the request is ambiguous."
+                      + (f" The operator's own mailboxes {', '.join(graph.auth.read_mailboxes)} can be READ with the "
+                         "`mailbox` parameter of the mail search/read/attachment/folders tools (receipts, invoices, "
+                         "letters); nothing is sent, moved or marked there." if graph.auth.read_mailboxes else "")))
 
     ATTENDEE = {"type": "object", "additionalProperties": False, "required": ["email"],
                 "properties": {"email": {"type": "string"}, "name": {"type": "string"},
@@ -341,14 +374,23 @@ def build_server(graph: Graph) -> McpServer:
                 "timezone": tz}
 
     # -- mail ---------------------------------------------------------------
+    # The read tools take `mailbox` only when other mailboxes are configured;
+    # the write tools never do — those act on the assistant's own mailbox.
+    readable = list(graph.auth.read_mailboxes or [])
+    MAILBOX = ({"mailbox": {"type": "string", "description": "READ another mailbox instead of the assistant's own: one of "
+                                                              + ", ".join(readable) + " (the operator's own mail — search, read, attachments only)"}}
+               if readable else {})
+
     @srv.tool("m365_mail_search",
               "List or search messages in a mail folder, newest first. `query` searches subject, body and "
-              "sender (Graph $search syntax: plain words, or from:name, subject:word, hasAttachments:true).",
+              "sender (Graph $search syntax: plain words, or from:name, subject:word, hasAttachments:true)."
+              + (f" With `mailbox` it searches one of the operator's mailboxes ({', '.join(readable)})." if readable else ""),
               {"properties": {"query": {"type": "string"}, "folder": {"type": "string", "description": "inbox (default), archive, sent, drafts, deleted, junk or a folder name"},
                               "top": {"type": "integer", "minimum": 1, "maximum": 50},
-                              "unread_only": {"type": "boolean"}}})
-    def mail_search(query: str = "", folder: str = "inbox", top: int = 10, unread_only: bool = False) -> Dict[str, Any]:
-        fid = graph.folder_id(folder)
+                              "unread_only": {"type": "boolean"}, **MAILBOX}})
+    def mail_search(query: str = "", folder: str = "inbox", top: int = 10, unread_only: bool = False, mailbox: str = "") -> Dict[str, Any]:
+        base = graph.mailbox_path(mailbox)
+        fid = graph.folder_id(folder, mailbox)
         params: Dict[str, Any] = {"$top": top, "$select": MESSAGE_SELECT}
         if query:
             params["$search"] = f'"{query}"'
@@ -358,22 +400,23 @@ def build_server(graph: Graph) -> McpServer:
             params["$orderby"] = "receivedDateTime desc"
             if unread_only:
                 params["$filter"] = "isRead eq false"
-        r = graph.call("GET", f"/me/mailFolders/{fid}/messages", params=params)
-        return {"folder": folder, "count": len(r.get("value") or []), "more": "@odata.nextLink" in r,
+        r = graph.call("GET", f"{base}/mailFolders/{fid}/messages", params=params)
+        return {"mailbox": mailbox or acct, "folder": folder, "count": len(r.get("value") or []), "more": "@odata.nextLink" in r,
                 "messages": [_msg_shape(m) for m in r.get("value") or []]}
 
     @srv.tool("m365_mail_read", "Read one message: text body and the list of attachments.",
-              {"properties": {"message_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}},
+              {"properties": {"message_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}, **MAILBOX},
                "required": ["message_id"]})
-    def mail_read(message_id: str, max_chars: int = 20000) -> Dict[str, Any]:
-        m = graph.call("GET", f"/me/messages/{message_id}", prefer='outlook.body-content-type="text"',
+    def mail_read(message_id: str, max_chars: int = 20000, mailbox: str = "") -> Dict[str, Any]:
+        base = graph.mailbox_path(mailbox)
+        m = graph.call("GET", f"{base}/messages/{message_id}", prefer='outlook.body-content-type="text"',
                        params={"$select": MESSAGE_SELECT + ",body,replyTo"})
         out = _msg_shape(m)
         body = (m.get("body") or {}).get("content") or ""
         out["body"] = body[:max_chars]
         out["bodyTruncated"] = len(body) > max_chars
         if m.get("hasAttachments"):
-            a = graph.call("GET", f"/me/messages/{message_id}/attachments",
+            a = graph.call("GET", f"{base}/messages/{message_id}/attachments",
                            params={"$select": "id,name,size,contentType,isInline"})
             out["attachments"] = [{"id": x.get("id"), "name": x.get("name"), "size": x.get("size"),
                                    "contentType": x.get("contentType"), "isInline": x.get("isInline")}
@@ -382,10 +425,10 @@ def build_server(graph: Graph) -> McpServer:
 
     @srv.tool("m365_mail_attachment_text", "Text of a mail attachment (pdf, docx, plain text). Use for letters and documents the user sent.",
               {"properties": {"message_id": {"type": "string"}, "attachment_id": {"type": "string"},
-                              "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}},
+                              "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}, **MAILBOX},
                "required": ["message_id", "attachment_id"]})
-    def mail_attachment_text(message_id: str, attachment_id: str, max_chars: int = 20000) -> Dict[str, Any]:
-        a = graph.call("GET", f"/me/messages/{message_id}/attachments/{attachment_id}")
+    def mail_attachment_text(message_id: str, attachment_id: str, max_chars: int = 20000, mailbox: str = "") -> Dict[str, Any]:
+        a = graph.call("GET", f"{graph.mailbox_path(mailbox)}/messages/{message_id}/attachments/{attachment_id}")
         if a.get("@odata.type") != "#microsoft.graph.fileAttachment":
             return {"name": a.get("name"), "supported": False, "note": f"attachment type {a.get('@odata.type')} is not a file"}
         return extract_text(a.get("name") or "attachment", unb64(a.get("contentBytes") or ""), max_chars)
@@ -436,10 +479,10 @@ def build_server(graph: Graph) -> McpServer:
         graph.call("PATCH", f"/me/messages/{message_id}", json_body={"isRead": is_read})
         return {"id": message_id, "isRead": is_read}
 
-    @srv.tool("m365_mail_folders", "List the mail folders with their unread and total counts.", {"properties": {}})
-    def mail_folders() -> Dict[str, Any]:
-        r = graph.call("GET", "/me/mailFolders", params={"$top": 100, "$select": "id,displayName,unreadItemCount,totalItemCount,childFolderCount"})
-        return {"folders": [{"name": f.get("displayName"), "unread": f.get("unreadItemCount"), "total": f.get("totalItemCount"),
+    @srv.tool("m365_mail_folders", "List the mail folders with their unread and total counts.", {"properties": {**MAILBOX}})
+    def mail_folders(mailbox: str = "") -> Dict[str, Any]:
+        r = graph.call("GET", f"{graph.mailbox_path(mailbox)}/mailFolders", params={"$top": 100, "$select": "id,displayName,unreadItemCount,totalItemCount,childFolderCount"})
+        return {"mailbox": mailbox or acct, "folders": [{"name": f.get("displayName"), "unread": f.get("unreadItemCount"), "total": f.get("totalItemCount"),
                              "subfolders": f.get("childFolderCount")} for f in r.get("value") or []]}
 
     # -- calendar -----------------------------------------------------------
@@ -771,8 +814,20 @@ def main(argv: List[str]) -> int:
             return 1
         ok = (me.get("userPrincipalName") or "").lower() == auth.account
         print(json.dumps({"ok": ok, "account": me.get("userPrincipalName"), "displayName": me.get("displayName"),
-                          "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path}))
+                          "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path,
+                          "read_mailboxes": auth.read_mailboxes}))
         return 0 if ok else 1
+    if cmd == "check-mailbox":
+        # check-mailbox ADDRESS — the installer's "can the assistant read that
+        # inbox?" Exit 1 with Graph's reason when it cannot (no delegation yet).
+        if len(argv) < 3:
+            raise SystemExit("usage: check-mailbox ADDRESS")
+        try:
+            print(json.dumps(Graph(auth, tz).mailbox_probe(argv[2])))
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print(json.dumps({"mailbox": argv[2].lower(), "readable": False, "reason": str(e)[:400]}))
+            return 1
     if cmd == "ensure-folder":
         # ensure-folder PATH [EMAIL,EMAIL [read|write]] — the installer's idempotent
         # "the Secretary's folder exists and the operator can edit it".

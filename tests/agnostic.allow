@@ -74,3 +74,6 @@ gmail.googleapis.com              # gmail api
 www.googleapis.com                # calendar and drive api
 console.cloud.google.com          # the one manual step
 packages.cloud.google.com         # gcloud apt repo
+
+# --- Microsoft 365 administration named in operator guidance (libs/62-assistant.sh) ---
+admin.exchange.microsoft.com      # Exchange admin center: mailbox delegation click path

@@ -86,6 +86,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 ## 6 · Later, not forgotten
 
 - [x] Bridge research and hardening (2026-09-07): CLI agent mode (system prompt in the CLI's own slot, its tools off), `--disable-slash-commands`, `denied_actions` as the primary signal, permission-mode assertion, one retry on transient CLI failures, auto-update off, startup checks — docs/research/agy-cli.md
+- [x] Secretary reads the operator's own mailboxes for receipts and invoices (2026-09-07): Exchange mailbox via Full Access delegation + Mail.Read.Shared, private Gmail via its own read-only sign-in; analysis on the bridge (Secretary moved off Kimi)
 - [ ] Antigravity terms item 6 (third-party tools accessing the service): spawn-only wrapper is a grey zone Google has not answered; operator decision to record in an ADR
 
 - [x] GitHub bot (2026-09-06): fourth bot on the bridge with the official GitHub MCP server 1.12.0, alias github@, Teams chat; live: lists the operator's repositories through the bridge

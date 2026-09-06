@@ -172,6 +172,15 @@ config_defaults() {
     : "${ASSISTANT_M365_TENANT_ID_VAR:=AZURE_TENANT_ID}"
     : "${ASSISTANT_M365_TIMEZONE:=Europe/Zurich}"
     : "${ASSISTANT_M365_SCOPES:=offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite OnlineMeetings.ReadWrite Files.ReadWrite}"
+    # The operator's own mailboxes in the tenant the assistant may READ
+    # (receipts, invoices, letters) — search, read, attachments, folders; never
+    # send, move or mark. Each needs Full Access delegation for the assistant's
+    # account on the Exchange side (README 1.10); the scope it needs is added
+    # here, declared and consented by the azure module.
+    : "${ASSISTANT_M365_READ_MAILBOXES:=}"
+    if [[ -n ${ASSISTANT_M365_READ_MAILBOXES} && " ${ASSISTANT_M365_SCOPES} " != *" Mail.Read.Shared "* ]]; then
+        ASSISTANT_M365_SCOPES+=" Mail.Read.Shared"
+    fi
     : "${ASSISTANT_STATE_DIR:=/var/lib/hermes-assistant}"
     : "${ASSISTANT_LIB_DIR:=/usr/local/lib/hermes-assistant}"
     : "${ASSISTANT_VENV:=${ASSISTANT_STATE_DIR}/venv}"
@@ -191,6 +200,10 @@ config_defaults() {
     : "${ASSISTANT_GOOGLE_CLIENT_SECRET_VAR:=GOOGLE_OAUTH_CLIENT_SECRET}"
     : "${ASSISTANT_GOOGLE_TIMEZONE:=${ASSISTANT_M365_TIMEZONE}}"
     : "${ASSISTANT_GOOGLE_SCOPES:=openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive}"
+    # The operator's own Gmail accounts the assistant may READ: one read-only
+    # sign-in each, AS that account, with these scopes only (README 1.11).
+    : "${ASSISTANT_GOOGLE_READ_ACCOUNTS:=}"
+    : "${ASSISTANT_GOOGLE_READ_SCOPES:=openid email https://www.googleapis.com/auth/gmail.readonly}"
 
     # --- assistant, GitHub side: the official GitHub MCP server ---------------
     : "${ASSISTANT_GITHUB_ENABLED:=false}"
@@ -406,6 +419,44 @@ _check_required() {
     [[ -n $value ]] || _bad "$name is required${why:+ ($why)}"
 }
 
+# A list of other people's mailboxes the assistant may read: addresses, none
+# of them the assistant's own (that one it reads anyway).
+_check_read_accounts() {          # _check_read_accounts NAME VALUE OWN_ACCOUNT
+    local IFS=$' ,\t\n' a
+    for a in $2; do
+        [[ $a == *@* ]] || _bad "${1}: '${a}' is not an address"
+        [[ ${a,,} != "${3,,}" ]] || _bad "${1}: ${a} is the assistant's own account; only other mailboxes belong here"
+    done
+}
+
+# BOT_<KEY>_DELEGATION_ENDPOINT names a global LLM_ENDPOINT_n for the bot's
+# sub-agents. Only two shapes can be written without a key landing in
+# config.yaml: a keyless custom endpoint (the bridge) or a hosted provider,
+# whose key goes to the variable the agent expects. A custom endpoint with a
+# key is refused rather than copied.
+_check_delegation_endpoint() {    # _check_delegation_endpoint KEY
+    local k=$1 n provider model tv
+    n=$(bot_field "$k" DELEGATION_ENDPOINT)
+    [[ -n $n ]] || return 0
+    local var; var="BOT_$(bot_upper "$k")_DELEGATION_ENDPOINT"
+    [[ $n =~ ^[0-9]+$ && $n -ge 1 && $n -le ${LLM_ENDPOINT_COUNT:-0} ]] ||
+        { _bad "bot ${k}: ${var}=${n} is not one of LLM_ENDPOINT_1..${LLM_ENDPOINT_COUNT:-0}"; return 0; }
+    model=$(endpoint_field "$n" MODEL)
+    [[ -n $model ]] || _bad "bot ${k}: ${var}=${n} points at an endpoint without LLM_ENDPOINT_${n}_MODEL"
+    [[ -n $(bot_field "$k" LLM_MODEL) ]] ||
+        _bad "bot ${k}: ${var} without BOT_$(bot_upper "$k")_LLM_MODEL is pointless; sub-agents inherit the bot's model anyway"
+    provider=$(endpoint_field "$n" PROVIDER); provider=${provider:-custom}
+    tv=$(endpoint_field "$n" TOKEN_VAR)
+    if [[ $provider == custom ]]; then
+        [[ -z $tv ]] || _bad "bot ${k}: ${var}=${n} is a custom endpoint with a key (${tv}); the delegation block cannot carry a key without writing it into config.yaml — only the keyless bridge or a hosted provider"
+    else
+        _provider_key_var "$provider" >/dev/null 2>&1 || _bad "bot ${k}: ${var}=${n} names the unknown provider '${provider}'"
+        if [[ -z $tv ]] || ! secret_nonempty "$tv"; then
+            _bad "bot ${k}: ${var}=${n} (${provider}) needs LLM_ENDPOINT_${n}_TOKEN_VAR naming a present secret"
+        fi
+    fi
+}
+
 _check_abs_path() {
     local name=$1 value=$2
     [[ -z $value || $value == /* ]] || _bad "$name must be an absolute path, got '$value'"
@@ -438,10 +489,12 @@ config_validate() {
         _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"
         [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"
         _check_required GOOGLE_PROJECT "${GOOGLE_PROJECT:-}" "the Cloud project holding the OAuth client"
+        _check_read_accounts ASSISTANT_GOOGLE_READ_ACCOUNTS "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "${ASSISTANT_GOOGLE_ACCOUNT:-}"
     fi
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then
         _check_required ASSISTANT_M365_ACCOUNT "${ASSISTANT_M365_ACCOUNT:-}" "the account the M365 assistant acts as"
         [[ ${ASSISTANT_M365_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_M365_ACCOUNT must be a sign-in address, got '${ASSISTANT_M365_ACCOUNT:-}'"
+        _check_read_accounts ASSISTANT_M365_READ_MAILBOXES "${ASSISTANT_M365_READ_MAILBOXES:-}" "${ASSISTANT_M365_ACCOUNT:-}"
     fi
     _check_required SECRETS_FILE "$SECRETS_FILE" "every credential is referenced from it"
     _check_abs_path SECRETS_FILE "$SECRETS_FILE"
@@ -796,6 +849,7 @@ bot_field() {
         LLM_TOKEN_VAR) printf '' ;;
         LLM_REASONING_FIELD) printf '' ;;
         LLM_CONTEXT_WINDOW)  printf '%s' "${LLM_CONTEXT_WINDOW:-0}" ;;
+        DELEGATION_ENDPOINT) printf '' ;;               # LLM_ENDPOINT_n the bot's sub-agents (delegate_task) run on; empty: they inherit the bot's model
         TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;
         *) die "bot_field: unknown field '${field}'" ;;
     esac
@@ -880,6 +934,7 @@ _bots_validate() {
             local tv; tv=$(bot_field "$k" LLM_TOKEN_VAR)
             [[ -z $tv ]] || secret_nonempty "$tv" || _bad "bot ${k}: secret '${tv}' (its LLM key) is missing or empty in the secrets file"
         fi
+        _check_delegation_endpoint "$k"
     done < <(bots)
     (( ${#keys[@]} == 0 )) && return 0
     [[ -n ${BOT_PREFIX:-} ]] || _bad "BOT_PREFIX is empty; bots are displayed as '<prefix> <Name>'"

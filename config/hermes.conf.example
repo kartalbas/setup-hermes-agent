@@ -142,6 +142,11 @@ AGY_SHIM_COMPACT_AT=120000
 #LLM_ENDPOINT_8_NAME="openrouter"
 #LLM_ENDPOINT_8_MODEL="anthropic/claude-sonnet-4"
 #LLM_ENDPOINT_8_TOKEN_VAR="OPENROUTER_API_KEY"
+#
+#LLM_ENDPOINT_9_PROVIDER="deepseek"       # DeepSeek direct; key: DEEPSEEK_API_KEY
+#LLM_ENDPOINT_9_NAME="deepseek"
+#LLM_ENDPOINT_9_MODEL="deepseek-chat"     # text only (= deepseek-v4-flash); deepseek-v4-flash-vision-exp reads images too
+#LLM_ENDPOINT_9_TOKEN_VAR="DEEPSEEK_API_KEY"
 
 # --- dashboard ----------------------------------------------------------
 # The agent's web UI. It holds API keys, so it binds to loopback and is never
@@ -263,6 +268,11 @@ ASSISTANT_M365_TIMEZONE="Europe/Zurich"
 ASSISTANT_M365_ROOT_FOLDER="Secretary"           # the agent's working folder in its OneDrive
 ASSISTANT_M365_SHARE_WITH="you@example.com"     # who gets access to it (comma-separated)
 ASSISTANT_M365_SHARE_ROLE="write"
+# Your own mailboxes in the tenant the assistant may READ — receipts, invoices,
+# letters (search, read, attachments; never send, move or mark). Comma-separated.
+# Each needs Full Access delegation for ASSISTANT_M365_ACCOUNT, set once by a
+# tenant admin in the Exchange admin center; the run checks and tells you (README 1.10).
+ASSISTANT_M365_READ_MAILBOXES=""                 # e.g. "you@example.com"
 
 # ---------------------------------------------------------------------------
 # Bots — one per role (README 1.5). Each bot is its own Teams app and 1:1 chat,
@@ -303,6 +313,17 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # BOT_SECRETARY_LLM_TOKEN_VAR="KIMI_API_KEY"     # name of the key in the secrets file
 # BOT_SECRETARY_LLM_REASONING_FIELD="reasoning_content"   # for models that return reasoning separately
 # BOT_SECRETARY_LLM_CONTEXT_WINDOW=512000
+# The same bot on DeepSeek (a hosted provider the agent knows: no base URL):
+# BOT_SECRETARY_LLM_PROVIDER="deepseek"
+# BOT_SECRETARY_LLM_NAME="deepseek"
+# BOT_SECRETARY_LLM_MODEL="deepseek-v4-flash-vision-exp"   # the vision variant reads photos and scans; deepseek-chat is text only
+# BOT_SECRETARY_LLM_TOKEN_VAR="DEEPSEEK_API_KEY"
+# BOT_SECRETARY_LLM_REASONING_FIELD="reasoning_content"
+# BOT_SECRETARY_LLM_CONTEXT_WINDOW=512000
+# Sub-agents (the delegate_task tool) may run on a different endpoint than the
+# bot itself — the number of a global LLM_ENDPOINT_n. A bot on an API model
+# keeps the analyses of your own mailboxes on the subscription bridge this way:
+# BOT_SECRETARY_DELEGATION_ENDPOINT=1            # the bridge; empty = sub-agents inherit the bot's model
 # BOT_<KEY>_NAME, _HOSTNAME (<key>.<TUNNEL_ZONE>), _ROLE (bot/roles/<role>.md),
 # _TEAMS_CLIENT_ID_VAR / _TEAMS_CLIENT_SECRET_VAR (TEAMS_<KEY>_CLIENT_ID / _SECRET),
 # _TOOLSET, _DESCRIPTION all have derived defaults.
@@ -314,6 +335,9 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # ---------------------------------------------------------------------------
 ASSISTANT_GOOGLE_ENABLED=false
 ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
+# Your own Gmail accounts the assistant may READ (Gmail only, read-only scopes).
+# One sign-in each, AS that account — the run asks for it (README 1.11).
+ASSISTANT_GOOGLE_READ_ACCOUNTS=""                # e.g. "you@gmail.example"
 GOOGLE_PROJECT="my-assistant-project"
 
 # Public pages (home, privacy policy, terms) under assistant.<zone> — what Google

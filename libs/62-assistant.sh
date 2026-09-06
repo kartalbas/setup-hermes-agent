@@ -112,9 +112,37 @@ _assistant_m365() {
 
     _assistant_m365_wrapper "$tenant" "$client" "$account"
     _assistant_m365_signin "$tenant" "$client" "$account"
+    _assistant_m365_read_mailboxes
     _assistant_m365_folder "$tenant" "$client" "$account"
     _assistant_m365_mail_rules
     _assistant_m365_register_all "$tenant" "$client" "$account"
+}
+
+# The operator's mailboxes the assistant may read. Two grants make one
+# readable and the run can do only one of them: the Mail.Read.Shared scope on
+# the app (azure module, with the other scopes). The other is Exchange's own
+# mailbox delegation, which Graph does not expose — so the run checks, and
+# when the check fails it names the click path instead of pretending.
+_assistant_m365_read_mailboxes() {
+    [[ -n ${ASSISTANT_M365_READ_MAILBOXES:-} ]] || return 0
+    local IFS=$' ,\t\n' mb out
+    for mb in $ASSISTANT_M365_READ_MAILBOXES; do
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would check that ${ASSISTANT_M365_ACCOUNT} can read the mailbox ${mb}"
+            continue
+        fi
+        [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; mailbox checks after the sign-in"; return 0; }
+        if out=$(sudo -u "$SERVICE_USER" "$(assistant_m365ctl)" check-mailbox "$mb" 2>&1); then
+            log_ok "mailbox readable  ${mb} (inbox: $(jq -r '.inbox_total' <<<"$out" 2>/dev/null) messages)"
+        else
+            log_error "the assistant cannot read the mailbox ${mb}: $(jq -r '.reason // .' <<<"$out" 2>/dev/null || printf '%s' "$out")"
+            log_error "  Two grants make a mailbox readable. Mail.Read.Shared on the app is declared and consented by the run;"
+            log_error "  the mailbox delegation is Exchange's own and not in Graph — once, signed in as a tenant ADMIN (not as ${ASSISTANT_M365_ACCOUNT}):"
+            log_error "    https://admin.exchange.microsoft.com/#/mailboxes -> ${mb} -> Delegation -> Read and manage (Full Access) -> Add -> ${ASSISTANT_M365_ACCOUNT}"
+            log_error "  Exchange applies it within about an hour; then re-run the installer."
+            defer_failure "assistant: the mailbox ${mb} is not readable by ${ASSISTANT_M365_ACCOUNT} yet"
+        fi
+    done
 }
 
 # One mailbox, several bots: Exchange sorts mail per alias into a folder the
@@ -194,8 +222,8 @@ _assistant_m365_folder() {
 # The env the server runs with. Nothing here is secret: the client id is a
 # public client, and the token lives in its own 0600 file.
 _assistant_m365_env_lines() {      # _assistant_m365_env_lines TENANT CLIENT ACCOUNT -> "K=V" lines
-    printf 'M365_TENANT_ID=%s\nM365_CLIENT_ID=%s\nM365_ACCOUNT=%s\nM365_TOKEN_FILE=%s\nM365_TIMEZONE=%s\nM365_SCOPES=%s\n' \
-        "$1" "$2" "$3" "$(assistant_m365_token_file)" "$ASSISTANT_M365_TIMEZONE" "$ASSISTANT_M365_SCOPES"
+    printf 'M365_TENANT_ID=%s\nM365_CLIENT_ID=%s\nM365_ACCOUNT=%s\nM365_TOKEN_FILE=%s\nM365_TIMEZONE=%s\nM365_SCOPES=%s\nM365_READ_MAILBOXES=%s\n' \
+        "$1" "$2" "$3" "$(assistant_m365_token_file)" "$ASSISTANT_M365_TIMEZONE" "$ASSISTANT_M365_SCOPES" "${ASSISTANT_M365_READ_MAILBOXES:-}"
 }
 
 _assistant_m365_fragment() {       # _assistant_m365_fragment TENANT CLIENT ACCOUNT -> yaml
@@ -231,7 +259,7 @@ _assistant_m365_wrapper() {
     write_file "$(assistant_m365ctl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Microsoft 365 assistant's commands with its configured environment:
-#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | tools | serve
+#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | check-mailbox ADDRESS | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_m365_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/m365_assistant.py" "\$@"
@@ -321,13 +349,15 @@ _assistant_google() {
     log_info "assistant      google as ${account}"
     _assistant_google_wrapper
     _assistant_google_signin
+    _assistant_google_signin_readers
     _assistant_google_register_all
 }
 
 _assistant_google_env_lines() {
-    printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nGOOGLE_ACCOUNT=%s\nGOOGLE_TOKEN_FILE=%s\nGOOGLE_TIMEZONE=%s\nGOOGLE_SCOPES=%s\n' \
+    printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nGOOGLE_ACCOUNT=%s\nGOOGLE_TOKEN_FILE=%s\nGOOGLE_TIMEZONE=%s\nGOOGLE_SCOPES=%s\nGOOGLE_READ_ACCOUNTS=%s\nGOOGLE_READ_SCOPES=%s\n' \
         "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_ID_VAR")" "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_SECRET_VAR")" \
-        "$ASSISTANT_GOOGLE_ACCOUNT" "$(assistant_google_token_file)" "$ASSISTANT_GOOGLE_TIMEZONE" "$ASSISTANT_GOOGLE_SCOPES"
+        "$ASSISTANT_GOOGLE_ACCOUNT" "$(assistant_google_token_file)" "$ASSISTANT_GOOGLE_TIMEZONE" "$ASSISTANT_GOOGLE_SCOPES" \
+        "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "$ASSISTANT_GOOGLE_READ_SCOPES"
 }
 
 _assistant_google_wrapper() {
@@ -341,7 +371,7 @@ _assistant_google_wrapper() {
     write_file "$(assistant_googlectl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Google assistant's commands with its configured environment:
-#   googlectl status | login | tools | serve
+#   googlectl status [ACCOUNT] | login [ACCOUNT] | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_google_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/google_assistant.py" "\$@"
@@ -408,6 +438,38 @@ _assistant_google_signin() {
     log_error "no Google token yet, and this run has no terminal for the paste-back sign-in. Run once, then re-run the installer:"
     log_error "    sudo -u ${SERVICE_USER} ${ctl} login        (sign in AS ${ASSISTANT_GOOGLE_ACCOUNT})"
     defer_failure "assistant: Google sign-in pending for ${ASSISTANT_GOOGLE_ACCOUNT}"
+}
+
+# The operator's own Gmail accounts the assistant may read: one token each,
+# from a sign-in AS that account with the read-only scopes. Same paste-back as
+# above; the token file is named after the account.
+_assistant_google_signin_readers() {
+    [[ -n ${ASSISTANT_GOOGLE_READ_ACCOUNTS:-} ]] || return 0
+    local IFS=$' ,\t\n' acct ctl; ctl=$(assistant_googlectl)
+    for acct in $ASSISTANT_GOOGLE_READ_ACCOUNTS; do
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would verify the read-only Gmail token for ${acct}, or ask for its sign-in"
+            continue
+        fi
+        if sudo -u "$SERVICE_USER" "$ctl" status "$acct" >/dev/null 2>&1; then
+            log_ok "google read token verified: ${acct}"
+            continue
+        fi
+        if has_tty; then
+            log_info "  no token for ${acct}; the sign-in needs you — open the URL AS ${acct} (read-only Gmail), paste the address you land on"
+            # shellcheck disable=SC2024  # the redirect is the point: the paste-back reads the operator's terminal
+            if sudo -u "$SERVICE_USER" "$ctl" login "$acct" </dev/tty; then
+                mark_changed
+                log_ok "google read token stored for ${acct}"
+                continue
+            fi
+            defer_failure "assistant: the Google sign-in for ${acct} did not complete"
+            continue
+        fi
+        log_error "no Google token for ${acct}, and this run has no terminal for the paste-back sign-in. Run once, then re-run the installer:"
+        log_error "    sudo -u ${SERVICE_USER} ${ctl} login ${acct}        (sign in AS ${acct})"
+        defer_failure "assistant: Google sign-in pending for ${acct}"
+    done
 }
 
 assistant_uninstall() {

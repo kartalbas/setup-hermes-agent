@@ -97,3 +97,33 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     ASSISTANT_GITHUB_ENABLED=true
     _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
 }
+
+@test "read mailboxes must be other addresses; the assistant's own is refused" {
+    _invalid=(); _check_read_accounts X "you@example.com, other@example.com" agent@example.com
+    [ "${#_invalid[@]}" -eq 0 ]
+    _invalid=(); _check_read_accounts X "Agent@example.com" agent@example.com
+    [ "${#_invalid[@]}" -eq 1 ]
+    _invalid=(); _check_read_accounts X "not-an-address" agent@example.com
+    [ "${#_invalid[@]}" -eq 1 ]
+}
+
+@test "a non-empty read list adds the shared-mail scope once, an empty one adds nothing" {
+    unset ASSISTANT_M365_SCOPES ASSISTANT_M365_READ_MAILBOXES
+    config_defaults
+    [[ $ASSISTANT_M365_SCOPES != *Mail.Read.Shared* ]]
+    unset ASSISTANT_M365_SCOPES
+    ASSISTANT_M365_READ_MAILBOXES="you@example.com"
+    config_defaults; config_defaults
+    [ "$(grep -o 'Mail.Read.Shared' <<<"$ASSISTANT_M365_SCOPES" | wc -l)" -eq 1 ]
+}
+
+@test "the env files carry the read lists to the servers" {
+    ASSISTANT_M365_READ_MAILBOXES="you@example.com"
+    out=$(_assistant_m365_env_lines tenant-1 client-1 agent@example.com)
+    [[ $out == *$'\nM365_READ_MAILBOXES=you@example.com'* ]]
+    secret_get() { printf 'x'; }
+    ASSISTANT_GOOGLE_ACCOUNT=agent@gmail.example ASSISTANT_GOOGLE_READ_ACCOUNTS="you@gmail.example"
+    out=$(_assistant_google_env_lines)
+    [[ $out == *$'\nGOOGLE_READ_ACCOUNTS=you@gmail.example'* ]]
+    [[ $out == *'GOOGLE_READ_SCOPES=openid email https://www.googleapis.com/auth/gmail.readonly'* ]]
+}

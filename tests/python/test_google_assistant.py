@@ -107,3 +107,45 @@ class Tools(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadAccounts(unittest.TestCase):
+    """The operator's own Gmail: read with its own token, never written."""
+
+    def test_without_read_accounts_the_gmail_tools_have_no_account_parameter(self):
+        srv = ga.build_server(FakeGoogle())
+        for name in ("google_gmail_search", "google_gmail_read", "google_gmail_labels"):
+            self.assertNotIn("account", tool(srv, name).spec()["inputSchema"]["properties"])
+
+    def test_a_read_account_routes_to_its_own_client_and_only_for_reading(self):
+        primary, reader = FakeGoogle(), FakeGoogle({("GET", ga.GMAIL + "/messages"): {"messages": []}})
+        srv = ga.build_server(primary, {"you@gmail.example": reader})
+        out = tool(srv, "google_gmail_search").fn(query="has:attachment", account="You@gmail.example")
+        self.assertEqual(out["account"], "You@gmail.example")
+        self.assertEqual(len(reader.calls), 1) and self.assertEqual(primary.calls, [])
+        tool(srv, "google_gmail_labels").fn(account="you@gmail.example")
+        self.assertTrue(reader.calls[-1][1].endswith("/labels"))
+        for name in ("google_gmail_send", "google_gmail_reply", "google_gmail_modify"):
+            self.assertNotIn("account", tool(srv, name).spec()["inputSchema"]["properties"], name)
+        self.assertIn("you@gmail.example", srv.instructions)
+
+    def test_an_unlisted_account_is_refused_before_google_is_asked(self):
+        primary = FakeGoogle()
+        srv = ga.build_server(primary, {"you@gmail.example": FakeGoogle()})
+        with self.assertRaises(RuntimeError):
+            tool(srv, "google_gmail_read").fn(message_id="m", account="stranger@gmail.example")
+        self.assertEqual(primary.calls, [])
+
+    def test_a_read_account_gets_its_own_token_file_and_the_read_only_scopes(self):
+        env = {"GOOGLE_CLIENT_ID": "c", "GOOGLE_CLIENT_SECRET": "s", "GOOGLE_ACCOUNT": "agent@gmail.example",
+               "GOOGLE_TOKEN_FILE": "/var/lib/x/google.token", "GOOGLE_READ_ACCOUNTS": "you@gmail.example, other@gmail.example"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            a = ga.Auth("You@gmail.example")
+            self.assertEqual((a.account, a.read_only, a.store.path), ("you@gmail.example", True, "/var/lib/x/google-" + "you@gmail.example" + ".token"))
+            self.assertEqual(a.scopes, ga.READ_SCOPES)
+            self.assertNotIn("gmail.modify", a.scopes)
+            p = ga.Auth()
+            self.assertEqual((p.account, p.read_only, p.store.path), ("agent@gmail.example", False, "/var/lib/x/google.token"))
+            self.assertEqual(ga.read_accounts(), ["you@gmail.example", "other@gmail.example"])
+            with self.assertRaises(SystemExit):
+                ga.Auth("stranger@gmail.example")

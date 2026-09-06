@@ -359,7 +359,19 @@ needs Exchange's "send from alias" setting.
 `_LLM_CONTEXT_WINDOW`) replaces the global endpoint for that bot's profile — a
 real model API for the bot that needs exact tool calling and images, the bridge
 for the others. The key stays in the secrets file under the name `_LLM_TOKEN_VAR`
-gives.
+gives. A hosted provider the agent knows (`deepseek`, `anthropic`, `openai`,
+`openrouter`, `kimi-coding`, …) takes no base URL; `custom` is any
+OpenAI-compatible endpoint with one.
+
+**A bot's sub-agents may run elsewhere.** The agent's `delegate_task` tool
+hands work to sub-agents, which inherit the bot's tools. With
+`BOT_<KEY>_DELEGATION_ENDPOINT=<n>` they run on the global `LLM_ENDPOINT_<n>`
+instead of the bot's own model — the way a bot on an API model keeps the
+reading of your own mailboxes (1.10, 1.11) on the subscription bridge: the
+sub-agent reads and extracts there, the bot on the API sees only the extract.
+Two shapes are possible, a keyless custom endpoint (the bridge) or a hosted
+provider by name; a custom endpoint with a key is refused, because the block
+would have to carry the key in `config.yaml`.
 
 **Install each bot in Teams — once, after the first run.** A bot is not visible
 in Teams until it is installed as a Teams *app*. The run generates one package
@@ -557,6 +569,25 @@ The working folder: the run creates `ASSISTANT_M365_ROOT_FOLDER` (default
 `ASSISTANT_M365_SHARE_WITH` the `ASSISTANT_M365_SHARE_ROLE` (default `write`), so
 whatever the agent files is in your reach in your own OneDrive under *Shared*.
 
+**Reading your own mailbox.** For receipts, invoices and letters that arrive in
+*your* mailbox rather than the agent's, list it in `ASSISTANT_M365_READ_MAILBOXES`
+(comma-separated). The agent then reads it — search, read, attachments,
+folders — and nothing else: the tools that send, move or mark have no mailbox
+parameter. Two grants make a mailbox readable:
+
+| Grant | Who | Where |
+|-------|-----|-------|
+| Scope `Mail.Read.Shared` on the app registration, consented | the run (added to `ASSISTANT_M365_SCOPES` automatically when the list is non-empty) | — |
+| Full Access delegation for the agent's account on your mailbox | **you**, once, signed in as a **tenant admin** (not as the agent) | Exchange admin center → Recipients → Mailboxes → your mailbox → *Delegation* → *Read and manage (Full Access)* → Add → the agent's account |
+
+Exchange applies the delegation within about an hour. The run checks each
+mailbox (`m365ctl check-mailbox <address>`) and, while it is not readable yet,
+prints exactly that click path and carries on. If the bot runs on an API model,
+set `BOT_<KEY>_DELEGATION_ENDPOINT` (part 1.5) so the reading happens on the
+bridge — the role tells the Secretary to hand these analyses to sub-agents. Full Access is the only
+delegation the admin center offers; the read-only limit is enforced by the
+server, whose write tools never take a mailbox.
+
 Meeting roles: **co-organizers must be accounts of the tenant** (you); people
 outside can be **presenters**. Everyone named in a role is invited as an
 attendee too, and Exchange sends the invitations by mail.
@@ -591,8 +622,25 @@ sign-in would be needed weekly.
 ASSISTANT_GOOGLE_ENABLED=true
 ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
 GOOGLE_PROJECT="my-assistant-project"
+ASSISTANT_GOOGLE_READ_ACCOUNTS=""               # your own Gmail accounts, read-only (below)
 # secrets file: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET
 # bots: BOT_SECRETARY_MCP="m365 google"
+```
+
+**Reading your own Gmail.** Your private Gmail is a different Google account,
+so it gets its own token: list the address in `ASSISTANT_GOOGLE_READ_ACCOUNTS`
+and the run asks for one more paste-back sign-in — **as that account**, with
+the read-only scope (`gmail.readonly`) only. The token is stored next to the
+agent's (`google-<address>.token`); the Gmail search/read/attachment/labels
+tools take an `account` parameter, the tools that send or modify do not. Two
+things to expect on the consent screen: the app is yours but *unverified*, so
+Google shows a warning — *Advanced → go to … (unsafe)* is the way through; and
+if the app is still in *Testing* status the account must be listed as a test
+user first (published apps take any account). Later, without the run:
+
+```bash
+sudo -u <account> /usr/local/lib/hermes-assistant/googlectl login you@gmail.example    # sign in AS you@gmail.example
+sudo -u <account> /usr/local/lib/hermes-assistant/googlectl status you@gmail.example
 ```
 
 ---
@@ -775,7 +823,7 @@ Modules run in this order, and the order encodes real constraints:
 Expect several minutes: 17 apt packages, 28 downloaded binaries, two Python
 virtualenvs and the vendor installer.
 
-## 3.3 · The three sign-ins that cannot be scripted
+## 3.3 · The sign-ins that cannot be scripted
 
 All need a browser. None can be automated, and the run tells you so rather
 than pretending otherwise.
@@ -815,7 +863,16 @@ browser window and sign in as the agent's mailbox account. The run refuses a
 token that belongs to anyone else and stores nothing in that case. The token
 lives in `/var/lib/hermes-assistant/m365.token` (0600, the agent's account) and
 renews itself. `m365ctl` (in `/usr/local/lib/hermes-assistant`) runs the server's
-commands with its environment: `status`, `login`, `ensure-folder`, `tools`.
+commands with its environment: `status`, `login`, `ensure-folder`, `check-mailbox`, `tools`.
+
+**d) The assistant (Google), and every read account**
+
+The Google sign-in is a paste-back: the run prints a URL, you open it **as the
+agent's Google account**, consent, and paste back the address of the page you
+land on (an unreachable `127.0.0.1` page — that is expected). Every address in
+`ASSISTANT_GOOGLE_READ_ACCOUNTS` repeats this once, **as that account**, with
+read-only scopes. Without a terminal the run names the command instead:
+`googlectl login [account]`.
 
 > **Plan for two runs.** The first installs everything and stops at the relay;
 > the second converges. That is cheap, because everything already done is
@@ -1118,6 +1175,24 @@ The run printed a URL and a code and waited `ASSISTANT_LOGIN_TIMEOUT` seconds.
 Run it again and enter the code in time; sign in as the mailbox account named in
 `ASSISTANT_M365_ACCOUNT`. `signed in as X, but this token must belong to Y`
 means the browser carried another identity — use a private window.
+
+### `assistant: the mailbox … is not readable by … yet`
+
+The Exchange delegation is missing or not applied yet. Sign in to the Exchange
+admin center as a tenant admin, open the mailbox, *Delegation → Read and manage
+(Full Access) → Add* the agent's account, wait up to an hour, re-run. Check by
+hand with `m365ctl check-mailbox <address>` as the agent's account; the reason
+it prints is Graph's own (`ErrorAccessDenied` = no delegation, `ErrorInvalidUser`
+= no such mailbox in the tenant). The scope side (`Mail.Read.Shared`) is
+declared and consented by the run — if `m365ctl status` does not list it, the
+azure module has not run with `AZURE_MANAGE=true` since the mailbox was added.
+
+### `account … is not one the assistant may read` / `mailbox … is not one the assistant may read`
+
+The model asked for a mailbox that is not in `ASSISTANT_M365_READ_MAILBOXES`
+or `ASSISTANT_GOOGLE_READ_ACCOUNTS`. The servers refuse before asking Graph or
+Google; add the address to the list and re-run, or tell the bot which mailbox
+you mean.
 
 ### `google: OAuth client not in the secrets file`
 

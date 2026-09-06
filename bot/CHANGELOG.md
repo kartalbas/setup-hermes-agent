@@ -5,6 +5,10 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Bridge: CLI agent mode (the system prompt in the CLI's own slot, its tools off), transient-failure retry, startup checks
+- Secretary role: mailbox analyses go through `delegate_task`, so a bot on an API model reads them on the bridge (`BOT_<KEY>_DELEGATION_ENDPOINT`)
+- Assistants: read-only access to the operator's own mailboxes — Exchange via Full Access delegation and `Mail.Read.Shared` (`mailbox` parameter), Gmail via a second read-only sign-in per account (`account` parameter)
+
 ## 0.2.3 — 2026-09-06
 
 - GitHub bot: fourth Teams app, official GitHub MCP server, mail alias

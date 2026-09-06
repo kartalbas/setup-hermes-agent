@@ -153,3 +153,37 @@ setup() {
     [ "$status" -eq 3 ]
     rm -f "$f"
 }
+
+@test "a delegation endpoint renders the bridge without a key and a hosted provider by name" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    LLM_ENDPOINT_COUNT=2
+    LLM_ENDPOINT_1_PROVIDER=custom LLM_ENDPOINT_1_NAME=bridge LLM_ENDPOINT_1_BASE_URL=http://127.0.0.1:8787/v1 LLM_ENDPOINT_1_MODEL=fast LLM_ENDPOINT_1_TOKEN_VAR=""
+    LLM_ENDPOINT_2_PROVIDER=deepseek LLM_ENDPOINT_2_NAME=deepseek LLM_ENDPOINT_2_BASE_URL="" LLM_ENDPOINT_2_MODEL=deepseek-chat LLM_ENDPOINT_2_TOKEN_VAR=DEEPSEEK_API_KEY
+    BOT_SECRETARY_DELEGATION_ENDPOINT=1
+    out=$(_delegation_fragment secretary)
+    [[ $out == *'model: "fast"'* && $out == *'base_url: "http://127.0.0.1:8787/v1"'* && $out == *'api_key: "bridge-does-not-check-keys"'* ]]
+    [[ $out == *'provider: ""'* ]]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=2
+    out=$(_delegation_fragment secretary)
+    [[ $out == *'provider: "deepseek"'* && $out == *'model: "deepseek-chat"'* && $out == *'base_url: ""'* && $out == *'api_key: ""'* ]]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=""
+    out=$(_delegation_fragment secretary)
+    [[ $out == *'model: ""'* && $out == *'provider: ""'* ]]
+}
+
+@test "a delegation endpoint must exist, carry a model, and never a key that would land in config.yaml" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    secret_nonempty() { [[ $1 == DEEPSEEK_API_KEY || $1 == KIMI_API_KEY ]]; }
+    LLM_ENDPOINT_COUNT=3
+    LLM_ENDPOINT_1_PROVIDER=custom LLM_ENDPOINT_1_BASE_URL=http://127.0.0.1:8787/v1 LLM_ENDPOINT_1_MODEL=fast LLM_ENDPOINT_1_TOKEN_VAR=""
+    LLM_ENDPOINT_2_PROVIDER=deepseek LLM_ENDPOINT_2_MODEL=deepseek-chat LLM_ENDPOINT_2_TOKEN_VAR=DEEPSEEK_API_KEY
+    LLM_ENDPOINT_3_PROVIDER=custom LLM_ENDPOINT_3_BASE_URL=https://api.example.com/v1 LLM_ENDPOINT_3_MODEL=other LLM_ENDPOINT_3_TOKEN_VAR=KIMI_API_KEY
+    BOT_SECRETARY_LLM_PROVIDER=custom BOT_SECRETARY_LLM_BASE_URL=https://api.example.com/v1 BOT_SECRETARY_LLM_MODEL=kimi-k3 BOT_SECRETARY_LLM_TOKEN_VAR=KIMI_API_KEY
+    BOT_SECRETARY_DELEGATION_ENDPOINT=1; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 0 ]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=2; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 0 ]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=3; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 1 ]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=4; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 1 ]
+    BOT_SECRETARY_DELEGATION_ENDPOINT=x; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 1 ]
+    BOT_SECRETARY_LLM_MODEL=""
+    BOT_SECRETARY_DELEGATION_ENDPOINT=1; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 1 ]
+}
