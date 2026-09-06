@@ -32,5 +32,5 @@ setup() {
     out=$(_site_nginx_conf)
     [[ $out == *"listen 127.0.0.1:8081;"* ]]
     [[ $out == *"server_name assistant.example.com;"* ]]
-    [[ $out == *'try_files $uri $uri.html =404;'* ]]
+    [[ $out == *'try_files $uri $uri.html /index.html;'* ]]
 }

@@ -72,7 +72,7 @@ server {
     index index.html;
     location = /privacy { try_files /privacy.html =404; }
     location = /terms   { try_files /terms.html =404; }
-    location / { try_files \$uri \$uri.html =404; }
+    location / { try_files \$uri \$uri.html /index.html; }
     add_header Cache-Control "public, max-age=3600";
 }
 CONF

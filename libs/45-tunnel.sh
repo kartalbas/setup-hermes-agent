@@ -388,7 +388,7 @@ _cf_ingress_put() {
               | jq -Sc '.result.config.ingress // []' 2>/dev/null || printf '[]')
     wanted=$(jq -Sc '.config.ingress' <<<"$body")
     local summary
-    summary=$(jq -r '[.[] | select(.hostname) | "\(.hostname)\(.path) -> \(.service)"] | join(", ")' <<<"$wanted")
+    summary=$(jq -r '[.[] | select(.hostname) | "\(.hostname)\(.path // \"\") -> \(.service)"] | join(", ")' <<<"$wanted")
     if [[ $current == "$wanted" ]]; then
         log_skip "ingress already ${summary}"
         return 0
