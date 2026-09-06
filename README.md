@@ -928,6 +928,20 @@ sudo ./install.sh --uninstall --purge   # also remove state and the account
 run `tests/run.sh`, then `sudo ./install.sh` from there. There is no mirror step
 in daily work; `bootstrap.sh` is for bringing up a fresh host.
 
+**Switching a bot's model.** Comment one `BOT_<KEY>_LLM_*` block, uncomment
+another (the examples carry a `custom` endpoint and a hosted provider), make
+sure the key it names is in the secrets file, run `sudo ./install.sh`. The run
+rewrites that profile's model, puts the key into its `.env` and restarts that
+bot only. Its sub-agents keep the endpoint `BOT_<KEY>_DELEGATION_ENDPOINT`
+names, whatever the bot itself runs on.
+
+**Adding a mailbox the Secretary may read.** Append the address to
+`ASSISTANT_M365_READ_MAILBOXES` (Exchange, same tenant — then the delegation in
+the admin center, 1.10) or `ASSISTANT_GOOGLE_READ_ACCOUNTS` (a Google account —
+then one sign-in as that account, 1.11), run the installer. Removing an address
+removes the parameter value from the tools on the next run; the token file or
+delegation can be deleted by hand.
+
 **What a converged run looks like.** Run the installer twice; the second run
 must end with
 

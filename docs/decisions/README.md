@@ -24,3 +24,4 @@ Status is `accepted`, `superseded by NNNN`, or `proposed`.
 | [0014](0014-mailbox-on-a-second-provider.md) | Mailbox with a second provider | accepted |
 | [0015](0015-everything-in-the-repository.md) | Everything prepared in the repository | accepted |
 | [0016](0016-account-with-sudo.md) | Service account has sudo, and is where work happens | accepted |
+| [0022](0022-operator-mailboxes-read-only-through-sub-agents.md) | The operator's own mailboxes: read-only, analysed by sub-agents on the subscription | accepted |

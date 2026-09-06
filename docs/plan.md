@@ -59,13 +59,13 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 ## 4 · Documents and reminders ("I hand over my letters")
 
 - [x] Photo intake, host side: the bridge hands images to the CLI as files; a photographed letter is read (sender, amount, deadline) and the Secretary proposes the calendar entry with advance reminders and the filing place (verified 2026-09-05 with a test letter)
-- [ ] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path (Secretary now on Kimi K3 with native image input)
-- [ ] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration
+- [x] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path (Secretary now on Kimi K3 with native image input) — verified 2026-09-06 (photographed letter via the Secretary chat)
+- [x] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration — in bot/roles/secretary.md
 
 - [ ] Intake paths: attachment to the M365 mailbox, file in the Teams chat, OneDrive folder `Assistant/Inbox` — all readable through the tools above
-- [ ] Text extraction for pdf / docx / txt (scanned PDFs without text: state the limit; OCR is a later toggle)
+- [x] Text extraction for pdf / docx / txt (scanned PDFs without text: state the limit; OCR is a later toggle) — pypdf/python-docx in the assistants; scanned PDFs are reported as such
 - [ ] Reminders: verify the cron toolset is available on Teams and delivers to the home channel; document the phrasing ("erinnere mich am …")
-- [ ] Filing: the agent stores processed letters in OneDrive folders it names, and returns the location
+- [x] Filing: the agent stores processed letters in OneDrive folders it names, and returns the location — role rules + m365_drive_upload_file / share link
 - [ ] Memory: dates and facts from letters survive session resets (Hermes memory toolset verified on Teams)
 
 ## 5 · Private and work separation
@@ -77,7 +77,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Installer refactor: from one gateway to a bot list (`BOTS`), per bot: Entra app (created by `az`), Azure Bot via Bicep, Teams package, gateway service instance with its own profile (persona file under `bot/roles/<name>.md`, toolsets, MCP servers), port and tunnel hostname; shared assistant servers
 - [x] Rename the existing pieces: the current bot became Secretary (`secretary.<zone>`, Entra app "<prefix> Secretary", Azure bot `<service-prefix>-secretary`); "Hermes Mail" stays an internal app name (not user-visible)
 - [x] All three bots reachable end to end (Direct Line probe: Azure → edge → tunnel → own gateway → allowlist), each on its own hostname and port
-- [ ] Web tools for Search and News verified through the bridge (first real messages pending)
+- [x] Web tools for Search and News verified through the bridge (first real messages pending) — News bot 2026-09-07 (agent mode, sourced headline)
 - [x] Operator uploaded the three Teams packages and set `/sethome` in each chat; Secretary re-issued with a fresh bot identity so the chat carries its name (Teams pins a 1:1 bot chat's name to the first contact) (web_search / web_extract / browser); News delivers its daily briefing by cron into its own chat
 
 - [x] Decision (2026-09-05): one bot, Google only on explicit request. Alternatives were a second bot / gateway profile for private matters, or the WhatsApp bridge as the private channel. Several bots on one Bot Service identity are possible (Hermes multiplex profiles); each is a separate Teams app.
@@ -87,6 +87,9 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 - [x] Bridge research and hardening (2026-09-07): CLI agent mode (system prompt in the CLI's own slot, its tools off), `--disable-slash-commands`, `denied_actions` as the primary signal, permission-mode assertion, one retry on transient CLI failures, auto-update off, startup checks — docs/research/agy-cli.md
 - [x] Secretary reads the operator's own mailboxes for receipts and invoices (2026-09-07): Exchange mailbox via Full Access delegation + Mail.Read.Shared, private Gmail via its own read-only sign-in; analysis on the bridge (Secretary moved off Kimi)
+- [x] Sub-agents on another endpoint (2026-09-07): `BOT_<KEY>_DELEGATION_ENDPOINT` → `delegation` block; the Secretary hands mailbox analyses to `delegate_task` on the bridge — ADR 0022
+- [x] Installer hardening (2026-09-07): servers' commands via runuser (a nested sudo under sudo-rs `use_pty` swallowed the paste-back and Ctrl-C); bots restart when their MCP servers' code or env changed (stamp per bot)
+- [ ] Receipts end to end: Teams question → delegate_task on the bridge → CSV in `Secretary/Receipts/<YYYY>/` — first real run pending
 - [ ] Antigravity terms item 6 (third-party tools accessing the service): spawn-only wrapper is a grey zone Google has not answered; operator decision to record in an ADR
 
 - [x] GitHub bot (2026-09-06): fourth bot on the bridge with the official GitHub MCP server 1.12.0, alias github@, Teams chat; live: lists the operator's repositories through the bridge
@@ -99,7 +102,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Public pages (home, privacy, terms) under assistant.<zone> — module `site`; Google requires them to publish the OAuth app, Teams shows them
 - [ ] Teams manifest: point websiteUrl / privacyUrl / termsOfUseUrl at the public pages (next bot release)
 
-- [x] Secretary runs on Kimi K3 over the Moonshot API (native tools, images, prompt cache); Search and News stay on the bridge — per-bot model configuration
+- [x] Secretary runs on an API model (Kimi K3 2026-09-05 → DeepSeek direct `deepseek-v4-flash-vision-exp` 2026-09-07, cheaper, reads images); Search, News, GitHub stay on the bridge — per-bot model configuration, `deepseek` a known hosted provider
 - [x] Daily session reset at 04:00 for all bots (`AGENT_SESSION_RESET`)
 - [x] Bridge stateless (ADR 0021); images handed to the CLI as files
 - [x] Old bot identity retired: Entra app 2494e2b2… deleted 2026-09-06
@@ -111,5 +114,5 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [ ] WhatsApp bridge channel (private mobile contact without a public bot)
 - [ ] Dashboard over TLS (today: plain HTTP on the LAN, installer warns)
 - [ ] Sporadic `IMAP fetch error: EOF` (self-healing; ~2 per 15 min) — root cause
-- [ ] Commit the repository (nothing is committed yet) and push to the private remote
+- [x] Commit the repository (nothing is committed yet) and push to the private remote — public repository since 2026-09-06; only examples and structure files tracked, site configuration ignored
 - [ ] Second VM: bootstrap → config → `az login` → `install.sh` → upload Teams package → `/sethome` → sign-ins (M365 device code, Google paste) — everything else automatic; run it and fix whatever is not
