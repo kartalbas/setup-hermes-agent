@@ -1387,3 +1387,7 @@ The defaults encode a position, so it is worth being explicit:
   model that can send mail and run commands.
 - The agent has **no calendar write access**. It proposes appointments as
   invitations you accept, which keeps the authorising step with you.
+
+## License
+
+MIT — see `LICENSE`. Configuration and secrets are yours and never part of the repository (`config/*` is ignored except the examples).
