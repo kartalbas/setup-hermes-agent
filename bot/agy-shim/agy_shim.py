@@ -47,6 +47,7 @@ import hashlib
 import base64
 import binascii
 import json
+import shlex
 import logging
 import os
 import queue
@@ -123,6 +124,8 @@ class AgentProcess:
         self.conversation_id = None
         self.tool_count = None
         self.pending_prefix = ""
+        self.tool_intents: list[dict] = []
+        self.available_tools: set[str] = set()
         self._await_init()
 
     # -- plumbing -----------------------------------------------------------
@@ -189,6 +192,7 @@ class AgentProcess:
         if not self.alive():
             raise RuntimeError(f"process is not running: {self.stderr_tail()}")
 
+        self.tool_intents = []
         msg = {"event": "user", "message": {"role": "user", "content": content}}
         try:
             self.proc.stdin.write(json.dumps(msg) + "\n")
@@ -207,6 +211,11 @@ class AgentProcess:
                 raise TimeoutError(f"no result within {timeout}s")
             if ev is None:
                 raise RuntimeError(f"process exited mid-turn: {self.stderr_tail()}")
+            if ev.get("event") == "step_update":
+                su = ev.get("step_update") or {}
+                if su.get("step_type") == "tool" and su.get("state") == "ACTIVE":
+                    self.tool_intents.append(su.get("tool_info") or {"name": su.get("tool_name"), "parameters": {}})
+                continue
             if ev.get("event") != "result":
                 continue
 
@@ -224,7 +233,11 @@ class AgentProcess:
             # surfaced as an unexplained failure, so say what actually happened.
             if not str(result.get("response", "")).strip():
                 detail = self.stderr_tail()
-                if "permission" in detail.lower():
+                if "permission" in detail.lower() or result.get("denied_actions"):
+                    decision = map_cli_intents(self.tool_intents, getattr(self, "available_tools", set()))
+                    if decision is not None:
+                        result["response"] = json.dumps(decision, separators=(",", ":"))
+                        return result
                     if _retry:
                         # The whole operating context again, not just a nudge:
                         # a fresh conversation that reached for its own tools
@@ -395,8 +408,10 @@ class Pool:
 
     def _complete_stateless(self, history: list[str], message: str,
                             system: str, model: str,
-                            images: list[tuple[bytes, str]]) -> tuple[str, dict, dict]:
+                            images: list[tuple[bytes, str]],
+                            tool_names: set[str]) -> tuple[str, dict, dict]:
         proc = self._take_spare(model)
+        proc.available_tools = tool_names
         try:
             text = stateless_message(system, history, message)
             if images:
@@ -417,14 +432,16 @@ class Pool:
 
     def complete(self, key: str, history: list[str], message: str,
                  system: str = "", model: str = "",
-                 images: list[tuple[bytes, str]] | None = None) -> tuple[str, dict, dict]:
+                 images: list[tuple[bytes, str]] | None = None,
+                 tool_names: set[str] | None = None) -> tuple[str, dict, dict]:
         acquired = self.slots.acquire(timeout=self.args.queue_timeout)
         if not acquired:
             raise TimeoutError("too many conversations in flight")
         try:
             if self.args.stateless:
-                return self._complete_stateless(history, message, system, model, images or [])
+                return self._complete_stateless(history, message, system, model, images or [], tool_names or set())
             proc = self._get_or_start(key, history, system, model)
+            proc.available_tools = tool_names or set()
 
             # A first turn on a fresh conversation carries the system prompt.
             prefix = getattr(proc, "pending_prefix", "")
@@ -641,6 +658,39 @@ def unwrap_nested_call(call: dict) -> dict:
         inner_args = json.dumps(inner_args, separators=(",", ":"))
     log.info("unwrapped a nested tool_call -> %s", inner)
     return {**call, "function": {"name": inner, "arguments": inner_args}}
+
+
+# The CLI's own tools, mapped onto the agent's. When the CLI reaches for one of
+# them it is denied (headless), but the event stream carries WHAT it wanted —
+# `run_command gh repo list`, `view_file /path`. Handing that to the caller as
+# a tool call lets the agent execute it with its own tools and policies, and
+# the turn goes on instead of dying on "no output produced".
+CLI_TOOL_MAP = {
+    "run_command":   ("terminal",   lambda a: {"command": a.get("CommandLine") or a.get("command", "")}),
+    "list_dir":      ("terminal",   lambda a: {"command": "ls -la " + shlex.quote(a.get("DirectoryPath") or ".")}),
+    "grep_search":   ("terminal",   lambda a: {"command": "grep -rn " + shlex.quote(a.get("Query", "")) + " " + shlex.quote(a.get("SearchPath") or ".")}),
+    "find_by_name":  ("terminal",   lambda a: {"command": "find " + shlex.quote(a.get("SearchDirectory") or ".") + " -name " + shlex.quote(a.get("Pattern") or "*")}),
+    "view_file":     ("read_file",  lambda a: {"path": a.get("AbsolutePath") or a.get("FilePath") or a.get("path", "")}),
+    "read_file":     ("read_file",  lambda a: {"path": a.get("AbsolutePath") or a.get("FilePath") or a.get("path", "")}),
+    "write_to_file": ("write_file", lambda a: {"path": a.get("TargetFile") or a.get("path", ""),
+                                               "content": a.get("CodeContent") or a.get("Content") or a.get("content", "")}),
+}
+
+
+def map_cli_intents(intents: list[dict], available: set[str]) -> dict | None:
+    """First CLI tool intent that the caller's tools can carry out, as a decision."""
+    for it in intents or []:
+        name = (it or {}).get("name") or ""
+        args = (it or {}).get("parameters") or {}
+        target = CLI_TOOL_MAP.get(name)
+        if not target or target[0] not in available:
+            continue
+        mapped = target[1](args)
+        if not any(str(v).strip() for v in mapped.values()):
+            continue
+        log.info("translated CLI intent %s -> %s", name, target[0])
+        return {"type": "tool_call", "name": target[0], "arguments": mapped}
+    return None
 
 
 def stateless_message(system: str, history: list[str], message: str) -> str:
@@ -903,7 +953,8 @@ class Handler(BaseHTTPRequestHandler):
         ).hexdigest()[:8] if tools else "notools"
         key = conversation_key(messages) + ":" + model + ":" + tool_sig
         try:
-            text, usage, meta = self.pool.complete(key, history, message, system, model, images)
+            tool_names = {((t or {}).get("function") or {}).get("name", "") for t in tools} - {""}
+            text, usage, meta = self.pool.complete(key, history, message, system, model, images, tool_names)
         except TimeoutError as exc:
             return self._error(504, str(exc))
         except Exception as exc:

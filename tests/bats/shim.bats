@@ -171,3 +171,19 @@ plain, none = m.extract_images([{"role": "user", "content": "hi"}])
 assert none == [] and plain[0]["content"] == "hi"
 PY
 }
+
+@test "a denied CLI tool intent becomes a tool call the agent can run" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+intents = [{"name": "list_dir", "parameters": {"DirectoryPath": "/tmp/x y"}},
+           {"name": "run_command", "parameters": {"CommandLine": "gh repo list --limit 3"}}]
+d = m.map_cli_intents(intents, {"terminal", "read_file"})
+assert d == {"type": "tool_call", "name": "terminal", "arguments": {"command": "ls -la '/tmp/x y'"}}, d
+d2 = m.map_cli_intents(intents[1:], {"terminal"})
+assert d2["arguments"]["command"] == "gh repo list --limit 3"
+assert m.map_cli_intents(intents, {"web_search"}) is None          # nothing the caller can run
+assert m.map_cli_intents([{"name": "write_to_file", "parameters": {"TargetFile": "/a", "CodeContent": "x"}}], {"write_file"})["arguments"] == {"path": "/a", "content": "x"}
+assert m.map_cli_intents([{"name": "run_command", "parameters": {}}], {"terminal"}) is None   # empty command
+PY
+}

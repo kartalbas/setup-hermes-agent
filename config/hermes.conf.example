@@ -328,6 +328,7 @@ SITE_CONTACT="agent@example.com"
 # checksum-verified, with a personal access token from the secrets file.
 # ---------------------------------------------------------------------------
 ASSISTANT_GITHUB_ENABLED=false
+# ASSISTANT_GITHUB_TOKEN_VAR=GITHUB_MCP_TOKEN   # name of the token in the secrets file (a classic admin token works too, by choice)
 # ASSISTANT_GITHUB_MCP_VERSION=1.12.0
 # ASSISTANT_GITHUB_TOOLSETS=context,repos,issues,pull_requests,actions,code_security,discussions,notifications,users,labels
 # ASSISTANT_GITHUB_READ_ONLY=false
