@@ -93,10 +93,15 @@ _cf_api() {
                    --connect-timeout 10 --max-time 60)
     [[ -n $body ]] && args+=(--data "$body")
 
-    out=$(curl "${args[@]}" "https://api.cloudflare.com/client/v4${path}" 2>/dev/null) || {
-        rm -f "$cfg"
-        die "Cloudflare API request failed: ${method} ${path}"
-    }
+    # Three attempts: a single transport hiccup on one of a dozen calls per
+    # run used to kill the whole run ("request failed") with nothing wrong.
+    local attempt
+    for attempt in 1 2 3; do
+        out=$(curl "${args[@]}" "https://api.cloudflare.com/client/v4${path}" 2>/dev/null) && break
+        out=""
+        (( attempt < 3 )) && sleep $(( attempt * 3 ))
+    done
+    [[ -n $out ]] || { rm -f "$cfg"; die "Cloudflare API request failed after 3 attempts: ${method} ${path}"; }
     rm -f "$cfg"
 
     if [[ $(jq -r '.success' <<<"$out" 2>/dev/null) != true ]]; then
