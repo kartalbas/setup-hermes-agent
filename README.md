@@ -1202,6 +1202,15 @@ terminal. If a run is stuck there: from a second terminal
 the sign-in as pending and finishes. Do the sign-in by hand (1.11, the
 `sudo -i` + `runuser` form) and re-run.
 
+### `Provider authentication failed` right after switching a bot to a hosted provider — log says `HTTP 401: Missing Authentication header`
+
+The profile's `config.yaml` still carried the vendor's default `model.base_url`
+(the aggregator), and for a hosted provider an explicit `base_url` wins over the
+provider's own address — so the bot sent keyless requests to the wrong host.
+Since 2026-09-07 the run writes `base_url` with every model block (empty for a
+hosted provider); re-run the installer and the bot restarts on the right
+address. Check with `grep -A3 '^model:' <profile>/config.yaml`.
+
 ### `assistant: the mailbox … is not readable by … yet`
 
 The Exchange delegation is missing or not applied yet. Sign in to the Exchange

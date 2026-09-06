@@ -241,6 +241,29 @@ _provider_key_var() {
     esac
 }
 
+# The model block. `base_url` is always written: the agent's own default
+# config.yaml carries the vendor's aggregator URL there, and for a hosted
+# provider an explicit model.base_url wins over the provider's registry
+# address — a bot switched from a custom endpoint to a hosted provider then
+# sent its requests, keyless, to the aggregator ("HTTP 401: Missing
+# Authentication header", 2026-09-07). Empty means "the provider's own address".
+_model_fragment() {               # _model_fragment PROVIDER NAME BASE MODEL -> yaml
+    local provider=$1 name=$2 base=$3 model=$4 frag
+    frag="model:"$'\n'
+    frag+="  default: \"${model}\""$'\n'
+    if [[ $provider == custom ]]; then
+        frag+="  provider: \"custom:${name}\""$'\n'
+        frag+="  base_url: \"${base}\""$'\n'
+    else
+        frag+="  provider: \"${provider}\""$'\n'
+        frag+="  base_url: \"\""$'\n'
+    fi
+    [[ ${LLM_CONTEXT_WINDOW:-0} != 0 ]] && frag+="  context_length: ${LLM_CONTEXT_WINDOW}"$'\n'
+    [[ ${LLM_MAX_OUTPUT:-0} != 0 ]]     && frag+="  max_tokens: ${LLM_MAX_OUTPUT}"$'\n'
+    [[ -n ${LLM_REASONING_FIELD:-} ]]   && frag+="  reasoning_field: \"${LLM_REASONING_FIELD}\""$'\n'
+    printf '%s' "$frag"
+}
+
 _providers_configure() {
     local frag_providers="" frag_model="" frag_fallback=""
     local i provider name base model token_var token key_var
@@ -284,16 +307,7 @@ _providers_configure() {
         fi
 
         if (( i == 1 )); then
-            frag_model+="model:"$'\n'
-            frag_model+="  default: \"${model}\""$'\n'
-            if [[ $provider == custom ]]; then
-                frag_model+="  provider: \"custom:${name}\""$'\n'
-            else
-                frag_model+="  provider: \"${provider}\""$'\n'
-            fi
-            [[ ${LLM_CONTEXT_WINDOW:-0} != 0 ]] && frag_model+="  context_length: ${LLM_CONTEXT_WINDOW}"$'\n'
-            [[ ${LLM_MAX_OUTPUT:-0} != 0 ]]     && frag_model+="  max_tokens: ${LLM_MAX_OUTPUT}"$'\n'
-            [[ -n ${LLM_REASONING_FIELD:-} ]]   && frag_model+="  reasoning_field: \"${LLM_REASONING_FIELD}\""$'\n'
+            frag_model=$(_model_fragment "$provider" "$name" "$base" "$model")$'\n'
             log_ok "model: ${model} via ${provider}${base:+ at ${base}}"
         elif [[ $LLM_STRATEGY == failover ]]; then
             frag_fallback+="  - provider: \"${provider}\""$'\n'

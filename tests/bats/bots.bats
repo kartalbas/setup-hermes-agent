@@ -187,3 +187,13 @@ setup() {
     BOT_SECRETARY_LLM_MODEL=""
     BOT_SECRETARY_DELEGATION_ENDPOINT=1; _invalid=(); _check_delegation_endpoint secretary; [ "${#_invalid[@]}" -eq 1 ]
 }
+
+@test "the model block always sets base_url: the endpoint for custom, empty for a hosted provider" {
+    LLM_CONTEXT_WINDOW=512000 LLM_REASONING_FIELD=reasoning_content LLM_MAX_OUTPUT=0
+    out=$(_model_fragment deepseek deepseek "" deepseek-chat)
+    [[ $out == *'provider: "deepseek"'* && $out == *'base_url: ""'* && $out == *'context_length: 512000'* && $out == *'reasoning_field: "reasoning_content"'* ]]
+    out=$(_model_fragment custom bridge http://127.0.0.1:8787/v1 fast)
+    [[ $out == *'provider: "custom:bridge"'* && $out == *'base_url: "http://127.0.0.1:8787/v1"'* ]]
+    # valid yaml with the empty string kept as a string
+    python3 -c 'import sys,yaml; d=yaml.safe_load(sys.stdin.read()); assert d["model"]["base_url"]==""' <<<"$(_model_fragment deepseek deepseek "" m)"
+}
