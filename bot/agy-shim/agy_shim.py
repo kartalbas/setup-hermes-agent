@@ -63,6 +63,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger("agy-shim")
 
+# The CLI's own wait ceiling; kept above the bridge's per-turn timeout so a
+# slow turn is reported by us (with context), not cut by the CLI (without).
+PRINT_TIMEOUT_SECONDS = 900
+
+
+class TransientTurnError(RuntimeError):
+    """A failure the CLI is known to produce spuriously — one fresh retry is due."""
+
 
 # ---------------------------------------------------------------------------
 # One conversation, one CLI process
@@ -76,7 +84,8 @@ class AgentProcess:
     like the model being slow rather than like a bug here.
     """
 
-    def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str], agents_md: str = ""):
+    def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str], agents_md: str = "",
+                 agent_def: str = ""):
         self.model = model
         # Its own directory, and destroyed with it.
         #
@@ -94,6 +103,14 @@ class AgentProcess:
         if agents_md:
             with open(os.path.join(self.workdir, "AGENTS.md"), "w", encoding="utf-8") as f:
                 f.write(agents_md)
+        # The agent definition: the caller's system prompt in the CLI's own
+        # system-prompt slot, its built-in tools switched off (see agent_file_text).
+        self.agent_mode = bool(agent_def)
+        if agent_def:
+            adir = os.path.join(self.workdir, ".agents", "agents")
+            os.makedirs(adir, exist_ok=True)
+            with open(os.path.join(adir, f"{AGENT_NAME}.md"), "w", encoding="utf-8") as f:
+                f.write(agent_def)
         self.created = time.time()
         self.last_used = self.created
         self.turns = 0
@@ -102,8 +119,16 @@ class AgentProcess:
         self.lock = threading.Lock()
         self._closed = False
 
-        cmd = [binary, "--input-format", "stream-json",
-               "--output-format", "stream-json", "--model", model] + extra_args
+        # --disable-slash-commands: a chat message starting with "/" (Teams
+        # "/help") would otherwise be expanded as a CLI command and burn a
+        # turn. --print-timeout: the CLI's own ceiling, kept above ours so it
+        # never fires first and masks the real cause.
+        cmd = [binary, "--input-format", "stream-json", "--output-format", "stream-json",
+               "--model", model, "--disable-slash-commands",
+               "--print-timeout", f"{int(PRINT_TIMEOUT_SECONDS)}s"]
+        if self.agent_mode:
+            cmd += ["--agent", AGENT_NAME, "--add-dir", self.workdir]
+        cmd += extra_args
         log.debug("spawning: %s", " ".join(cmd))
 
         self.proc = subprocess.Popen(
@@ -112,8 +137,11 @@ class AgentProcess:
             text=True, bufsize=1,
             # A clean environment except for what the CLI needs to find its own
             # credentials. HOME is what decides which account it runs as.
+            # A clean environment except for what the CLI needs to find its own
+            # credentials (HOME decides the account) and its own switches
+            # (AGY_CLI_*: auto-update off, account info hidden).
             env={k: v for k, v in os.environ.items()
-                 if k in ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TERM")},
+                 if k in ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TERM") or k.startswith("AGY_CLI_")},
         )
 
         self._events: queue.Queue = queue.Queue()
@@ -165,6 +193,11 @@ class AgentProcess:
                 init = ev.get("init", {})
                 self.conversation_id = ev.get("conversation_id")
                 self.tool_count = len(init.get("tools", []))
+                # A settings.json that switches the CLI to always-proceed would
+                # let it run commands on this host. Refuse to serve on that.
+                mode = init.get("permission_mode")
+                if mode and mode not in ("request-review", "request_review"):
+                    raise RuntimeError(f"CLI permission mode is {mode!r}; the bridge serves only request-review")
                 log.info("started conversation %s (model=%s, %s tools)",
                          (self.conversation_id or "?")[:8], init.get("model"), self.tool_count)
                 return
@@ -177,6 +210,8 @@ class AgentProcess:
         return not self._closed and self.proc.poll() is None
 
     # -- the actual work ----------------------------------------------------
+
+    _denied_shape_logged = False
 
     # Sent once when the CLI reached for one of its own tools and was denied:
     # the turn is lost, but the conversation is not, and a reminder recovers it
@@ -226,6 +261,11 @@ class AgentProcess:
             self.input_tokens = usage.get("input_tokens", 0) or 0
 
             if result.get("status") != "SUCCESS":
+                # CANCELED/WAITING without a client cancel are the CLI's own
+                # hiccups (its issues #902/#944): worth exactly one fresh try.
+                err = str(result.get("error") or "")
+                if result.get("status") in ("CANCELED", "WAITING") or "improperly formatted function call" in err:
+                    raise TransientTurnError(f"CLI status {result.get('status')}: {result.get('error') or self.stderr_tail()}")
                 raise RuntimeError(result.get("error") or self.stderr_tail())
 
             # A denied tool permission is reported as success with no text: the
@@ -233,7 +273,11 @@ class AgentProcess:
             # surfaced as an unexplained failure, so say what actually happened.
             if not str(result.get("response", "")).strip():
                 detail = self.stderr_tail()
-                if "permission" in detail.lower() or result.get("denied_actions"):
+                denied = result.get("denied_actions") or []
+                if denied and not AgentProcess._denied_shape_logged:
+                    AgentProcess._denied_shape_logged = True
+                    log.info("denied_actions shape: %s", json.dumps(denied)[:400])
+                if denied or "permission" in detail.lower():
                     decision = map_cli_intents(self.tool_intents, getattr(self, "available_tools", set()))
                     if decision is not None:
                         result["response"] = json.dumps(decision, separators=(",", ":"))
@@ -250,7 +294,9 @@ class AgentProcess:
                     raise RuntimeError(
                         "the model needed a tool it is not permitted to use, and "
                         "produced no answer even after the reminder. " + detail)
-                raise RuntimeError("the model returned an empty response. " + detail)
+                if "authentication timed out" in detail.lower():
+                    raise TransientTurnError("CLI authentication timed out. " + detail)
+                raise TransientTurnError("the model returned an empty response. " + detail)
             return result
 
     def close(self):
@@ -265,8 +311,11 @@ class AgentProcess:
             self.proc.terminate()
             self.proc.wait(timeout=10)
         except Exception:
+            # The CLI has been seen to linger after SIGTERM (its issue #947);
+            # a hard kill and a bounded wait keep the pool from filling up.
             try:
                 self.proc.kill()
+                self.proc.wait(timeout=5)
             except Exception:
                 pass
 
@@ -410,17 +459,38 @@ class Pool:
                             system: str, model: str,
                             images: list[tuple[bytes, str]],
                             tool_names: set[str]) -> tuple[str, dict, dict]:
-        proc = self._take_spare(model)
+        if self.args.agent_mode:
+            # The system prompt travels in the agent definition, so the process
+            # is spawned for this request (no pre-warmed spare can know it).
+            proc = AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
+                                agents_md="", agent_def=agent_file_text(system))
+        else:
+            proc = self._take_spare(model)
         proc.available_tools = tool_names
         try:
-            text = stateless_message(system, history, message)
+            text = (transcript_message(history, message, identity_name(system)) if self.args.agent_mode
+                    else stateless_message(system, history, message))
             if images:
                 text = place_images(text, images, proc.workdir)
             proc.full_prefix = text          # re-sent whole if a built-in tool is denied
             proc.identity = identity_name(system)
             started = time.time()
-            with proc.lock:
-                result = proc.turn(text, self.args.timeout)
+            try:
+                with proc.lock:
+                    result = proc.turn(text, self.args.timeout)
+            except TransientTurnError as exc:
+                # Once, on a fresh process: the CLI's spurious empty/canceled
+                # turns clear on retry; a genuine failure costs one extra turn.
+                log.warning("transient CLI failure (%s); retrying once on a fresh process", str(exc)[:160])
+                threading.Thread(target=proc.close, daemon=True).start()
+                proc = (AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
+                                     agents_md="", agent_def=agent_file_text(system))
+                        if self.args.agent_mode else self._take_spare(model))
+                proc.available_tools = tool_names
+                proc.full_prefix = text
+                proc.identity = identity_name(system)
+                with proc.lock:
+                    result = proc.turn(text, self.args.timeout)
             usage = result.get("usage", {}) or {}
             log.info("stateless [%s] history=%d in=%s cached=%s out=%s %.1fs",
                      model, len(history), usage.get("input_tokens"),
@@ -472,7 +542,7 @@ class Pool:
     def stats(self) -> dict:
         with self.lock:
             return {
-                "mode": "stateless" if self.args.stateless else "stateful",
+                "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else ""),
                 "spares": sorted(self.spares),
                 "conversations": len(self.procs),
                 "detail": [
@@ -617,6 +687,29 @@ def identity_line(name: str) -> str:
             "were given. Message from the user:\n")
 
 
+AGENT_NAME = "hermes"
+
+
+def agent_file_text(system: str) -> str:
+    """The CLI agent definition that carries the caller's system prompt.
+
+    `--agent <name>` loads `.agents/agents/<name>.md` from the workspace and
+    compiles its body into the CLI's system prompt — the slot our text never
+    reached from a user message. `tools: []` and `commandExecutionPolicy: off`
+    remove the CLI's own tools, so nothing is left to reach for; the caller's
+    functions arrive through the TOOL PROTOCOL inside the body. Verified
+    2026-09-07: identity replaced, no tool intents, prompt 5.3k -> 2.3k tokens."""
+    body = IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL
+    return ("---\n"
+            f"name: {AGENT_NAME}\n"
+            "description: The caller's assistant, defined entirely by the system prompt below\n"
+            "tools: []\n"
+            "commandExecutionPolicy: off\n"
+            "inheritCustomizations: false\n"
+            "subagent: false\n"
+            "---\n" + body + "\n")
+
+
 def agents_md_text(system: str) -> str:
     """Project instructions for the CLI: who it is here, and that it has no tools."""
     name = identity_name(system)
@@ -691,6 +784,18 @@ def map_cli_intents(intents: list[dict], available: set[str]) -> dict | None:
         log.info("translated CLI intent %s -> %s", name, target[0])
         return {"type": "tool_call", "name": target[0], "arguments": mapped}
     return None
+
+
+def transcript_message(history: list[str], message: str, name: str) -> str:
+    """Agent mode: the system prompt is in the agent definition; the user
+    message carries only the transcript and the new message (identity line
+    still directly before it — cheap, and it settled the who-are-you case)."""
+    parts = []
+    if history:
+        parts.append("=== CONVERSATION SO FAR (oldest first) ===\n" + "\n\n".join(history)
+                     + "\n=== END CONVERSATION ===")
+    parts.append(identity_line(name) + message)
+    return "\n\n".join(parts)
 
 
 def stateless_message(system: str, history: list[str], message: str) -> str:
@@ -1028,6 +1133,40 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------------------------------------------------------------------------
 
+def startup_checks(args) -> None:
+    """Log the CLI version and compare the configured models with its catalog.
+
+    A warning, not a refusal: the catalog call needs the network and the
+    account, and a bridge that will not start because a listing hiccupped
+    would take every bot down for nothing."""
+    try:
+        v = subprocess.run([args.binary, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+        log.info("CLI: %s", v or "(no version output)")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not read the CLI version: %s", exc)
+    try:
+        out = subprocess.run([args.binary, "--output-format", "json", "models"], capture_output=True, text=True, timeout=60).stdout
+        data = json.loads(out) if out.strip() else {}
+        names = set()
+        items = data.get("models") if isinstance(data, dict) else data
+        for m in items or []:
+            if isinstance(m, dict):
+                for k in ("name", "id", "slug"):
+                    if m.get(k):
+                        names.add(str(m[k]))
+            elif isinstance(m, str):
+                names.add(m)
+        raw = args.models or []
+        wanted = [m for m in (raw if isinstance(raw, list) else str(raw).split(",")) if m]
+        missing = [m for m in wanted if names and m not in names]
+        if missing:
+            log.warning("configured models not in the CLI catalog: %s (catalog: %d entries)", ", ".join(missing), len(names))
+        else:
+            log.info("model catalog: %d entries; configured models present", len(names))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not read the CLI model catalog: %s", exc)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     p.add_argument("--binary", default=os.environ.get("AGY_SHIM_BINARY", "agy"))
@@ -1057,6 +1196,10 @@ def main() -> int:
     p.add_argument("--extra-args", default=os.environ.get("AGY_SHIM_EXTRA_ARGS", ""),
                    help="additional arguments passed to the CLI")
     p.add_argument("--log-level", default=os.environ.get("AGY_SHIM_LOG_LEVEL", "info"))
+    p.add_argument("--no-agent-mode", dest="agent_mode", action="store_false",
+                   default=os.environ.get("AGY_SHIM_AGENT_MODE", "true").lower() not in ("0", "false", "no"),
+                   help="do not load the system prompt through a CLI agent definition (--agent); "
+                        "default on: the prompt goes into the CLI's system slot and its tools are off")
     p.add_argument("--stateful", dest="stateless", action="store_false",
                    default=os.environ.get("AGY_SHIM_STATELESS", "true").lower() not in ("0", "false", "no"),
                    help="keep one CLI conversation per chat (legacy); default is stateless: "
@@ -1081,6 +1224,7 @@ def main() -> int:
         log.error("cannot find %r on PATH — is the CLI installed for this user?", args.binary)
         return 1
 
+    startup_checks(args)
     Handler.pool = Pool(args)
     Handler.models = args.models
     Handler.aliases = args.aliases

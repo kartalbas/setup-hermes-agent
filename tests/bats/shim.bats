@@ -187,3 +187,38 @@ assert m.map_cli_intents([{"name": "write_to_file", "parameters": {"TargetFile":
 assert m.map_cli_intents([{"name": "run_command", "parameters": {}}], {"terminal"}) is None   # empty command
 PY
 }
+
+@test "the CLI is spawned without slash-command expansion, with its own switches passed through" {
+    grep -q -- '"--disable-slash-commands"' "$SHIM"
+    grep -q -- '"--print-timeout"' "$SHIM"
+    grep -q 'k.startswith("AGY_CLI_")' "$SHIM"
+    grep -q 'AGY_CLI_DISABLE_AUTO_UPDATE=true' "${BATS_TEST_DIRNAME}/../../libs/35-agy-shim.sh"
+}
+
+@test "transient CLI failures are their own error type and denied_actions is the primary signal" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert issubclass(m.TransientTurnError, RuntimeError)
+src = open(sys.argv[1]).read()
+assert 'denied = result.get("denied_actions") or []' in src
+assert 'if denied or "permission" in detail.lower()' in src
+assert 'permission_mode' in src and 'request-review' in src
+PY
+}
+
+@test "agent mode: the system prompt becomes a CLI agent definition without tools" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+d = m.agent_file_text("# Acme News\n\nYour name is **Acme News**.")
+head, body = d.split("---\n", 2)[1], d.split("---\n", 2)[2]
+assert "name: hermes" in head and "tools: []" in head and "commandExecutionPolicy: off" in head and "inheritCustomizations: false" in head
+assert body.startswith(m.IDENTITY_FRAME_HEAD) and "Acme News" in body
+t = m.transcript_message(["user: hi", "assistant: hello"], "Wer bist du?", "Acme News")
+assert "CONVERSATION SO FAR" in t and t.endswith("Wer bist du?") and "you are Acme News" in t
+assert "CONVERSATION SO FAR" not in m.transcript_message([], "x", "")
+PY
+    grep -q '"--agent", AGENT_NAME, "--add-dir", self.workdir' "$SHIM"
+    grep -q 'AGY_SHIM_AGENT_MODE' "$SHIM"
+}

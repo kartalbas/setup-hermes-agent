@@ -70,3 +70,11 @@ Legend: **[V]** verified (primary source or command output reproduced during ver
 - **Policy question** (not an experiment): only Google can answer whether a spawn-only wrapper is "third party software … to access the Service"; options are to post on discuss.ai.google.dev with the exact architecture or accept the risk in an ADR.
 
 Files referenced: `<repo>/bot/agy-shim/agy_shim.py` (spawn cmd lines 105-116, env filter 113-115, denied handling 231-253, close 256-270), `<repo>/config/hermes.conf:80` (`AGY_SHIM_MODELS`), `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/{hooks,rules,json_configs,plugins}.md`, `~/.local/bin/agy` (1.1.27).
+
+## Experiments run 2026-09-07 (results)
+
+- **E2 custom agent** — `.agents/agents/probe.md` (`tools: []`, `commandExecutionPolicy: off`, `inheritCustomizations: false`), spawned with `--agent probe --add-dir <ws>` in stream-json: `init.agent = probe`, the answer was "PROBE: I am PROBE, a private assistant bot … I have no tools." (identity replaced, no vendor mention), a request to run `ls -la` produced no tool step and no `denied_actions` ("I do not have access to a shell execution tool"), input tokens 2,286 vs ≈5,300 with the default agent. `init.tools` still lists 57 entries — the list is global, the agent cannot use them. **Adopted**: the bridge writes the caller's system prompt as the agent definition per request (bot/agy-shim, "agent mode", default on).
+- **E1 hooks in stream-json** — `PreInvocation`/`PreToolUse` in `<ws>/.agents/hooks.json` (with `--add-dir`) and in `~/.gemini/config/hooks.json`: neither handler ran (no log written, `denied_actions` unchanged). Not usable headless as far as tested.
+- **E3 `--json-schema` in stream-json** — two turns in one process with `--agent probe`: `structured_output` was `None` on both. Not adopted.
+- **Startup checks** — `agy --version` prints `1.1.27`; `agy --output-format json models` returns a JSON list (the bridge logs the catalog size; 0 entries means the format changed).
+- Observed once in agent mode: `result.status != SUCCESS` with error "Your previous response contained an improperly formatted function call" — the model emitted a native call although the agent has no tools; treated as transient (one retry on a fresh process).

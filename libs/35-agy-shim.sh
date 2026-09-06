@@ -138,6 +138,11 @@ Type=simple
 # default PATH does not contain. ExecStart names it in full; this is for
 # whatever the CLI itself invokes.
 Environment=PATH=${path}
+# The CLI updates itself in the background; a backend that changes under the
+# bridge is not a state anyone can reason about. Updates are the operator's
+# deliberate act ("agy update"). The bridge passes AGY_CLI_* through to the CLI.
+Environment=AGY_CLI_DISABLE_AUTO_UPDATE=true
+Environment=AGY_CLI_HIDE_ACCOUNT_INFO=true
 ${SERVICE_USER:+User=${SERVICE_USER}}
 ${SERVICE_GROUP:+Group=${SERVICE_GROUP}}
 ExecStart=${py} $(agyshim_script_path) \\
