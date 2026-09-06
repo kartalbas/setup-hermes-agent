@@ -32,3 +32,13 @@ setup() {
     [ "$(jq -r '.[1].path' <<<"$rules")" = /api/messages ]
     [ "$(jq -r '.[3].service' <<<"$rules")" = http_status:404 ]
 }
+
+@test "the public site adds its hostname and a whole-host rule before the 404" {
+    BOTS="secretary" BOT_PREFIX=Acme SITE_ENABLED=true SITE_OWNER=Acme SITE_CONTACT=a@example.com; config_defaults
+    [ "$(tunnel_hostnames | tr '\n' ' ')" = "secretary.example.com assistant.example.com " ]
+    rules=$(tunnel_ingress_rules | jq -sc .)
+    [ "$(jq -r '.[1].hostname' <<<"$rules")" = assistant.example.com ]
+    [ "$(jq -r '.[1].service' <<<"$rules")" = http://127.0.0.1:8081 ]
+    [ "$(jq -r '.[1] | has("path")' <<<"$rules")" = false ]
+    [ "$(jq -r '.[2].service' <<<"$rules")" = http_status:404 ]
+}

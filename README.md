@@ -586,6 +586,23 @@ GOOGLE_PROJECT="my-assistant-project"
 
 ---
 
+## 1.12 · The public pages
+
+Google publishes an external OAuth app only with a home page, a privacy policy
+and terms of service on an authorized domain; Teams shows the same links in an
+app's details. `SITE_ENABLED=true` renders the three pages from `bot/site/` with
+`SITE_OWNER` and `SITE_CONTACT`, serves them with nginx on loopback and
+publishes `assistant.<zone>` through the tunnel:
+
+```
+https://assistant.example.com/     https://assistant.example.com/privacy     https://assistant.example.com/terms
+```
+
+Enter those three on Google's Branding page (App domain), add `<zone>` under
+Authorized domains, save — then Audience → Publish app.
+
+---
+
 # PART 2 — Fill the configuration
 
 ## 2.1 · The five files

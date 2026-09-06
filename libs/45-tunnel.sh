@@ -145,6 +145,8 @@ tunnel_hostnames() {
     else
         printf '%s\n' "$TUNNEL_HOSTNAME"
     fi
+    is_true "${SITE_ENABLED:-false}" && printf '%s\n' "$SITE_HOSTNAME"
+    return 0
 }
 
 # The ingress rules as JSON: each bot's hostname to its own webhook port on
@@ -161,6 +163,9 @@ tunnel_ingress_rules() {
         jq -nc --arg host "$TUNNEL_HOSTNAME" --arg path "$TUNNEL_INGRESS_PATH" --arg svc "$TUNNEL_INGRESS_TARGET" \
             '{hostname: $host, path: $path, service: $svc}'
     fi
+    # The public pages: the whole hostname, every path.
+    is_true "${SITE_ENABLED:-false}" &&
+        jq -nc --arg host "$SITE_HOSTNAME" --arg svc "http://127.0.0.1:${SITE_PORT}" '{hostname: $host, service: $svc}'
     jq -nc '{service: "http_status:404"}'
 }
 

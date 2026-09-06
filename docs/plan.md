@@ -85,6 +85,9 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 ## 6 · Later, not forgotten
 
+- [x] Public pages (home, privacy, terms) under assistant.<zone> — module `site`; Google requires them to publish the OAuth app, Teams shows them
+- [ ] Teams manifest: point websiteUrl / privacyUrl / termsOfUseUrl at the public pages (next bot release)
+
 - [x] Secretary runs on Kimi K3 over the Moonshot API (native tools, images, prompt cache); Search and News stay on the bridge — per-bot model configuration
 - [x] Daily session reset at 04:00 for all bots (`AGENT_SESSION_RESET`)
 - [x] Bridge stateless (ADR 0021); images handed to the CLI as files

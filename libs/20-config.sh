@@ -197,6 +197,13 @@ config_defaults() {
     : "${BOT_PREFIX:=}"                    # display names are "<prefix> <Name>"
     : "${BOT_SERVICE_PREFIX:=agent}"       # units <prefix>-<key>.service, Azure bots <prefix>-<key>
     : "${BOT_PORT_BASE:=3978}"             # webhook ports: base, base+1, … unless a bot names its own
+    # --- public site: home, privacy, terms — what the OAuth providers ask for ---
+    : "${SITE_ENABLED:=false}"
+    : "${SITE_HOSTNAME:=assistant.${TUNNEL_ZONE:-}}"
+    : "${SITE_PORT:=8081}"
+    : "${SITE_ROOT:=/var/www/assistant-site}"
+    : "${SITE_OWNER:=}"                     # legal name shown on the pages
+    : "${SITE_CONTACT:=}"                   # contact address shown on the pages
     # When a chat starts over with an empty transcript: none | daily@HOUR | idle@MINUTES.
     # Memory, files, calendar and cron jobs live outside the transcript and survive.
     : "${AGENT_SESSION_RESET:=none}"
@@ -408,6 +415,11 @@ config_validate() {
 
     _check_required SERVICE_USER "$SERVICE_USER" "set BOOTSTRAP_USER in config/bootstrap.conf"
     _bots_validate
+    if is_true "${SITE_ENABLED:-false}"; then
+        _check_required SITE_OWNER "${SITE_OWNER:-}" "the operator's name on the public pages"
+        _check_required SITE_CONTACT "${SITE_CONTACT:-}" "the contact address on the public pages"
+        [[ -n ${TUNNEL_ZONE:-} || ${SITE_HOSTNAME:-} == *.* ]] || _bad "SITE_ENABLED=true needs TUNNEL_ZONE or SITE_HOSTNAME"
+    fi
     _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then
         _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"

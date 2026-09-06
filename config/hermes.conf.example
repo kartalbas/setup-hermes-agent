@@ -301,3 +301,10 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 ASSISTANT_GOOGLE_ENABLED=false
 ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
 GOOGLE_PROJECT="my-assistant-project"
+
+# Public pages (home, privacy policy, terms) under assistant.<zone> — what Google
+# and Teams ask for before an app may be published (README 1.12).
+SITE_ENABLED=true
+SITE_OWNER="Acme Ltd"
+SITE_CONTACT="agent@example.com"
+# SITE_HOSTNAME=assistant.<TUNNEL_ZONE>, SITE_PORT=8081

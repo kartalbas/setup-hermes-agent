@@ -27,6 +27,7 @@ uninstall_apply() {
     _uninstall_dashboard
     agyshim_uninstall
     assistant_uninstall
+    site_uninstall
     _uninstall_code
     _uninstall_state
     _uninstall_account
