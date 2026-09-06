@@ -154,6 +154,11 @@ tunnel_hostnames() {
     return 0
 }
 
+# tunnel_ingress_summary RULES_JSON -> one line naming every hostname rule
+tunnel_ingress_summary() {
+    jq -r '[.[] | select(.hostname) | "\(.hostname)\(.path // "") -> \(.service)"] | join(", ")' <<<"$1"
+}
+
 # The ingress rules as JSON: each bot's hostname to its own webhook port on
 # loopback, the one path the platform posts to, everything else 404.
 tunnel_ingress_rules() {
@@ -388,7 +393,7 @@ _cf_ingress_put() {
               | jq -Sc '.result.config.ingress // []' 2>/dev/null || printf '[]')
     wanted=$(jq -Sc '.config.ingress' <<<"$body")
     local summary
-    summary=$(jq -r '[.[] | select(.hostname) | "\(.hostname)\(.path // \"\") -> \(.service)"] | join(", ")' <<<"$wanted")
+    summary=$(tunnel_ingress_summary "$wanted")
     if [[ $current == "$wanted" ]]; then
         log_skip "ingress already ${summary}"
         return 0

@@ -42,3 +42,8 @@ setup() {
     [ "$(jq -r '.[1] | has("path")' <<<"$rules")" = false ]
     [ "$(jq -r '.[2].service' <<<"$rules")" = http_status:404 ]
 }
+
+@test "the ingress summary names hostname rules with and without a path" {
+    rules='[{"hostname":"a.example.com","path":"/api/messages","service":"http://127.0.0.1:3978"},{"hostname":"b.example.com","service":"http://127.0.0.1:8081"},{"service":"http_status:404"}]'
+    [ "$(tunnel_ingress_summary "$rules")" = "a.example.com/api/messages -> http://127.0.0.1:3978, b.example.com -> http://127.0.0.1:8081" ]
+}
