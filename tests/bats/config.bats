@@ -655,8 +655,8 @@ PY
     for real in hermes channels; do
         [ -f "$REPO_ROOT/config/$real.conf" ] || skip "no real $real.conf on this host"
         example="$REPO_ROOT/config/$real.conf.example"
-        missing=$(comm -23 <(grep -oE '^[A-Z_0-9]+=' "$REPO_ROOT/config/$real.conf" | sort -u) \
-                          <(grep -oE '^#? ?[A-Z_0-9]+=' "$example" | sed 's/^#\{0,1\} \{0,1\}//' | sort -u))
+        missing=$(LC_ALL=C comm -23 <(grep -oE '^[A-Z_0-9]+=' "$REPO_ROOT/config/$real.conf" | LC_ALL=C sort -u) \
+                          <(grep -oE '^#? ?[A-Z_0-9]+=' "$example" | sed 's/^#\{0,1\} \{0,1\}//' | LC_ALL=C sort -u))
         [ -z "$missing" ] || { echo "missing in $real.conf.example: $missing"; false; }
     done
 }
