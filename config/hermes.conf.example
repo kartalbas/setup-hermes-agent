@@ -277,7 +277,16 @@ BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots ac
 BOT_PORT_BASE=3978
 AGENT_SESSION_RESET="daily@4"          # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
 
-BOT_SECRETARY_CHANNELS="teams email"   # the one bot that also reads the mailbox
+BOT_SECRETARY_CHANNELS="teams email"   # reads INBOX — everything not routed to another bot
+BOT_SECRETARY_MAIL_ALIAS="secretary@example.com"
+BOT_SECRETARY_MAIL_CATCH_ALL=true
+# More bots on the SAME mailbox: give each an alias (added to the mailbox in
+# Exchange by you); the run creates the folder and the inbox rule that sorts
+# mail to the alias into it, and the bot polls that folder.
+BOT_SEARCH_CHANNELS="teams email"
+BOT_SEARCH_MAIL_ALIAS="search@example.com"
+BOT_NEWS_CHANNELS="teams email"
+BOT_NEWS_MAIL_ALIAS="news@example.com"
 BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
 BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # A bot may run on its own model instead of the global LLM_ENDPOINT_1 — e.g. a

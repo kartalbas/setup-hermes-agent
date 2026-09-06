@@ -29,10 +29,12 @@ hermes_apply() {
     if _hermes_at_revision "$sha"; then
         log_skip "already installed at ${sha:0:12}; skipping the vendor installer"
         _hermes_record_revision "$sha"
+        _hermes_patch_email_folder
         return 0
     fi
 
     _hermes_run_installer "$sha"
+    _hermes_patch_email_folder
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -308,4 +310,50 @@ hermes_cli() {
     [[ -n $home ]] && env_args+=("HERMES_HOME=${home}")
 
     run "${wrapper[@]}" "${env_args[@]}" "$py" -m hermes_cli.main "$@"
+}
+
+# ---------------------------------------------------------------------------
+# A carried patch: the e-mail adapter polls a configurable folder.
+#
+# The pinned release hard-codes INBOX. One mailbox with Exchange rules that
+# sort mail per alias into folders is how several bots share one account —
+# each polls its own folder — so the two `imap.select("INBOX")` become
+# `imap.select(os.environ.get("EMAIL_IMAP_FOLDER", "INBOX"))`. Two lines,
+# idempotent, re-applied after every vendor update; candidate for upstream.
+# ---------------------------------------------------------------------------
+hermes_email_adapter_path() { printf '%s/plugins/platforms/email/adapter.py' "$(hermes_install_dir)"; }
+
+hermes_patch_email_folder_file() {   # hermes_patch_email_folder_file FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+if "EMAIL_IMAP_FOLDER" in s:
+    sys.exit(3)
+n = s.count('imap.select("INBOX")')
+if n == 0:
+    sys.exit("no imap.select(\"INBOX\") found; the adapter changed — review the patch")
+s = s.replace('imap.select("INBOX")', 'imap.select(os.environ.get("EMAIL_IMAP_FOLDER", "INBOX"))')
+if not re.search(r"^import os\b", s, re.M):
+    s = "import os\n" + s
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_email_folder() {
+    local f; f=$(hermes_email_adapter_path)
+    [[ -f $f ]] || { log_warn "e-mail adapter not found at ${f}; folder patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q EMAIL_IMAP_FOLDER "$f"; then log_skip "e-mail adapter folder patch present"
+        else log_info "[dry-run] would patch ${f} for EMAIL_IMAP_FOLDER"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_email_folder_file "$f" || rc=$?
+    case $rc in
+        0) mark_changed; log_ok "e-mail adapter patched: folder from EMAIL_IMAP_FOLDER" ;;
+        3) log_skip "e-mail adapter folder patch present" ;;
+        *) die "could not patch the e-mail adapter for a configurable folder" ;;
+    esac
 }

@@ -28,6 +28,7 @@ channels_apply() {
         CHANNEL_WHATSAPP_ENABLED=false
         CHANNEL_TEAMS_ENABLED=$(bot_has_channel "$key" teams && printf true || printf false)
         CHANNEL_EMAIL_ENABLED=$(bot_has_channel "$key" email && printf true || printf false)
+        CHANNEL_EMAIL_FOLDER=$(bot_field "$key" MAIL_FOLDER)
         CHANNEL_TEAMS_CLIENT_ID_VAR=$BOT_TEAMS_CLIENT_ID_VAR
         CHANNEL_TEAMS_CLIENT_SECRET_VAR=$BOT_TEAMS_CLIENT_SECRET_VAR
         CHANNEL_TEAMS_PORT=$BOT_PORT
@@ -437,6 +438,8 @@ _channel_email() {
     fi
 
     _env_upsert EMAIL_ADDRESS   "$EMAIL_ADDRESS_RESOLVED"
+    # The folder this bot polls (carried adapter patch, see 60-hermes.sh).
+    _env_upsert EMAIL_IMAP_FOLDER "${CHANNEL_EMAIL_FOLDER:-INBOX}"
     _env_upsert EMAIL_PASSWORD  "$password"
     _env_upsert EMAIL_IMAP_HOST "$EMAIL_IMAP_RESOLVED"
     _env_upsert EMAIL_IMAP_PORT "$EMAIL_IMAP_PORT_RESOLVED"

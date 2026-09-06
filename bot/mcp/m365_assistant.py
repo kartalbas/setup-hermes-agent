@@ -270,6 +270,30 @@ def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: 
     return item
 
 
+def ensure_mail_rule(graph: "Graph", alias: str, folder: str) -> Dict[str, Any]:
+    """Mail addressed to ALIAS is moved into FOLDER by an inbox rule.
+
+    The folder is created under the mailbox root when missing; the rule is
+    keyed by its display name and created once. Idempotent."""
+    folders = graph.call("GET", "/me/mailFolders", params={"$top": 200, "$select": "id,displayName"}).get("value") or []
+    fid = next((f["id"] for f in folders if (f.get("displayName") or "").lower() == folder.lower()), None)
+    created_folder = False
+    if fid is None:
+        fid = graph.call("POST", "/me/mailFolders", json_body={"displayName": folder})["id"]
+        created_folder = True
+    name = f"Route {alias} -> {folder}"
+    rules = graph.call("GET", "/me/mailFolders/inbox/messageRules").get("value") or []
+    existing = next((r for r in rules if r.get("displayName") == name), None)
+    created_rule = False
+    if existing is None:
+        graph.call("POST", "/me/mailFolders/inbox/messageRules", json_body={
+            "displayName": name, "sequence": 1, "isEnabled": True,
+            "conditions": {"sentToAddresses": [{"emailAddress": {"address": alias}}]},
+            "actions": {"moveToFolder": fid, "stopProcessingRules": True}})
+        created_rule = True
+    return {"alias": alias, "folder": folder, "folder_created": created_folder, "rule_created": created_rule}
+
+
 def share_with(graph: "Graph", path: str, emails: List[str], role: str = "write", message: str = "",
                send_invitation: bool = True) -> Dict[str, Any]:
     """Grant people access to an item — idempotent: existing grants are kept."""
@@ -761,6 +785,11 @@ def main(argv: List[str]) -> int:
             who = [e.strip() for e in argv[3].split(",") if e.strip()]
             out["share"] = share_with(graph, argv[2], who, argv[4] if len(argv) > 4 else "write", send_invitation=False)
         print(json.dumps(out))
+        return 0
+    if cmd == "ensure-mail-rule":
+        if len(argv) < 4:
+            raise SystemExit("usage: ensure-mail-rule ALIAS FOLDER")
+        print(json.dumps(ensure_mail_rule(Graph(auth, tz), argv[2], argv[3])))
         return 0
     if cmd == "tools":
         srv = build_server(Graph(auth, tz))

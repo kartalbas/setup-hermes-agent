@@ -343,6 +343,17 @@ an API model this is cost hygiene (the first turn after a pause pays for the who
 transcript); with the bridge it is also what keeps a long chat from dragging a
 stale context around.
 
+**Several bots, one mailbox.** Mail is one account (the agent's), but every
+bot can have its own address on it: add an alias in Exchange (e.g.
+`news@example.com`), set `BOT_NEWS_MAIL_ALIAS` and give the bot the `email`
+channel. The run creates a folder named after the bot and an inbox rule that
+sorts mail to that alias into it; the bot polls that folder. One bot reads
+INBOX (`BOT_<KEY>_MAIL_CATCH_ALL=true`) and gets everything else. This needs a
+two-line patch to the pinned agent's e-mail adapter (a configurable folder),
+which the run applies and re-applies after updates — see `60-hermes.sh`.
+Replies are sent from the mailbox's primary address; sending as the alias
+needs Exchange's "send from alias" setting.
+
 **A bot may run on its own model.** `BOT_<KEY>_LLM_MODEL` (with `_LLM_PROVIDER`,
 `_LLM_NAME`, `_LLM_BASE_URL`, `_LLM_TOKEN_VAR`, `_LLM_REASONING_FIELD`,
 `_LLM_CONTEXT_WINDOW`) replaces the global endpoint for that bot's profile — a

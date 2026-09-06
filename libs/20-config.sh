@@ -776,6 +776,9 @@ bot_field() {
         TEAMS_CLIENT_SECRET_VAR) printf 'TEAMS_%s_CLIENT_SECRET' "$(bot_upper "$key")" ;;
         DASHBOARD)     printf 'false' ;;
         SESSION_RESET) printf '%s' "$AGENT_SESSION_RESET" ;;
+        MAIL_ALIAS)    printf '' ;;                     # address on the shared mailbox that reaches this bot
+        MAIL_FOLDER)   if [[ -n $(bot_field "$key" MAIL_ALIAS) && $(bot_field "$key" MAIL_CATCH_ALL) != true ]]; then bot_field "$key" NAME; else printf 'INBOX'; fi ;;
+        MAIL_CATCH_ALL) printf 'false' ;;               # true: this bot reads INBOX (everything not routed elsewhere)
         LLM_MODEL)     printf '' ;;                     # empty: the global LLM_ENDPOINT_1 applies
         LLM_PROVIDER)  printf 'custom' ;;
         LLM_NAME)      printf '%s-llm' "$key" ;;
@@ -870,7 +873,22 @@ _bots_validate() {
     (( ${#keys[@]} == 0 )) && return 0
     [[ -n ${BOT_PREFIX:-} ]] || _bad "BOT_PREFIX is empty; bots are displayed as '<prefix> <Name>'"
     [[ -n ${TUNNEL_ZONE:-} ]] || _bad "bots need TUNNEL_ZONE for their hostnames"
-    (( emails <= 1 )) || _bad "bots: the email channel can be on one bot only (one mailbox)"
+    # One mailbox, several bots: every mail bot needs its own folder; INBOX
+    # (the catch-all) can be read by one bot only.
+    if (( emails > 0 )); then
+        local -a folders=() inbox_readers=()
+        local fk fold
+        while IFS= read -r fk; do
+            [[ -n $fk ]] || continue
+            bot_has_channel "$fk" email || continue
+            fold=$(bot_field "$fk" MAIL_FOLDER)
+            for other in ${folders+"${folders[@]}"}; do [[ $other == "$fold" ]] && _bad "bots: mail folder '${fold}' is read by two bots"; done
+            folders+=("$fold")
+            [[ $fold == INBOX ]] && inbox_readers+=("$fk")
+            [[ $fold == INBOX || -n $(bot_field "$fk" MAIL_ALIAS) ]] || _bad "bot ${fk}: a mail folder other than INBOX needs BOT_$(bot_upper "$fk")_MAIL_ALIAS (the address Exchange sorts into it)"
+        done < <(bots)
+        (( ${#inbox_readers[@]} <= 1 )) || _bad "bots: INBOX can be read by one bot only (${inbox_readers[*]}); give the others a MAIL_ALIAS"
+    fi
     (( ${dashboards:-0} <= 1 )) || _bad "bots: BOT_<KEY>_DASHBOARD=true on one bot only"
     return 0
 }

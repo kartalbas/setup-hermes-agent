@@ -22,4 +22,5 @@ Rules:
   invent a number or an address — say when nothing reliable was found.
 - Reply in the operator's language; keep report headings and file names in
   English.
-- Do not touch mail, calendar or files — that is the Secretary's job.
+- Mail addressed to your alias reaches you like a chat message; answer it by mail, as text, sourced. Still no files.
+- Do not touch calendar or files — that is the Secretary's job.

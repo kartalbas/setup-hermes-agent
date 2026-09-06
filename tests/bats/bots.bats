@@ -57,7 +57,7 @@ setup() {
     _invalid=(); BOT_SEARCH_PORT=3978; _bots_validate; [ "${#_invalid[@]}" -eq 1 ]; unset BOT_SEARCH_PORT
     _invalid=(); BOT_NEWS_CHANNELS="teams slack"; _bots_validate; [ "${#_invalid[@]}" -eq 1 ]; unset BOT_NEWS_CHANNELS
     _invalid=(); BOT_NEWS_MCP="m365"; _bots_validate; [ "${#_invalid[@]}" -eq 1 ]; unset BOT_NEWS_MCP
-    _invalid=(); BOT_NEWS_CHANNELS="teams email" BOT_SEARCH_CHANNELS="teams email"; _bots_validate; [ "${#_invalid[@]}" -eq 1 ]
+    _invalid=(); BOT_NEWS_CHANNELS="teams email" BOT_SEARCH_CHANNELS="teams email"; _bots_validate; [ "${#_invalid[@]}" -ge 1 ]   # two INBOX readers
     unset BOT_NEWS_CHANNELS BOT_SEARCH_CHANNELS
     _invalid=(); BOTS="Bad-Key"; _bots_validate; [ "${#_invalid[@]}" -ge 1 ]
     _invalid=(); BOTS="secretary search news"; _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
@@ -129,4 +129,27 @@ setup() {
     AGENT_SESSION_RESET=daily@4 BOT_NEWS_SESSION_RESET=idle@60   # agnostic-ok
     [ "$(bot_field secretary SESSION_RESET)" = daily@4 ]   # agnostic-ok
     [ "$(bot_field news SESSION_RESET)" = idle@60 ]   # agnostic-ok
+}
+
+@test "mail folders derive from alias and catch-all, and INBOX has one reader" {
+    BOT_SECRETARY_CHANNELS="teams email" BOT_SECRETARY_MAIL_ALIAS=secretary@example.com BOT_SECRETARY_MAIL_CATCH_ALL=true
+    BOT_SEARCH_CHANNELS="teams email" BOT_SEARCH_MAIL_ALIAS=search@example.com
+    BOT_NEWS_CHANNELS="teams email" BOT_NEWS_MAIL_ALIAS=news@example.com
+    [ "$(bot_field secretary MAIL_FOLDER)" = INBOX ]
+    [ "$(bot_field search MAIL_FOLDER)" = Search ]
+    [ "$(bot_field news MAIL_FOLDER)" = News ]
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
+    unset BOT_NEWS_MAIL_ALIAS                       # news would read INBOX too
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -ge 1 ]
+}
+
+@test "the carried adapter patch makes the folder configurable, once" {
+    local f; f=$(mktemp)
+    printf 'import imaplib\n\ndef a(imap):\n    imap.select("INBOX")\n\ndef b(imap):\n    imap.select("INBOX")\n' >"$f"
+    hermes_patch_email_folder_file "$f"
+    [ "$(grep -c 'os.environ.get("EMAIL_IMAP_FOLDER", "INBOX")' "$f")" -eq 2 ]
+    grep -q '^import os' "$f"
+    bats_run hermes_patch_email_folder_file "$f"
+    [ "$status" -eq 3 ]
+    rm -f "$f"
 }

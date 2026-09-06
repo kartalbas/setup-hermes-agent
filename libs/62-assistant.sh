@@ -110,7 +110,35 @@ _assistant_m365() {
     _assistant_m365_wrapper "$tenant" "$client" "$account"
     _assistant_m365_signin "$tenant" "$client" "$account"
     _assistant_m365_folder "$tenant" "$client" "$account"
+    _assistant_m365_mail_rules
     _assistant_m365_register_all "$tenant" "$client" "$account"
+}
+
+# One mailbox, several bots: Exchange sorts mail per alias into a folder the
+# bot polls. Rules and folders are created in the agent's mailbox over Graph.
+_assistant_m365_mail_rules() {
+    (( $(bot_count) > 0 )) || return 0
+    local key alias folder out
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        bot_has_channel "$key" email || continue
+        alias=$(bot_field "$key" MAIL_ALIAS); folder=$(bot_field "$key" MAIL_FOLDER)
+        [[ -n $alias && $folder != INBOX ]] || continue
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] mail rule: ${alias} -> folder ${folder} (bot ${key})"
+            continue
+        fi
+        [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; mail rules after the sign-in"; return 0; }
+        if out=$(sudo -u "$SERVICE_USER" "$(assistant_m365ctl)" ensure-mail-rule "$alias" "$folder" 2>&1); then
+            if [[ $(jq -r '.rule_created or .folder_created' <<<"$out" 2>/dev/null) == true ]]; then
+                mark_changed; log_ok "mail rule: ${alias} -> ${folder} (bot ${key})"
+            else
+                log_skip "mail rule present: ${alias} -> ${folder}"
+            fi
+        else
+            defer_failure "assistant: could not create the mail rule ${alias} -> ${folder}: ${out}"
+        fi
+    done < <(bots)
 }
 
 # Registration goes into every profile that lists the server in its MCP field;
@@ -200,7 +228,7 @@ _assistant_m365_wrapper() {
     write_file "$(assistant_m365ctl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Microsoft 365 assistant's commands with its configured environment:
-#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | tools | serve
+#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_m365_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/m365_assistant.py" "\$@"

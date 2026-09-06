@@ -270,3 +270,21 @@ class LocalFiles(unittest.TestCase):
         srv = m365.build_server(FakeGraph())
         with self.assertRaises(ValueError):
             tool(srv, "m365_drive_upload_file").fn(local_path="/nowhere/x.pdf", path="Secretary/x.pdf")
+
+
+class MailRules(unittest.TestCase):
+    def test_rule_and_folder_are_created_once(self):
+        g = FakeGraph({("GET", "/me/mailFolders/inbox/messageRules"): {"value": []},
+                       ("GET", "/me/mailFolders"): {"value": [{"id": "in", "displayName": "Inbox"}]},
+                       ("POST", "/me/mailFolders/inbox/messageRules"): {},
+                       ("POST", "/me/mailFolders"): {"id": "f-news"}})
+        out = m365.ensure_mail_rule(g, "news@example.com", "News")
+        self.assertTrue(out["folder_created"]) and self.assertTrue(out["rule_created"])
+        rule = next(kw for m, p, kw in g.calls if m == "POST" and p.endswith("/messageRules"))["json_body"]
+        self.assertEqual(rule["conditions"]["sentToAddresses"][0]["emailAddress"]["address"], "news@example.com")
+        self.assertEqual(rule["actions"]["moveToFolder"], "f-news")
+        g2 = FakeGraph({("GET", "/me/mailFolders/inbox/messageRules"): {"value": [{"displayName": "Route news@example.com -> News"}]},
+                        ("GET", "/me/mailFolders"): {"value": [{"id": "f-news", "displayName": "News"}]}})
+        out2 = m365.ensure_mail_rule(g2, "news@example.com", "News")
+        self.assertFalse(out2["rule_created"]) and self.assertFalse(out2["folder_created"])
+        self.assertFalse(any(m == "POST" for m, _, _ in g2.calls))
