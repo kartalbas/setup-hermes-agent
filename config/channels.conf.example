@@ -105,3 +105,9 @@ CHANNEL_TEAMS_PORT=3978
 CHANNELS_UNATTENDED_MODE="deny"
 CHANNELS_CRON_MODE="deny"
 CHANNELS_APPROVALS_DENY="hermes*update* curl*|*sh wget*|*sh"
+
+# Fail-closed sender check: the adapter trusts From: only with an
+# Authentication-Results header. Exchange Online stamps none on mail between
+# mailboxes of the same tenant, so an operator writing from the same tenant
+# needs this off. The allowlist still applies.
+CHANNEL_EMAIL_REQUIRE_AUTHENTICATED_SENDER=true

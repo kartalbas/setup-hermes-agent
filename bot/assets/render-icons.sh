@@ -10,7 +10,7 @@
 # renderer, only the committed PNGs. Needs rsvg-convert (librsvg2-bin).
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-src="${here}/simetrix-appicon.svg"
+src="${here}/appicon.svg"
 out="${here}/../teams-app"
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert missing: apt-get install librsvg2-bin" >&2; exit 1; }
 [[ -f $src ]] || { echo "missing $src" >&2; exit 1; }

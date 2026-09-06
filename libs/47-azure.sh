@@ -305,7 +305,7 @@ _az_bot_converge() {
 }
 
 # An app id can back only one Bot Service resource. A bot with our app id under
-# another name (the pre-bot-list "hermes-simetrix") blocks the declared one and
+# another name (the pre-bot-list single bot) blocks the declared one and
 # would keep the old Teams endpoint alive; it is retired, and said so.
 _az_bot_retire_stale() {
     local app=$1 names n existing have_app

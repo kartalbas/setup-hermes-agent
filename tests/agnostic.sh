@@ -162,6 +162,16 @@ build_local_denylist() {
         done < <(grep -ohE 'https?://[^[:space:]"'"'"']+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$cfg" 2>/dev/null || true)
     done
 
+    # Names the operator chose — bot prefix, company, developer, project, resource
+    # group — are identities too: a repository that mentions them is not agnostic.
+    for cfg in "${CONFIGS[@]}"; do
+        [[ -f $cfg ]] || continue
+        while IFS= read -r v; do
+            v=${v#*=}; v=${v%%#*}; v=${v//\"/}; v=${v//\'/}; v=$(echo "$v" | tr -d '[:space:]')
+            [[ ${#v} -ge 4 ]] && terms+=("$v")
+        done < <(grep -E '^(BOT_PREFIX|BOT_SERVICE_PREFIX|SITE_OWNER|TEAMS_APP_DEVELOPER|GIT_USER_NAME|AZURE_RESOURCE_GROUP|GOOGLE_PROJECT|AZURE_BOT_NAME|TUNNEL_NAME)=' "$cfg" 2>/dev/null || true)
+    done
+
     # Generic values would match everything; drop them.
     local t
     for t in "${terms[@]}"; do

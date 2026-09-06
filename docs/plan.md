@@ -23,7 +23,7 @@ Legend: `[x]` done and verified on the first host · `[ ]` open · `[?]` decisio
 - [x] Bridge (agy) with tool calling via the tool contract
 - [x] Repository layout: `libs/` (installer libraries), `bot/` (the bot's own code: bridge, Teams app, MCP assistants), `bot/build/` gitignored
 - [x] Bot versioning: `bot/VERSION`, `bot/CHANGELOG.md`, `bot/release.sh` (bump, date the changelog, tag `bot-v…`); the installer stamps the version and the Teams manifest carries it
-- [x] Teams icons rendered from `bot/assets/simetrix-appicon.svg` by `bot/assets/render-icons.sh` (PNGs committed; the installer needs no renderer)
+- [x] Teams icons rendered from `bot/assets/appicon.svg` by `bot/assets/render-icons.sh` (PNGs committed; the installer needs no renderer)
 - [x] Bridge key marker applied on the host
 - [ ] Operator sends one mail from the work address and one from the private address in the allowlist → both answered
 - [ ] Operator types `/sethome` once in the Teams bot chat (cron results and reminders land there)
@@ -72,10 +72,10 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 - [x] Routing rule (2026-09-05): business is the default and goes to Microsoft 365; "privat" / "privater Termin" / the Gmail account by name goes to Google. Written into both servers' instructions and tool descriptions so the model picks the right world itself
 - [x] Decision (2026-09-05): one bot per role, each its own 1:1 chat in Teams (own Entra app, Azure Bot F0, Teams app, gateway service, tunnel hostname). Bots are a LIST in configuration — add, rename, remove later without code changes
-- [x] Decision (2026-09-05): three bots to start — **Secretary** (appointments, meetings, invitations, reminders, invoices, hour reports, letters, translation — "I say what I want, it does it"), **Search** (phone numbers, addresses, coordinates as maps links, website analysis, reports), **News** (daily briefing across countries: war, technology, finance). Display-name prefix "Simetrix"
+- [x] Decision (2026-09-05): three bots to start — **Secretary** (appointments, meetings, invitations, reminders, invoices, hour reports, letters, translation — "I say what I want, it does it"), **Search** (phone numbers, addresses, coordinates as maps links, website analysis, reports), **News** (daily briefing across countries: war, technology, finance). Display-name prefix from `BOT_PREFIX`
 - [x] Decision (2026-09-05): nothing user-visible is named "Hermes" — bot names, Teams apps, Entra apps, hostnames are ours; everything the operator writes in German is rendered in English in the product
 - [x] Installer refactor: from one gateway to a bot list (`BOTS`), per bot: Entra app (created by `az`), Azure Bot via Bicep, Teams package, gateway service instance with its own profile (persona file under `bot/roles/<name>.md`, toolsets, MCP servers), port and tunnel hostname; shared assistant servers
-- [x] Rename the existing pieces: the current bot became Secretary (secretary.simetrix.ch, Entra app "Simetrix Secretary", Azure bot simetrix-secretary); "Hermes Mail" stays an internal app name (not user-visible)
+- [x] Rename the existing pieces: the current bot became Secretary (`secretary.<zone>`, Entra app "<prefix> Secretary", Azure bot `<service-prefix>-secretary`); "Hermes Mail" stays an internal app name (not user-visible)
 - [x] All three bots reachable end to end (Direct Line probe: Azure → edge → tunnel → own gateway → allowlist), each on its own hostname and port
 - [ ] Web tools for Search and News verified through the bridge (first real messages pending)
 - [x] Operator uploaded the three Teams packages and set `/sethome` in each chat; Secretary re-issued with a fresh bot identity so the chat carries its name (Teams pins a 1:1 bot chat's name to the first contact) (web_search / web_extract / browser); News delivers its daily briefing by cron into its own chat
@@ -97,9 +97,9 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Bridge stateless (ADR 0021); images handed to the CLI as files
 - [x] Old bot identity retired: Entra app 2494e2b2… deleted 2026-09-06
 
-- [ ] Old single-bot leftovers to retire: DNS record hermes.simetrix.ch, the vendor unit file hermes-gateway.service (disabled), TUNNEL_HOSTNAME as a config key
+- [ ] Old single-bot leftovers to retire: the old single-bot DNS record, the vendor unit file hermes-gateway.service (disabled), TUNNEL_HOSTNAME as a config key
 - [ ] Removing a bot from BOTS should retire its Azure Bot, Entra app, DNS record, unit and profile (today: config only)
-- [ ] Per-bot icons (`bot/assets/<key>.svg` → `bot/teams-app/<key>/`), today all three share the Simetrix icon
+- [ ] Per-bot icons (`bot/assets/<key>.svg` → `bot/teams-app/<key>/`), today all three share one icon
 
 - [ ] WhatsApp bridge channel (private mobile contact without a public bot)
 - [ ] Dashboard over TLS (today: plain HTTP on the LAN, installer warns)

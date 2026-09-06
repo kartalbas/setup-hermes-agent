@@ -273,6 +273,7 @@ ASSISTANT_M365_SHARE_ROLE="write"
 # ---------------------------------------------------------------------------
 BOTS="secretary search news"
 BOT_PREFIX="Acme"                      # display names: "Acme Secretary", …
+TEAMS_APP_DEVELOPER="Acme"             # shown under the app name in the Teams app card (default: GIT_USER_NAME)
 BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
 BOT_PORT_BASE=3978
 AGENT_SESSION_RESET="daily@4"          # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
