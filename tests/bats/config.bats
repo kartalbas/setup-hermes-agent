@@ -652,7 +652,7 @@ PY
 
 @test "every key in the operator's real config files has a documented counterpart in the examples" {
     local real example missing
-    for real in hermes channels; do
+    for real in hermes channels secrets; do
         [ -f "$REPO_ROOT/config/$real.conf" ] || skip "no real $real.conf on this host"
         example="$REPO_ROOT/config/$real.conf.example"
         missing=$(LC_ALL=C comm -23 <(grep -oE '^[A-Z_0-9]+=' "$REPO_ROOT/config/$real.conf" | LC_ALL=C sort -u) \
