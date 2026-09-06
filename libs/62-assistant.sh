@@ -83,7 +83,7 @@ _assistant_restart_stale() {
                 log_skip "${BOT_SERVICE} restarted in this run already"
             else
                 log_info "restarting ${BOT_SERVICE}: its MCP servers were started with older code or environment"
-                run systemctl restart "${BOT_SERVICE}.service"
+                run systemctl restart "${BOT_SERVICE}.service"   # gated on the stamp mismatch above
                 mark_changed
             fi
             write_file "$stamp_file" 0644 <<<"$stamp"
