@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- GitHub bot: fourth Teams app, official GitHub MCP server, mail alias
+
 ## 0.2.2 — 2026-09-06
 
 - Teams manifest: `supportsFiles` so the chat offers the attach button (letters, invoices, photos)

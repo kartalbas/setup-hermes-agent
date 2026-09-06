@@ -82,3 +82,18 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     ASSISTANT_GOOGLE_ENABLED=true
     _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
 }
+
+@test "the github registration runs the wrapper; the token stays in the env file" {
+    out=$(_assistant_github_fragment)
+    [[ $out == *'command: "/usr/local/lib/hermes-assistant/githubctl"'* ]]
+    [[ $out == *'args: ["stdio"]'* ]]
+    [[ $out != *TOKEN* ]]
+}
+
+@test "a bot may list github only when the github side is enabled" {
+    BOTS="github" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    ASSISTANT_GITHUB_ENABLED=false BOT_GITHUB_MCP="github"
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 1 ]
+    ASSISTANT_GITHUB_ENABLED=true
+    _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
+}

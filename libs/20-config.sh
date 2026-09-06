@@ -192,6 +192,13 @@ config_defaults() {
     : "${ASSISTANT_GOOGLE_TIMEZONE:=${ASSISTANT_M365_TIMEZONE}}"
     : "${ASSISTANT_GOOGLE_SCOPES:=openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive}"
 
+    # --- assistant, GitHub side: the official GitHub MCP server ---------------
+    : "${ASSISTANT_GITHUB_ENABLED:=false}"
+    : "${ASSISTANT_GITHUB_TOKEN_VAR:=GITHUB_MCP_TOKEN}"  # a personal access token in the secrets file
+    : "${ASSISTANT_GITHUB_MCP_VERSION:=1.12.0}"          # github/github-mcp-server release
+    : "${ASSISTANT_GITHUB_TOOLSETS:=context,repos,issues,pull_requests,actions,code_security,discussions,notifications,users,labels}"
+    : "${ASSISTANT_GITHUB_READ_ONLY:=false}"
+
     # --- bots: one Teams bot per role, each its own profile, service, hostname --
     : "${BOTS:=}"                          # space-separated keys, lowercase, e.g. "secretary search news"
     : "${BOT_PREFIX:=}"                    # display names are "<prefix> <Name>"
@@ -424,6 +431,9 @@ config_validate() {
         [[ -n ${TUNNEL_ZONE:-} || ${SITE_HOSTNAME:-} == *.* ]] || _bad "SITE_ENABLED=true needs TUNNEL_ZONE or SITE_HOSTNAME"
     fi
     _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
+    if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then
+        [[ ${ASSISTANT_GITHUB_MCP_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || _bad "ASSISTANT_GITHUB_MCP_VERSION must be X.Y.Z"
+    fi
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then
         _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"
         [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"
@@ -859,7 +869,8 @@ _bots_validate() {
         for m in $(bot_field "$k" MCP); do
             case $m in m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   || _bad "bot ${k}: MCP m365 needs ASSISTANT_M365_ENABLED=true" ;;
                        google) is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" || _bad "bot ${k}: MCP google needs ASSISTANT_GOOGLE_ENABLED=true" ;;
-                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365, google)" ;; esac
+                       github) is_true "${ASSISTANT_GITHUB_ENABLED:-false}" || _bad "bot ${k}: MCP github needs ASSISTANT_GITHUB_ENABLED=true" ;;
+                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365, google, github)" ;; esac
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
         _check_session_reset "BOT_$(bot_upper "$k")_SESSION_RESET" "$(bot_field "$k" SESSION_RESET)"

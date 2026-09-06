@@ -614,6 +614,21 @@ Authorized domains, save — then Audience → Publish app.
 
 ---
 
+## 1.13 · The assistant — GitHub
+
+A bot for the operator's repositories: the official `github/github-mcp-server`
+(Go binary, pinned by `ASSISTANT_GITHUB_MCP_VERSION`, checksum-verified against
+the release's checksums file) registered in the bots that list `github` in
+their MCP field. It authenticates with a **fine-grained personal access token**
+in the secrets file (`GITHUB_MCP_TOKEN`), limited to the repositories the bot
+may see; the token reaches the server through an env file the wrapper
+`githubctl` sources, never through `config.yaml`. Toolsets in
+`ASSISTANT_GITHUB_TOOLSETS`; `ASSISTANT_GITHUB_READ_ONLY=true` blocks every
+write. The role (`bot/roles/github.md`) reads freely, writes on instruction and
+merges or deletes only on explicit confirmation.
+
+---
+
 # PART 2 — Fill the configuration
 
 ## 2.1 · The five files

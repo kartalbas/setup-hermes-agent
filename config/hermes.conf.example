@@ -271,7 +271,7 @@ ASSISTANT_M365_SHARE_ROLE="write"
 # the run creates its Entra app and writes the client id and secret into the
 # secrets file.
 # ---------------------------------------------------------------------------
-BOTS="secretary search news"
+BOTS="secretary search news github"
 BOT_PREFIX="Acme"                      # display names: "Acme Secretary", …
 TEAMS_APP_DEVELOPER="Acme"             # shown under the app name in the Teams app card (default: GIT_USER_NAME)
 BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
@@ -288,6 +288,10 @@ BOT_SEARCH_CHANNELS="teams email"
 BOT_SEARCH_MAIL_ALIAS="search@example.com"
 BOT_NEWS_CHANNELS="teams email"
 BOT_NEWS_MAIL_ALIAS="news@example.com"
+BOT_GITHUB_NAME="GitHub"                             # the derived default would be "Github"
+BOT_GITHUB_CHANNELS="teams email"
+BOT_GITHUB_MAIL_ALIAS="github@example.com"
+BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 1.13)
 BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
 BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # A bot may run on its own model instead of the global LLM_ENDPOINT_1 — e.g. a
@@ -318,3 +322,12 @@ SITE_ENABLED=true
 SITE_OWNER="Acme Ltd"
 SITE_CONTACT="agent@example.com"
 # SITE_HOSTNAME=assistant.<TUNNEL_ZONE>, SITE_PORT=8081
+
+# ---------------------------------------------------------------------------
+# The assistant, GitHub side (README 1.13): github/github-mcp-server, pinned,
+# checksum-verified, with a personal access token from the secrets file.
+# ---------------------------------------------------------------------------
+ASSISTANT_GITHUB_ENABLED=false
+# ASSISTANT_GITHUB_MCP_VERSION=1.12.0
+# ASSISTANT_GITHUB_TOOLSETS=context,repos,issues,pull_requests,actions,code_security,discussions,notifications,users,labels
+# ASSISTANT_GITHUB_READ_ONLY=false

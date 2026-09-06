@@ -26,10 +26,12 @@ assistant_apply() {
     local any=false
     is_true "${ASSISTANT_M365_ENABLED:-false}" && any=true
     is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" && any=true
+    is_true "${ASSISTANT_GITHUB_ENABLED:-false}" && any=true
 
     if [[ $any != true ]]; then
         _assistant_disable_all m365
         _assistant_disable_all google
+        _assistant_disable_all github
         return 0
     fi
 
@@ -37,6 +39,7 @@ assistant_apply() {
     _assistant_install_code
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then _assistant_m365; else _assistant_disable_all m365; fi
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then _assistant_google; else _assistant_disable_all google; fi
+    if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then _assistant_github; else _assistant_disable_all github; fi
     (( $(bot_count) == 0 )) && converge_unit "${SERVICE_NAME}.service" "$before"
     return 0
 }
@@ -409,4 +412,131 @@ _assistant_google_signin() {
 
 assistant_uninstall() {
     run rm -rf "$ASSISTANT_VENV" "$ASSISTANT_LIB_DIR" "$ASSISTANT_STATE_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# GitHub — the official github/github-mcp-server, a Go binary from its release,
+# checksum-verified, pinned by ASSISTANT_GITHUB_MCP_VERSION. It talks to GitHub
+# with a personal access token from the secrets file, handed over through an
+# env file the wrapper sources — the token never lands in config.yaml.
+# ---------------------------------------------------------------------------
+assistant_github_binary()   { printf '%s/github-mcp-server' "$ASSISTANT_LIB_DIR"; }
+assistant_github_env_file() { printf '%s/github.env' "$ASSISTANT_STATE_DIR"; }
+assistant_githubctl()       { printf '%s/githubctl' "$ASSISTANT_LIB_DIR"; }
+
+_assistant_github() {
+    if ! secret_nonempty "$ASSISTANT_GITHUB_TOKEN_VAR"; then
+        log_error "the GitHub assistant needs a personal access token as ${ASSISTANT_GITHUB_TOKEN_VAR} in the secrets file"
+        log_error "  GitHub -> Settings -> Developer settings -> Personal access tokens (fine-grained: the repositories"
+        log_error "  the bot may see; permissions per toolset: contents, issues, pull requests, actions, security events)"
+        defer_failure "assistant: ${ASSISTANT_GITHUB_TOKEN_VAR} missing; the GitHub side waits for it"
+        _assistant_disable_all github
+        return 0
+    fi
+    log_info "assistant      github (mcp server ${ASSISTANT_GITHUB_MCP_VERSION})"
+    _assistant_github_binary
+    _assistant_github_wrapper
+    _assistant_github_verify
+    _assistant_github_register_all
+}
+
+# github-mcp-server_Linux_<arch>.tar.gz plus the release's checksums file.
+_assistant_github_arch() {
+    case $(uname -m) in
+        x86_64) printf 'x86_64' ;; aarch64|arm64) printf 'arm64' ;; i?86) printf 'i386' ;;
+        *) die "no github-mcp-server build for $(uname -m)" ;;
+    esac
+}
+
+_assistant_github_binary() {
+    local bin; bin=$(assistant_github_binary)
+    local v=$ASSISTANT_GITHUB_MCP_VERSION
+    if [[ -x $bin ]] && "$bin" --version 2>/dev/null | grep -q "$v"; then
+        log_skip "github-mcp-server ${v} present"
+        return 0
+    fi
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] download github-mcp-server ${v} for $(_assistant_github_arch), verify checksum, install to ${bin}"
+        return 0
+    fi
+    local base="https://github.com/github/github-mcp-server/releases/download/v${v}"
+    local asset; asset="github-mcp-server_Linux_$(_assistant_github_arch).tar.gz"
+    local dir; dir=$(mktemp -d)
+    log_info "  downloading ${asset}"
+    fetch "${base}/${asset}" "${dir}/${asset}" || { rm -rf "$dir"; die "could not download ${asset}"; }
+    fetch "${base}/github-mcp-server_${v}_checksums.txt" "${dir}/checksums.txt" || { rm -rf "$dir"; die "could not download the checksums file"; }
+    (cd "$dir" && grep " ${asset}\$" checksums.txt | sha256sum -c --quiet -) ||
+        { rm -rf "$dir"; die "checksum mismatch for ${asset}"; }
+    tar -xzf "${dir}/${asset}" -C "$dir" github-mcp-server
+    install -m 0755 "${dir}/github-mcp-server" "$bin"
+    rm -rf "$dir"
+    mark_changed
+    log_ok "github-mcp-server ${v} installed"
+}
+
+_assistant_github_env_lines() {
+    printf 'GITHUB_PERSONAL_ACCESS_TOKEN=%s\nGITHUB_TOOLSETS=%s\nGITHUB_READ_ONLY=%s\n' \
+        "$(secret_get "$ASSISTANT_GITHUB_TOKEN_VAR")" "$ASSISTANT_GITHUB_TOOLSETS" \
+        "$(is_true "$ASSISTANT_GITHUB_READ_ONLY" && printf 1 || printf 0)"
+}
+
+_assistant_github_wrapper() {
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] write $(assistant_github_env_file) and $(assistant_githubctl)"
+        return 0
+    fi
+    write_file "$(assistant_github_env_file)" 0600 "${SERVICE_USER}:${SERVICE_GROUP}" \
+        <<<"$(_assistant_github_env_lines | sed "s/^\([A-Z_0-9]*\)=\(.*\)$/\1='\2'/")"
+    write_file "$(assistant_githubctl)" 0755 <<EOF
+#!/usr/bin/env bash
+# Runs the GitHub MCP server with the operator's token and toolsets:
+#   githubctl stdio          (what the gateway runs)
+#   githubctl --version
+set -euo pipefail
+set -a; . "$(assistant_github_env_file)"; set +a
+case \$GITHUB_READ_ONLY in 1) set -- "\$@" --read-only ;; esac
+exec "$(assistant_github_binary)" "\$@"
+EOF
+}
+
+_assistant_github_verify() {
+    [[ $DRY_RUN == true ]] && return 0
+    local out
+    out=$(sudo -u "$SERVICE_USER" "$(assistant_githubctl)" --version 2>&1) ||
+        die "github-mcp-server does not start: ${out}"
+    log_ok "github mcp     ${out} (toolsets: ${ASSISTANT_GITHUB_TOOLSETS})"
+}
+
+_assistant_github_fragment() {
+    cat <<EOF
+mcp_servers:
+  github:
+    enabled: true
+    command: "$(assistant_githubctl)"
+    args: ["stdio"]
+    timeout: 120
+    connect_timeout: 30
+EOF
+}
+
+_assistant_github_register_all() {
+    if (( $(bot_count) == 0 )); then
+        [[ $DRY_RUN == true ]] && { log_info "[dry-run] register mcp_servers.github"; return 0; }
+        yaml_merge <<<"$(_assistant_github_fragment)"
+        return 0
+    fi
+    local key before
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        bot_context "$key"
+        before=$CHANGE_COUNT
+        if bot_has_mcp "$key" github; then
+            if [[ $DRY_RUN == true ]]; then log_info "[dry-run] register mcp_servers.github in ${BOT_KEY}"
+            else yaml_merge <<<"$(_assistant_github_fragment)"; fi
+        else
+            _assistant_disable github
+        fi
+        converge_unit "${BOT_SERVICE}.service" "$before"
+        bot_context_end
+    done < <(bots)
 }
