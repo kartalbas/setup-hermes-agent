@@ -463,8 +463,8 @@ _assistant_github_binary() {
     local asset; asset="github-mcp-server_Linux_$(_assistant_github_arch).tar.gz"
     local dir; dir=$(mktemp -d)
     log_info "  downloading ${asset}"
-    fetch "${base}/${asset}" "${dir}/${asset}" || { rm -rf "$dir"; die "could not download ${asset}"; }
-    fetch "${base}/github-mcp-server_${v}_checksums.txt" "${dir}/checksums.txt" || { rm -rf "$dir"; die "could not download the checksums file"; }
+    fetch -o "${dir}/${asset}" "${base}/${asset}" || { rm -rf "$dir"; die "could not download ${asset}"; }
+    fetch -o "${dir}/checksums.txt" "${base}/github-mcp-server_${v}_checksums.txt" || { rm -rf "$dir"; die "could not download the checksums file"; }
     (cd "$dir" && grep " ${asset}\$" checksums.txt | sha256sum -c --quiet -) ||
         { rm -rf "$dir"; die "checksum mismatch for ${asset}"; }
     tar -xzf "${dir}/${asset}" -C "$dir" github-mcp-server
