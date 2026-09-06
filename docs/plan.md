@@ -48,13 +48,13 @@ installer module (`assistant`) into a venv under `/var/lib/hermes-assistant`, re
 
 Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own token.
 
-- [ ] Operator creates the Google OAuth client once (Desktop app, app published) and puts `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` into `config/secrets.conf` — the run prints the steps; gcloud, login check and API enabling are the run's (module `google`)
-- [ ] Sign-in: installed-app flow headless — the run prints the URL, the operator signs in as the private Gmail account and pastes the redirected URL back; refresh token in `google.token`
-- [x] Gmail: search, read, reply, send, label/archive, attachment text (server written, unit-tested; live test after the client exists)
+- [x] Operator created the Google OAuth client (Desktop app, app published 2026-09-06) and puts `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` into `config/secrets.conf` — the run prints the steps; gcloud, login check and API enabling are the run's (module `google`)
+- [x] Sign-in done 2026-09-06 (paste-back as the private Gmail account); refresh token in `google.token`, verified by the run
+- [x] Gmail: search, read, reply, send, label/archive, attachment text (live: whoami, labels, drive verified)
 - [x] Google Calendar: view, create (with Meet link) / update / delete (server written)
 - [x] Drive: list, search, read (text), upload, move, folders, share (server written)
 - [x] Tool descriptions and server instructions say: private account, only on request
-- [ ] Tests, README, verification as in part 2
+- [x] Tests, README 1.11, verification in the run; Google tools registered in the Secretary profile
 
 ## 4 · Documents and reminders ("I hand over my letters")
 
