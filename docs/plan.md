@@ -85,6 +85,9 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 ## 6 · Later, not forgotten
 
+- [ ] Every restart during a deploy sends "Gateway shutting down" to active sessions — by MAIL too, under the vendor's default subject "Hermes Agent" (six such mails on 2026-09-05). Upstream default; mitigate by deploying less often; ask upstream for a configurable subject / opt-out
+- [ ] Mail is one channel on one bot (Secretary, agent mailbox). Mails to the private Gmail address are read on request only, never answered automatically — decide whether that is wanted
+
 - [x] Public pages (home, privacy, terms) under assistant.<zone> — module `site`; Google requires them to publish the OAuth app, Teams shows them
 - [ ] Teams manifest: point websiteUrl / privacyUrl / termsOfUseUrl at the public pages (next bot release)
 
