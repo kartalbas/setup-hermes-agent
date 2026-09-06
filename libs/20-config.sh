@@ -199,7 +199,10 @@ config_defaults() {
     : "${BOT_PORT_BASE:=3978}"             # webhook ports: base, base+1, … unless a bot names its own
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
-    : "${SITE_HOSTNAME:=assistant.${TUNNEL_ZONE:-}}"
+    # Derived without a literal: config_defaults runs before AND after the
+    # files load; set only once the zone is known, or "assistant." is locked in.
+    [[ -n ${TUNNEL_ZONE:-} ]] && : "${SITE_HOSTNAME:=assistant.${TUNNEL_ZONE}}"
+    : "${SITE_HOSTNAME:=}"
     : "${SITE_PORT:=8081}"
     : "${SITE_ROOT:=/var/www/assistant-site}"
     : "${SITE_OWNER:=}"                     # legal name shown on the pages

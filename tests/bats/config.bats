@@ -640,3 +640,12 @@ PY
     [ "$status" -ne 0 ]
     [[ $output != *transient* ]]      # a rejected credential is final: no retry
 }
+
+@test "the site hostname follows the zone the config files set later" {
+    unset SITE_HOSTNAME TUNNEL_ZONE
+    config_defaults
+    [ -z "$SITE_HOSTNAME" ]
+    TUNNEL_ZONE=example.com
+    config_defaults
+    [ "$SITE_HOSTNAME" = "assistant.example.com" ]
+}
