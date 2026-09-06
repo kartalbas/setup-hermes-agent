@@ -86,7 +86,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 ## 6 · Later, not forgotten
 
 - [x] GitHub bot (2026-09-06): fourth bot on the bridge with the official GitHub MCP server 1.12.0, alias github@, Teams chat; live: lists the operator's repositories through the bridge
-- [ ] Replace the classic GitHub token (admin scopes) by a fine-grained PAT limited to the bot's repositories (`GITHUB_MCP_TOKEN`)
+- [x] Decision (2026-09-06): the GitHub bot runs with the operator's admin token on purpose — full rights over every repository; safety comes from the role (merge, close, delete, force-push only on explicit confirmation), not from the token
 
 - [ ] Every restart during a deploy sends "Gateway shutting down" to active sessions — by MAIL too, under the vendor's default subject "Hermes Agent" (six such mails on 2026-09-05). Upstream default; mitigate by deploying less often; ask upstream for a configurable subject / opt-out
 - [x] Mail per bot on one mailbox (2026-09-06): aliases secretary@/search@/news@, Exchange rules by the run, each bot polls its folder (carried adapter patch for EMAIL_IMAP_FOLDER — upstream candidate). Gmail stays a tool, not a channel
