@@ -1177,9 +1177,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             first, finish = chunk({"role": "assistant", "content": text}), chunk({}, "stop")
 
-        for piece in (first, finish, "data: [DONE]\n\n"):
-            self.wfile.write(piece.encode())
-        self.wfile.flush()
+        try:
+            for piece in (first, finish, "data: [DONE]\n\n"):
+                self.wfile.write(piece.encode())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller went away while the answer was streaming — a bot
+            # restarted by the installer mid-turn. Nothing to do; the CLI
+            # process is closed by the pool as usual.
+            log.info("client disconnected before the streamed answer was delivered")
 
 
 # ---------------------------------------------------------------------------
