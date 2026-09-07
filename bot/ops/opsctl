@@ -212,7 +212,10 @@ allowed_tools() {
 # assistants' state. Read-only, no secrets (the .env files are not included).
 diagnostic_bundle() {             # diagnostic_bundle FILE
     local out=$1 b u
-    {
+    # A subshell without -e/pipefail: a grep that finds nothing or a unit that
+    # has no journal must not end the snapshot half-written.
+    (
+        set +e +o pipefail
         printf '# Host snapshot %s (read-only; the live state at the start of this change)\n\n## opsctl status\n\n' "$(date -Is)"
         cmd_status 2>&1
         printf '\n## Recent warnings and errors (24 h, last 15 lines per unit, the known IMAP EOF left out)\n'
@@ -237,7 +240,7 @@ diagnostic_bundle() {             # diagnostic_bundle FILE
             printf '### drop folders\n%s\n' "$(/usr/local/lib/hermes-assistant/inboxctl 2>&1 | head -n 40)"
         fi
         printf '\n## Runs\n\nlast installer run: %s\nlast apply: %s\n' "$(cat /var/lib/hermes-provisioner/last-run 2>/dev/null || printf 'no record')" "$(cat "${OPS_STATE}/apply-last" 2>/dev/null || printf 'none')"
-    } >"$out" 2>&1
+    ) >"$out" 2>&1
     # bounded: a runaway journal must not eat the prompt
     if (( $(wc -c <"$out") > 120000 )); then head -c 120000 "$out" >"${out}.tmp" && mv "${out}.tmp" "$out"; fi
 }
