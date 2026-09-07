@@ -146,3 +146,12 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     unit_restarted_this_run x.service
     rm -rf "$ASSISTANT_STATE_DIR"
 }
+
+@test "the worlds setting has one shape, and reaches the server with the root folder" {
+    ASSISTANT_M365_ENABLED=true ASSISTANT_M365_ACCOUNT=agent@example.com
+    ASSISTANT_M365_WORLDS="Business=_bus,Private=_pri"; bats_run config_validate; [[ "$output" != *ASSISTANT_M365_WORLDS* ]]
+    ASSISTANT_M365_WORLDS="Business:_bus"; bats_run config_validate; [ "$status" -ne 0 ]; [[ "$output" == *ASSISTANT_M365_WORLDS* ]]
+    ASSISTANT_M365_WORLDS="Business=_bus,Private=_pri" ASSISTANT_M365_ROOT_FOLDER=Secretary
+    out=$(_assistant_m365_env_lines t c agent@example.com)
+    [[ $out == *$'\nM365_ROOT_FOLDER=Secretary'* && $out == *$'\nM365_WORLDS=Business=_bus,Private=_pri'* ]]
+}

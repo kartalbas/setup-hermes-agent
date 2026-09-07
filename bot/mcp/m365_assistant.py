@@ -26,7 +26,7 @@ import os
 import sys
 import time
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from assistant_common import (  # noqa: E402
@@ -49,6 +49,84 @@ def parse_list(value: str) -> List[str]:
     return [v.strip().lower() for v in value.replace(",", " ").split() if v.strip()]
 
 
+def parse_worlds(value: str) -> Dict[str, str]:
+    """'Business=_bus,Private=_pri' -> {'Business': '_bus', 'Private': '_pri'}: the
+    folders directly under the root folder, each with the suffix its files carry."""
+    out: Dict[str, str] = {}
+    for part in value.replace(";", ",").split(","):
+        if "=" in part:
+            name, suffix = part.split("=", 1)
+            if name.strip() and suffix.strip():
+                out[name.strip()] = suffix.strip()
+    return out
+
+
+def _split_name(name: str) -> Tuple[str, str]:
+    stem, dot, ext = name.rpartition(".")
+    return (stem, "." + ext) if dot and stem else (name, "")
+
+
+def world_of(path: str, root: str, worlds: Dict[str, str]) -> Optional[Tuple[str, List[str]]]:
+    """(world name, path segments below the root) for a path under ROOT, else None."""
+    if not worlds or not root:
+        return None
+    parts = [p for p in path.strip("/").split("/") if p]
+    rootparts = [p for p in root.strip("/").split("/") if p]
+    if len(parts) <= len(rootparts) or [p.lower() for p in parts[:len(rootparts)]] != [p.lower() for p in rootparts]:
+        return None
+    below = parts[len(rootparts):]
+    match = next((w for w in worlds if w.lower() == below[0].lower()), None)
+    if match is None:
+        raise ValueError(f"'{path}' is under {root}/ but not in one of its worlds ("
+                         + ", ".join(f"{root}/{w}/" for w in worlds) + f"); file it as e.g. {root}/{next(iter(worlds))}/" + "/".join(below))
+    return match, below[1:]
+
+
+def world_check(path: str, root: str, worlds: Dict[str, str], is_folder: bool = False) -> Optional[str]:
+    """The private/business split, enforced where files are written: below the
+    root folder the first segment names a world, and a file's name ends with
+    that world's suffix before the extension. Returns the world, or None when
+    the path is outside the root; raises ValueError with the corrected name."""
+    found = world_of(path, root, worlds)
+    if found is None:
+        return None
+    world, rest = found
+    if is_folder or not rest:
+        return world
+    stem, ext = _split_name(rest[-1])
+    suffix = worlds[world]
+    if not stem.endswith(suffix):
+        raise ValueError(f"file names under {root}/{world}/ end with '{suffix}' before the extension: use '{stem}{suffix}{ext}'")
+    return world
+
+
+def plan_world_targets(files: List[str], root: str, worlds: Dict[str, str], default: Optional[str] = None) -> List[Tuple[str, str]]:
+    """Where existing files below the root (paths relative to it, not yet in a
+    world) go: into DEFAULT (the first world unless given), or into the world
+    whose name a path segment already carries; the file name gets the suffix
+    unless it has it. Returns (source, target) pairs with full paths."""
+    if not worlds:
+        return []
+    names = list(worlds)
+    default = next((w for w in names if default and w.lower() == default.lower()), names[0])
+    plan = []
+    for rel in files:
+        parts = [p for p in rel.strip("/").split("/") if p]
+        if not parts:
+            continue
+        world, hit_at = default, None
+        for i, seg in enumerate(parts[:-1]):
+            hit = next((w for w in names if w.lower() == seg.lower() or seg.lower().startswith(w.lower()[:4])), None)
+            if hit:
+                world, hit_at = hit, i
+                break
+        stem, ext = _split_name(parts[-1])
+        name = parts[-1] if stem.endswith(worlds[world]) else f"{stem}{worlds[world]}{ext}"
+        folders = [p for i, p in enumerate(parts[:-1]) if i != hit_at]     # the segment that named the world is the world
+        plan.append((f"{root}/{rel.strip('/')}", "/".join([root, world] + folders + [name])))
+    return plan
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
@@ -65,6 +143,11 @@ class Auth:
         # Full Access delegation for the assistant's account on the Exchange
         # side and the Mail.Read.Shared scope on the app; the installer checks both.
         self.read_mailboxes = parse_list(os.environ.get("M365_READ_MAILBOXES", ""))
+        # The filing root and its worlds (private/business): enforced by the
+        # drive tools that write, so a misfiled document is refused with the
+        # corrected name rather than filed and forgotten.
+        self.root_folder = os.environ.get("M365_ROOT_FOLDER", "").strip().strip("/")
+        self.worlds = parse_worlds(os.environ.get("M365_WORLDS", ""))
 
     def _token_url(self) -> str:
         return f"{LOGIN}/{self.tenant}/oauth2/v2.0/token"
@@ -300,6 +383,39 @@ def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: 
     return item
 
 
+def migrate_worlds_plan(graph: "Graph", root: str, worlds: Dict[str, str], default: Optional[str]) -> List[Tuple[str, str]]:
+    """Every file below ROOT that is not inside a world folder, with its target."""
+    files: List[str] = []
+
+    def walk(rel: str) -> None:
+        path = f"{root}/{rel}" if rel else root
+        r = graph.call("GET", f"{graph.drive_path(path)}/children", params={"$top": 200, "$select": "id,name,folder,file"})
+        for item in r.get("value") or []:
+            name = item.get("name") or ""
+            child = f"{rel}/{name}" if rel else name
+            if "folder" in item:
+                if not rel and any(name.lower() == w.lower() for w in worlds):
+                    continue                     # already a world
+                walk(child)
+            else:
+                files.append(child)
+
+    walk("")
+    return plan_world_targets(files, root, worlds, default)
+
+
+def migrate_worlds_apply(graph: "Graph", plan: List[Tuple[str, str]]) -> int:
+    """Move and rename each planned file; folders are created as needed."""
+    moved = 0
+    for src, dst in plan:
+        folder, _, name = dst.rpartition("/")
+        parent = graph.ensure_folder(folder)
+        item = graph.call("GET", graph.drive_path(src), params={"$select": "id"})
+        graph.call("PATCH", f"/me/drive/items/{item['id']}", json_body={"parentReference": {"id": parent["id"]}, "name": name})
+        moved += 1
+    return moved
+
+
 def ensure_mail_rule(graph: "Graph", alias: str, folder: str) -> Dict[str, Any]:
     """Mail addressed to ALIAS is moved into FOLDER by an inbox rule.
 
@@ -360,7 +476,14 @@ def build_server(graph: Graph) -> McpServer:
                       "deleting files are visible to other people — confirm with the user when the request is ambiguous."
                       + (f" The operator's own mailboxes {', '.join(graph.auth.read_mailboxes)} can be READ with the "
                          "`mailbox` parameter of the mail search/read/attachment/folders tools (receipts, invoices, "
-                         "letters); nothing is sent, moved or marked there." if graph.auth.read_mailboxes else "")))
+                         "letters); nothing is sent, moved or marked there." if graph.auth.read_mailboxes else "")
+                      + (f" FILING: everything under {graph.auth.root_folder}/ lives in one of its worlds — "
+                         + ", ".join(f"{graph.auth.root_folder}/{w}/ (file names end with '{sfx}' before the extension)" for w, sfx in graph.auth.worlds.items())
+                         + " — decide the world first (private or business), then the sub-folder; the drive tools refuse a path that breaks this and say the correct name."
+                         if graph.auth.worlds and graph.auth.root_folder else "")))
+    WORLD_NOTE = (f" Under {graph.auth.root_folder}/ the next segment is the world ({', '.join(graph.auth.worlds)}) and the file name ends with its suffix ("
+                  + ", ".join(f"{w}: '{sfx}'" for w, sfx in graph.auth.worlds.items()) + ")." if graph.auth.worlds and graph.auth.root_folder else "")
+    ROOT, WORLDS = graph.auth.root_folder, graph.auth.worlds
 
     ATTENDEE = {"type": "object", "additionalProperties": False, "required": ["email"],
                 "properties": {"email": {"type": "string"}, "name": {"type": "string"},
@@ -695,10 +818,11 @@ def build_server(graph: Graph) -> McpServer:
         out["path"] = path
         return out
 
-    @srv.tool("m365_drive_upload", "Create or replace a file in OneDrive by path (folders are created). Text or base64 content, up to 4 MB.",
+    @srv.tool("m365_drive_upload", "Create or replace a file in OneDrive by path (folders are created). Text or base64 content, up to 4 MB." + WORLD_NOTE,
               {"properties": {"path": {"type": "string"}, "content": {"type": "string"}, "content_base64": {"type": "string"},
                               "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}}, "required": ["path"]})
     def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, if_exists: str = "replace") -> Dict[str, Any]:
+        world_check(path, ROOT, WORLDS)
         if (content is None) == (content_base64 is None):
             raise ValueError("give exactly one of content or content_base64")
         data = content.encode("utf-8") if content is not None else unb64(content_base64 or "")
@@ -715,11 +839,12 @@ def build_server(graph: Graph) -> McpServer:
 
     @srv.tool("m365_drive_upload_file",
               "Upload a file that exists on this machine (e.g. a PDF you generated) to OneDrive by path, then delete the local copy. "
-              "Use this for every document you produce: nothing stays on the server. Large files are uploaded in chunks.",
-              {"properties": {"local_path": {"type": "string"}, "path": {"type": "string", "description": "destination path in OneDrive, e.g. Secretary/Reports/2026/2026-09-06 trip plan.pdf"},
+              "Use this for every document you produce: nothing stays on the server. Large files are uploaded in chunks." + WORLD_NOTE,
+              {"properties": {"local_path": {"type": "string"}, "path": {"type": "string", "description": "destination path in OneDrive, e.g. <root>/<World>/Reports/2026/2026-09-06 trip plan<suffix>.pdf"},
                               "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}, "keep_local": {"type": "boolean"}},
                "required": ["local_path", "path"]})
     def drive_upload_file(local_path: str, path: str, if_exists: str = "replace", keep_local: bool = False) -> Dict[str, Any]:
+        world_check(path, ROOT, WORLDS)
         local = os.path.expanduser(local_path)
         if not os.path.isfile(local):
             raise ValueError(f"no such file on this machine: {local_path}")
@@ -745,6 +870,7 @@ def build_server(graph: Graph) -> McpServer:
     @srv.tool("m365_drive_mkdir", "Create a folder path in OneDrive (existing parts are kept).",
               {"properties": {"path": {"type": "string"}}, "required": ["path"]})
     def drive_mkdir(path: str) -> Dict[str, Any]:
+        world_check(path, ROOT, WORLDS, is_folder=True)
         item = graph.ensure_folder(path)
         return {"path": "/" + path.strip("/"), "id": item.get("id"), "created_or_existing": True}
 
@@ -752,7 +878,10 @@ def build_server(graph: Graph) -> McpServer:
               {"properties": {"path": {"type": "string"}, "new_parent": {"type": "string", "description": "destination folder path; empty keeps the folder"},
                               "new_name": {"type": "string"}}, "required": ["path"]})
     def drive_move(path: str, new_parent: Optional[str] = None, new_name: Optional[str] = None) -> Dict[str, Any]:
-        item = graph.call("GET", graph.drive_path(path), params={"$select": "id,name"})
+        item = graph.call("GET", graph.drive_path(path), params={"$select": "id,name,folder"})
+        folder_now, _, name_now = path.strip("/").rpartition("/")
+        target = "/".join(x for x in [(new_parent if new_parent is not None else folder_now).strip("/"), new_name or name_now] if x)
+        world_check(target, ROOT, WORLDS, is_folder="folder" in item)
         patch: Dict[str, Any] = {}
         if new_parent is not None:
             parent = graph.ensure_folder(new_parent) if new_parent.strip("/") else {"id": graph.call("GET", "/me/drive/root", params={"$select": "id"})["id"]}
@@ -817,6 +946,26 @@ def main(argv: List[str]) -> int:
                           "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path,
                           "read_mailboxes": auth.read_mailboxes}))
         return 0 if ok else 1
+    if cmd == "migrate-worlds":
+        # migrate-worlds [--apply] [--default=World] — existing files below the
+        # root folder that are not in a world yet: show where they would go
+        # (the default world, with the suffix), move them only with --apply.
+        if not auth.worlds or not auth.root_folder:
+            raise SystemExit("no worlds configured (M365_WORLDS / M365_ROOT_FOLDER)")
+        apply = "--apply" in argv[2:]
+        default = next((a.split("=", 1)[1] for a in argv[2:] if a.startswith("--default=")), None)
+        graph = Graph(auth, tz)
+        plan = migrate_worlds_plan(graph, auth.root_folder, auth.worlds, default)
+        for src, dst in plan:
+            print(f"{src} -> {dst}")
+        if not plan:
+            print("nothing to move: everything below the root is already in a world")
+            return 0
+        if apply:
+            print(f"moved {migrate_worlds_apply(graph, plan)} file(s)")
+        else:
+            print(f"{len(plan)} file(s) would move; re-run with --apply to do it")
+        return 0
     if cmd == "check-mailbox":
         # check-mailbox ADDRESS — the installer's "can the assistant read that
         # inbox?" Exit 1 with Graph's reason when it cannot (no delegation yet).

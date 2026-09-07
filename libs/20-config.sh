@@ -189,6 +189,10 @@ config_defaults() {
     : "${ASSISTANT_DOCX_VERSION:=1.2.0}"
     : "${ASSISTANT_LOGIN_TIMEOUT:=900}"
     : "${ASSISTANT_M365_ROOT_FOLDER:=Secretary}"     # the agent's working folder in its OneDrive
+    # The worlds below it — "Business=_bus,Private=_pri": one sub-folder each,
+    # and every file's name ends with the world's suffix. Enforced by the
+    # drive tools; empty = one undivided folder.
+    : "${ASSISTANT_M365_WORLDS:=}"
     : "${ASSISTANT_M365_SHARE_WITH:=}"                # comma-separated people who get access to it
     : "${ASSISTANT_M365_SHARE_ROLE:=write}"
 
@@ -542,6 +546,8 @@ config_validate() {
         _check_required ASSISTANT_M365_ACCOUNT "${ASSISTANT_M365_ACCOUNT:-}" "the account the M365 assistant acts as"
         [[ ${ASSISTANT_M365_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_M365_ACCOUNT must be a sign-in address, got '${ASSISTANT_M365_ACCOUNT:-}'"
         _check_read_accounts ASSISTANT_M365_READ_MAILBOXES "${ASSISTANT_M365_READ_MAILBOXES:-}" "${ASSISTANT_M365_ACCOUNT:-}"
+        [[ -z ${ASSISTANT_M365_WORLDS:-} || ${ASSISTANT_M365_WORLDS} =~ ^[A-Za-z0-9]+=_[a-z0-9]+(,[A-Za-z0-9]+=_[a-z0-9]+)*$ ]] ||
+            _bad "ASSISTANT_M365_WORLDS must look like Business=_bus,Private=_pri (got '${ASSISTANT_M365_WORLDS}')"
     fi
     _check_required SECRETS_FILE "$SECRETS_FILE" "every credential is referenced from it"
     _check_abs_path SECRETS_FILE "$SECRETS_FILE"

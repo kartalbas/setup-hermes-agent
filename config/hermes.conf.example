@@ -268,6 +268,12 @@ ASSISTANT_M365_TIMEZONE="Europe/Zurich"
 ASSISTANT_M365_ROOT_FOLDER="Secretary"           # the agent's working folder in its OneDrive
 ASSISTANT_M365_SHARE_WITH="you@example.com"     # who gets access to it (comma-separated)
 ASSISTANT_M365_SHARE_ROLE="write"
+# Private and business apart: one sub-folder per world below the root folder,
+# and every file name ends with the world's suffix before the extension
+# (Secretary/Business/Letters/2026/2026-09-07 lease_bus.pdf). The drive tools
+# refuse a path that breaks this. Empty = one undivided folder. Existing files:
+# `m365ctl migrate-worlds` shows the plan, `--apply` moves them (README 1.10).
+ASSISTANT_M365_WORLDS=""                         # e.g. "Business=_bus,Private=_pri"
 # Your own mailboxes in the tenant the assistant may READ — receipts, invoices,
 # letters (search, read, attachments; never send, move or mark). Comma-separated.
 # Each needs Full Access delegation for ASSISTANT_M365_ACCOUNT, set once by a

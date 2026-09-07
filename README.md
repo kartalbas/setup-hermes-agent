@@ -583,6 +583,20 @@ The working folder: the run creates `ASSISTANT_M365_ROOT_FOLDER` (default
 `ASSISTANT_M365_SHARE_WITH` the `ASSISTANT_M365_SHARE_ROLE` (default `write`), so
 whatever the agent files is in your reach in your own OneDrive under *Shared*.
 
+**Private and business apart.** `ASSISTANT_M365_WORLDS="Business=_bus,Private=_pri"`
+divides the root folder into one sub-folder per world and makes every file name
+end with the world's suffix before the extension
+(`Secretary/Business/Letters/2026/2026-09-07 lease_bus.pdf`). This is not a
+convention the model is asked to keep: the drive tools that write — upload,
+mkdir, move — refuse a path that breaks it and answer with the corrected name,
+so the model files it right on the next try. The role decides the world before
+anything else (business by default, private when the document or the operator
+says so, one question when it cannot tell). Existing files are moved once:
+`m365ctl migrate-worlds` prints where each file below the root would go (the
+first world unless a folder name says otherwise, suffix added),
+`m365ctl migrate-worlds --apply --default=Business` does it. The run creates
+the world folders; the share is inherited from the root.
+
 **Reading your own mailbox.** For receipts, invoices and letters that arrive in
 *your* mailbox rather than the agent's, list it in `ASSISTANT_M365_READ_MAILBOXES`
 (comma-separated). The agent then reads it — search, read, attachments,
@@ -1309,6 +1323,13 @@ provider's own address — so the bot sent keyless requests to the wrong host.
 Since 2026-09-07 the run writes `base_url` with every model block (empty for a
 hosted provider); re-run the installer and the bot restarts on the right
 address. Check with `grep -A3 '^model:' <profile>/config.yaml`.
+
+### The Secretary says a path "is under Secretary/ but not in one of its worlds" or "file names … end with '_bus'"
+
+Working as designed: `ASSISTANT_M365_WORLDS` is set and the drive tools refuse
+a misfiled document with the corrected name. The model normally retries with
+that name; if it keeps failing, the request itself named a path outside the
+worlds — say "business" or "private", or give the full path.
 
 ### `assistant: the mailbox … is not readable by … yet`
 

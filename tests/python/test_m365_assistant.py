@@ -30,7 +30,7 @@ class FakeGraph:
         self.calls = []
         self.answers = answers or {}
         self.tz = "Europe/Zurich"
-        self.auth = mock.Mock(account="agent@example.com", read_mailboxes=[])
+        self.auth = mock.Mock(account="agent@example.com", read_mailboxes=[], root_folder="", worlds={})
 
     def call(self, method, path, **kw):
         self.calls.append((method, path, kw))
@@ -297,7 +297,7 @@ class ReadMailboxes(unittest.TestCase):
 
     def graph(self, readable):
         g = FakeGraph({("GET", "/users/you@example.com/mailFolders/inbox"): {"id": "in", "totalItemCount": 7, "unreadItemCount": 2}})
-        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=readable)
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=readable, root_folder="", worlds={})
         return g
 
     def test_without_a_read_list_the_mail_tools_have_no_mailbox_parameter(self):
@@ -338,3 +338,55 @@ class ReadMailboxes(unittest.TestCase):
     def test_parse_list_accepts_commas_and_spaces(self):
         self.assertEqual(m365.parse_list(" A@x.example,b@x.example  c@x.example "), ["a@x.example", "b@x.example", "c@x.example"])
         self.assertEqual(m365.parse_list(""), [])
+
+
+class Worlds(unittest.TestCase):
+    """Private and business apart: the rule the drive tools enforce, and the migration plan."""
+    W = {"Business": "_bus", "Private": "_pri"}
+
+    def test_parse_and_paths_outside_the_root_are_free(self):
+        self.assertEqual(m365.parse_worlds("Business=_bus, Private=_pri"), self.W)
+        self.assertEqual(m365.parse_worlds(""), {})
+        self.assertIsNone(m365.world_check("Other/x.pdf", "Secretary", self.W))
+        self.assertIsNone(m365.world_check("Secretary", "Secretary", self.W))
+        self.assertIsNone(m365.world_check("Secretary/Business/x.pdf", "Secretary", {}))
+
+    def test_a_world_and_its_suffix_are_required_below_the_root(self):
+        self.assertEqual(m365.world_check("Secretary/Business/Letters/2026/2026-09-07 lease_bus.pdf", "Secretary", self.W), "Business")
+        self.assertEqual(m365.world_check("secretary/private/Receipts/2026-09_pri.csv", "Secretary", self.W), "Private")
+        with self.assertRaises(ValueError) as cm:
+            m365.world_check("Secretary/Letters/2026/lease.pdf", "Secretary", self.W)
+        self.assertIn("Secretary/Business/Letters/2026/lease.pdf", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            m365.world_check("Secretary/Business/Letters/2026/lease.pdf", "Secretary", self.W)
+        self.assertIn("lease_bus.pdf", str(cm.exception))
+        with self.assertRaises(ValueError):
+            m365.world_check("Secretary/Private/Reports/plan_bus.pdf", "Secretary", self.W)   # wrong world's suffix
+        # folders need the world only
+        self.assertEqual(m365.world_check("Secretary/Private/Letters/2026", "Secretary", self.W, is_folder=True), "Private")
+        self.assertEqual(m365.world_check("Secretary/Business", "Secretary", self.W), "Business")
+
+    def test_the_drive_tools_refuse_before_calling_graph(self):
+        g = FakeGraph()
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=[], root_folder="Secretary", worlds=self.W)
+        srv = m365.build_server(g)
+        tool = {t.name: t for t in srv.tools}
+        with self.assertRaises(ValueError):
+            tool["m365_drive_upload"].fn(path="Secretary/Reports/x.txt", content="hi")
+        with self.assertRaises(ValueError):
+            tool["m365_drive_mkdir"].fn(path="Secretary/Stuff")
+        self.assertEqual(g.calls, [])
+        desc = tool["m365_drive_upload_file"].spec()["description"]
+        self.assertIn("Under Secretary/", desc); self.assertIn("'_bus'", desc)
+        self.assertIn("_pri", srv.instructions)
+
+    def test_existing_files_are_planned_into_the_default_world_with_the_suffix(self):
+        plan = m365.plan_world_targets(["Timesheets/Acme/2026-09.csv", "Letters/2026/2026-09-01 notice_bus.pdf",
+                                        "Privat/Insurance/policy.pdf", "loose.txt"], "Secretary", self.W, "Business")
+        self.assertEqual(dict(plan), {
+            "Secretary/Timesheets/Acme/2026-09.csv": "Secretary/Business/Timesheets/Acme/2026-09_bus.csv",
+            "Secretary/Letters/2026/2026-09-01 notice_bus.pdf": "Secretary/Business/Letters/2026/2026-09-01 notice_bus.pdf",
+            "Secretary/Privat/Insurance/policy.pdf": "Secretary/Private/Insurance/policy_pri.pdf",
+            "Secretary/loose.txt": "Secretary/Business/loose_bus.txt",
+        })
+        self.assertEqual(m365.plan_world_targets(["x.pdf"], "Secretary", {}, None), [])
