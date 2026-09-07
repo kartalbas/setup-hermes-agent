@@ -261,8 +261,10 @@ cmd_apply() {
     local mods=${1:-}
     [[ $OPS_APPLY != never ]] || die "applying from here is switched off (OPS_APPLY=never); the operator runs the installer"
     [[ -d $OPS_STATE && -w $OPS_STATE ]] || die "state directory ${OPS_STATE} is not writable; run the installer with OPS_ENABLED=true"
-    systemctl is-active --quiet hermes-ops-apply.path 2>/dev/null || die "the applier (hermes-ops-apply.path) is not active; run the installer once from a terminal"
-    if systemctl is-active --quiet hermes-ops-apply.service 2>/dev/null || [[ -f ${OPS_STATE}/apply.request ]]; then
+    # The unit names are overridable for the test suite, which runs on hosts with and without the applier.
+    systemctl is-active --quiet "${OPSCTL_APPLIER_PATH:-hermes-ops-apply.path}" 2>/dev/null ||
+        die "the applier (hermes-ops-apply.path) is not active; run the installer once from a terminal"
+    if systemctl is-active --quiet "${OPSCTL_APPLIER_SERVICE:-hermes-ops-apply.service}" 2>/dev/null || [[ -f ${OPS_STATE}/apply.request ]]; then
         die "an apply is already running or queued — opsctl apply-status"
     fi
     [[ -z $mods || $mods =~ ^[a-z,]+$ ]] || die "modules: comma-separated names, e.g. profiles,channels"

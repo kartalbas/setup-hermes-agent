@@ -215,10 +215,16 @@ config_defaults() {
     : "${OPS_CONF:=/etc/hermes-ops.conf}"
     : "${OPS_STATE_DIR:=/var/lib/hermes-ops}"
     : "${OPS_LIB_DIR:=/usr/local/lib/hermes-ops}"   # the root-side applier script
-    if [[ -z ${OPS_CLAUDE_BIN:-} || -z ${OPS_AGY_BIN:-} ]]; then
-        local _ops_home; _ops_home=$(getent passwd "${SERVICE_USER:-nobody}" 2>/dev/null | cut -d: -f6)
-        : "${OPS_CLAUDE_BIN:=${_ops_home:-/nonexistent}/.local/bin/claude}"
-        : "${OPS_AGY_BIN:=${_ops_home:-/nonexistent}/.local/bin/agy}"
+    # The CLIs live in the service account's home. config_defaults runs once
+    # before the files are read (no SERVICE_USER yet) and once after: derive
+    # only when the home resolves, never a placeholder — a wrong path frozen by
+    # the first pass reached /etc/hermes-ops.conf as /nonexistent (2026-09-07).
+    if [[ -n ${SERVICE_USER:-} && ( -z ${OPS_CLAUDE_BIN:-} || -z ${OPS_AGY_BIN:-} ) ]]; then
+        local _ops_home; _ops_home=$(getent passwd "$SERVICE_USER" 2>/dev/null | cut -d: -f6)
+        if [[ -n $_ops_home ]]; then
+            : "${OPS_CLAUDE_BIN:=${_ops_home}/.local/bin/claude}"
+            : "${OPS_AGY_BIN:=${_ops_home}/.local/bin/agy}"
+        fi
     fi
 
     # --- assistant, GitHub side: the official GitHub MCP server ---------------
@@ -459,6 +465,8 @@ _check_ops() {
     [[ ${OPS_CLAUDE_TIMEOUT:-} =~ ^[0-9]+$ ]] || _bad "OPS_CLAUDE_TIMEOUT must be a number of seconds"
     [[ -n ${OPS_CLAUDE_MODEL:-} ]] || _bad "OPS_CLAUDE_MODEL must name a Claude Code model (opus, sonnet, …)"
     case ${OPS_APPLY:-} in auto|ask|never) ;; *) _bad "OPS_APPLY must be auto, ask or never (got '${OPS_APPLY:-}')" ;; esac
+    [[ -n ${OPS_CLAUDE_BIN:-} && -n ${OPS_AGY_BIN:-} ]] ||
+        _bad "OPS_CLAUDE_BIN / OPS_AGY_BIN could not be derived: the service account '${SERVICE_USER:-}' has no home; set them explicitly"
     _check_abs_path OPS_BIN "$OPS_BIN"; _check_abs_path OPS_CONF "$OPS_CONF"; _check_abs_path OPS_STATE_DIR "$OPS_STATE_DIR"
 }
 

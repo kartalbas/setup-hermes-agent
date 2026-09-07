@@ -42,6 +42,18 @@ setup() {
     OPS_CLAUDE_MODEL=opus; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 0 ]
 }
 
+@test "the CLI paths are derived from the service account's home, never from a placeholder" {
+    unset OPS_CLAUDE_BIN OPS_AGY_BIN SERVICE_USER BOOTSTRAP_USER
+    config_defaults                                   # first pass: no account known yet
+    [ -z "${OPS_CLAUDE_BIN:-}" ]
+    SERVICE_USER=$(id -un); config_defaults           # second pass, as install.sh does
+    [ "$OPS_CLAUDE_BIN" = "${HOME}/.local/bin/claude" ]
+    [ "$OPS_AGY_BIN" = "${HOME}/.local/bin/agy" ]
+    [[ $OPS_CLAUDE_BIN != *nonexistent* ]]
+    unset OPS_CLAUDE_BIN OPS_AGY_BIN; OPS_ENABLED=true OPS_CLAUDE_TIMEOUT=900 OPS_CLAUDE_MODEL=opus OPS_APPLY=ask
+    _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *OPS_CLAUDE_BIN* ]]
+}
+
 @test "OPS_APPLY takes auto, ask or never, and the configuration carries it" {
     OPS_ENABLED=true OPS_CLAUDE_TIMEOUT=900 OPS_CLAUDE_MODEL=opus
     OPS_APPLY=sometimes; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 1 ]
@@ -56,8 +68,9 @@ setup() {
     OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
     [ "$status" -ne 0 ]; [[ "$output" == *"switched off"* ]]
     sed -i 's/OPS_APPLY=never/OPS_APPLY=auto/' "${tmp}/ops.conf"
-    OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
-    [ "$status" -ne 0 ]; [[ "$output" == *"applier"* ]]                  # no path unit on a test host
+    OPSCTL_CONF="${tmp}/ops.conf" OPSCTL_APPLIER_PATH=no-such-applier.path bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
+    [ "$status" -ne 0 ]; [[ "$output" == *"applier"* ]]                  # the applier is not active: refused, nothing written
+    [ ! -f "${tmp}/apply.request" ]
     OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply-status
     [ "$status" -eq 0 ]; [[ "$output" == *"no apply has been run"* ]]
     ! grep -qE '\bsudo\b' "$REPO_ROOT/bot/ops/opsctl"
