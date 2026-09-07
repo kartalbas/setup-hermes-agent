@@ -57,6 +57,18 @@ _service_retire_default() {
     fi
 }
 
+# What a bot waits for at boot: the network, and the local services it talks
+# to on its first turn — the bridge (its model) and the mail relay (its
+# mailbox), when this installation runs them. Wants, not Requires: a bot on a
+# hosted model has no use for the bridge, and a relay that is down must not
+# take the Teams side with it. Ordering only; the units restart on their own.
+_service_bot_deps() {             # -> the After=/Wants= lines of a bot unit
+    local IFS=$' \t\n' deps=(network-online.target)
+    is_true "${AGY_SHIM_ENABLED:-false}"  && deps+=("$(agyshim_unit_name).service")
+    is_true "${MAILPROXY_ENABLED:-false}" && deps+=("$(mailproxy_unit_name).service")
+    printf 'After=%s\nWants=%s\n' "${deps[*]}" "${deps[*]}"
+}
+
 # The bot's unit, modelled on the vendor's generated one (Type=notify with the
 # watchdog, the same PATH and environment), pointed at the bot's profile.
 _service_write_bot_unit() {
@@ -76,8 +88,7 @@ _service_write_bot_unit() {
 # Managed by setup-hermes-agent: the ${BOT_DISPLAY_NAME} bot, profile ${BOT_KEY}.
 [Unit]
 Description=${BOT_DISPLAY_NAME} bot (agent gateway, profile ${BOT_KEY})
-After=network-online.target
-Wants=network-online.target
+$(_service_bot_deps)
 StartLimitIntervalSec=0
 
 [Service]
@@ -230,6 +241,10 @@ StartLimitIntervalSec=${SERVICE_START_LIMIT_INTERVAL}
 StartLimitBurst=${SERVICE_START_LIMIT_BURST}
 $(_service_onfailure_stanza)
 [Service]
+# A cold boot starts every gateway at once, each importing its venv and
+# spawning its MCP servers; the default 90 s start timeout would kill a
+# healthy gateway that is merely slow, and the retry pays the same price.
+TimeoutStartSec=${SERVICE_START_TIMEOUT}
 $(_service_privilege_stanza)$(_service_docker_stanza)
 EOF
 }

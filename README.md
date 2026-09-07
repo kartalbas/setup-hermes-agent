@@ -1001,6 +1001,22 @@ as well. For each, the run decides which lines are its own, compares only
 those, and never rewrites while the other author is running. Every "changed on
 every run" this installer ever had came from forgetting one of those three.
 
+**After a reboot.** Every unit is enabled: tunnel, relay, bridge, one gateway
+per bot, the dashboard, nginx, the backup timer. A bot unit is ordered after
+the bridge and the relay (`Wants`, not `Requires`), and its start timeout is
+`SERVICE_START_TIMEOUT` (300 s) because a cold boot starts every gateway at once.
+Nothing needs a sign-in again: tokens, the tunnel credential and the CLI's
+login live on disk. Check with
+
+```bash
+systemctl list-units --type=service --state=failed
+for u in cloudflared hermes-gateway-mailproxy hermes-gateway-bridge; do systemctl is-active $u; done
+systemctl is-active '<service-prefix>-*'      # the bots
+```
+
+and one message per bot in Teams. A relay that answers its first IMAP poll with
+`EOF` is the known hiccup and self-heals.
+
 **Backups.** A timer runs `hermes backup` — consistent SQLite snapshots, not a
 `tar` of a live directory. Restore is manual and needs the gateway stopped; the
 procedure is in `docs/runbook.md`, and it has to be rehearsed before you need it.

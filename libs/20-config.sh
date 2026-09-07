@@ -32,6 +32,7 @@ config_defaults() {
     : "${SERVICE_START_LIMIT_INTERVAL:=600}"
     : "${SERVICE_START_LIMIT_BURST:=20}"
     : "${SERVICE_WATCHDOG_SECONDS:=90}"
+    : "${SERVICE_START_TIMEOUT:=300}"           # seconds a gateway may take to report ready (cold boot: several at once)
     : "${SERVICE_ON_FAILURE_UNIT:=}"
     : "${JOURNAL_MAX_USE:=}"
     : "${INSTALL_DIR:=}"
