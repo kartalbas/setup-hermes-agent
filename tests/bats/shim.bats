@@ -255,3 +255,18 @@ assert m.sweep_stale_workdirs("/nonexistent-dir", 1) == 0
 PY
     rm -rf "$tmp"
 }
+
+@test "a message envelope with real newlines or stray quotes still yields its content" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+raw = '{"type":"message","content":"Hier ist die Übersicht:\nZeile zwei\n\nQuelle: X"}'         # raw newlines: invalid JSON, common
+content, calls = m.parse_decision(raw)
+assert calls == [] and content == "Hier ist die Übersicht:\nZeile zwei\n\nQuelle: X", repr(content)
+raw2 = '{"type":"message","content":"Er sagte "schneller" und ging.\nEnde"}'                   # unescaped quotes: only the shape is left
+content, calls = m.parse_decision(raw2)
+assert calls == [] and content == 'Er sagte "schneller" und ging.\nEnde', repr(content)
+content, calls = m.parse_decision('{"type":"tool_call","name":"web_search","arguments":{"q":"a\nb"}}')   # tool call with a raw newline
+assert calls and calls[0]["function"]["name"] == "web_search"
+PY
+}

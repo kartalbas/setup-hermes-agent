@@ -932,6 +932,21 @@ def tool_contract(tools: list) -> str:
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
 
+_MESSAGE_ENVELOPE = re.compile(r'^\s*\{\s*"type"\s*:\s*"message"\s*,\s*"content"\s*:\s*"(.*)"\s*\}\s*$', re.S)
+
+
+def _lenient_message(raw: str) -> str | None:
+    """A message envelope that is not valid JSON — unescaped quotes inside the
+    content, typically — still has a recognisable shape; take its content."""
+    m = _MESSAGE_ENVELOPE.match(raw)
+    if not m:
+        return None
+    body = m.group(1)
+    for esc, plain in (('\\"', '"'), ("\\n", "\n"), ("\\t", "\t"), ("\\\\", "\\")):
+        body = body.replace(esc, plain)
+    return body
+
+
 def parse_decision(text: str) -> tuple[str, list]:
     """(content, tool_calls). Anything unparseable is returned as content.
 
@@ -962,8 +977,14 @@ def parse_decision(text: str) -> tuple[str, list]:
         return text, []
 
     try:
-        obj = json.loads(raw[start:end])
+        # strict=False: a model writes real newlines inside the string; JSON
+        # forbids them, the reader lived with them (a News briefing arrived as
+        # its raw envelope, 2026-09-07).
+        obj = json.loads(raw[start:end], strict=False)
     except json.JSONDecodeError:
+        lenient = _lenient_message(raw[start:end])
+        if lenient is not None:
+            return lenient, []
         return text, []
     if not isinstance(obj, dict):
         return text, []
