@@ -44,93 +44,12 @@ WELL_KNOWN_FOLDERS = {"inbox", "archive", "deleteditems", "drafts", "sentitems",
 FOLDER_ALIASES = {"deleted": "deleteditems", "trash": "deleteditems", "sent": "sentitems", "junk": "junkemail", "spam": "junkemail"}
 
 
+from assistant_common import parse_worlds, world_check, world_of, plan_world_targets  # noqa: E402,F401  (shared with the Google server)
+
+
 def parse_list(value: str) -> List[str]:
     """Comma- or space-separated addresses, lower-cased, empty entries dropped."""
     return [v.strip().lower() for v in value.replace(",", " ").split() if v.strip()]
-
-
-def parse_worlds(value: str) -> Dict[str, str]:
-    """'Business=_bus,Private=_pri' -> {'Business': '_bus', 'Private': '_pri'}: the
-    folders directly under the root folder, each with the suffix its files carry."""
-    out: Dict[str, str] = {}
-    for part in value.replace(";", ",").split(","):
-        if "=" in part:
-            name, suffix = part.split("=", 1)
-            if name.strip() and suffix.strip():
-                out[name.strip()] = suffix.strip()
-    return out
-
-
-def _split_name(name: str) -> Tuple[str, str]:
-    stem, dot, ext = name.rpartition(".")
-    return (stem, "." + ext) if dot and stem else (name, "")
-
-
-def world_of(path: str, root: str, worlds: Dict[str, str]) -> Optional[Tuple[str, List[str]]]:
-    """(world name, path segments below the root) for a path under ROOT, else None."""
-    if not worlds or not root:
-        return None
-    parts = [p for p in path.strip("/").split("/") if p]
-    rootparts = [p for p in root.strip("/").split("/") if p]
-    if len(parts) <= len(rootparts) or [p.lower() for p in parts[:len(rootparts)]] != [p.lower() for p in rootparts]:
-        return None
-    below = parts[len(rootparts):]
-    match = next((w for w in worlds if w.lower() == below[0].lower()), None)
-    if match is None:
-        raise ValueError(f"'{path}' is under {root}/ but not in one of its worlds ("
-                         + ", ".join(f"{root}/{w}/" for w in worlds) + f"); file it as e.g. {root}/{next(iter(worlds))}/" + "/".join(below))
-    return match, below[1:]
-
-
-def world_check(path: str, root: str, worlds: Dict[str, str], is_folder: bool = False) -> Optional[str]:
-    """The private/business split, enforced where files are written: below the
-    root folder the first segment names a world, and a file's name ends with
-    that world's suffix before the extension. Returns the world, or None when
-    the path is outside the root; raises ValueError with the corrected name."""
-    found = world_of(path, root, worlds)
-    if found is None:
-        return None
-    world, rest = found
-    if is_folder or not rest:
-        return world
-    stem, ext = _split_name(rest[-1])
-    suffix = worlds[world]
-    if not stem.endswith(suffix):
-        raise ValueError(f"file names under {root}/{world}/ end with '{suffix}' before the extension: use '{stem}{suffix}{ext}'")
-    return world
-
-
-def plan_world_targets(files: List[str], root: str, worlds: Dict[str, str], default: Optional[str] = None) -> List[Tuple[str, str]]:
-    """Where existing files below the root (paths relative to it, not yet in a
-    world) go: into DEFAULT (the first world unless given), or into the world
-    that a folder name or a word in the file name already carries ("privat");
-    the file name gets the suffix unless it has it. Returns (source, target)
-    pairs with full paths."""
-    if not worlds:
-        return []
-    names = list(worlds)
-    default = next((w for w in names if default and w.lower() == default.lower()), names[0])
-    plan = []
-    for rel in files:
-        parts = [p for p in rel.strip("/").split("/") if p]
-        if not parts:
-            continue
-        world, hit_at = default, None
-        for i, seg in enumerate(parts[:-1]):
-            hit = next((w for w in names if w.lower() == seg.lower() or seg.lower().startswith(w.lower()[:4])), None)
-            if hit:
-                world, hit_at = hit, i
-                break
-        stem, ext = _split_name(parts[-1])
-        if hit_at is None:
-            words = stem.lower().replace("_", " ").replace("-", " ").split()
-            hint = next((w for w in names if any(x.startswith(w.lower()[:4]) for x in words)), None)
-            if hint:
-                world = hint
-        name = parts[-1] if stem.endswith(worlds[world]) else f"{stem}{worlds[world]}{ext}"
-        folders = [p for i, p in enumerate(parts[:-1]) if i != hit_at]     # the segment that named the world is the world
-        plan.append((f"{root}/{rel.strip('/')}", "/".join([root, world] + folders + [name])))
-    return plan
 
 
 # ---------------------------------------------------------------------------

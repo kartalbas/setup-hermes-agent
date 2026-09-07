@@ -155,3 +155,14 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     out=$(_assistant_m365_env_lines t c agent@example.com)
     [[ $out == *$'\nM365_ROOT_FOLDER=Secretary'* && $out == *$'\nM365_WORLDS=Business=_bus,Private=_pri'* ]]
 }
+
+@test "the Drive worlds default to the Microsoft 365 values and reach the server" {
+    secret_get() { printf 'x'; }
+    ASSISTANT_GOOGLE_ACCOUNT=agent@gmail.example ASSISTANT_M365_ROOT_FOLDER=Secretary ASSISTANT_M365_WORLDS="Business=_bus,Private=_pri"
+    ASSISTANT_GOOGLE_ROOT_FOLDER="" ASSISTANT_GOOGLE_WORLDS=""
+    [ "$(assistant_google_root)" = Secretary ]; [ "$(assistant_google_worlds)" = "Business=_bus,Private=_pri" ]
+    out=$(_assistant_google_env_lines)
+    [[ $out == *$'\nGOOGLE_ROOT_FOLDER=Secretary'* && $out == *$'\nGOOGLE_WORLDS=Business=_bus,Private=_pri'* ]]
+    ASSISTANT_GOOGLE_ROOT_FOLDER=Files ASSISTANT_GOOGLE_WORLDS="Work=_w"
+    [ "$(assistant_google_root)" = Files ]; [ "$(assistant_google_worlds)" = "Work=_w" ]
+}

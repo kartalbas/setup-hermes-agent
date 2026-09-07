@@ -655,6 +655,12 @@ ASSISTANT_GOOGLE_READ_ACCOUNTS=""               # your own Gmail accounts, read-
 # bots: BOT_SECRETARY_MCP="m365 google"
 ```
 
+**The same worlds in Drive.** `ASSISTANT_GOOGLE_ROOT_FOLDER` and
+`ASSISTANT_GOOGLE_WORLDS` (empty: the Microsoft 365 values) give the agent's
+Drive the structure of 1.10 — one sub-folder per world, the suffix in every file
+name, enforced by the Drive tools that write; the run creates the folders and
+`googlectl migrate-worlds [--apply]` moves what is already there.
+
 **Reading your own Gmail.** Your private Gmail is a different Google account,
 so it gets its own token: list the address in `ASSISTANT_GOOGLE_READ_ACCOUNTS`
 and the run asks for one more paste-back sign-in — **as that account**, with

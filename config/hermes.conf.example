@@ -359,6 +359,10 @@ ASSISTANT_GOOGLE_ACCOUNT="agent@example.com"
 # Your own Gmail accounts the assistant may READ (Gmail only, read-only scopes).
 # One sign-in each, AS that account — the run asks for it (README 1.11).
 ASSISTANT_GOOGLE_READ_ACCOUNTS=""                # e.g. "you@gmail.example"
+# The filing root in the agent's Google Drive and its worlds — empty: the same
+# as Microsoft 365 (ASSISTANT_M365_ROOT_FOLDER / ASSISTANT_M365_WORLDS).
+ASSISTANT_GOOGLE_ROOT_FOLDER=""
+ASSISTANT_GOOGLE_WORLDS=""
 GOOGLE_PROJECT="my-assistant-project"
 
 # Public pages (home, privacy policy, terms) under assistant.<zone> — what Google

@@ -16,6 +16,7 @@ Environment (the installer sets it in the MCP server entry):
     GOOGLE_TOKEN_FILE where the token lives (0600)
     GOOGLE_TIMEZONE   default for calendar reads and writes (IANA name)
     GOOGLE_SCOPES     space-separated OAuth scopes
+    GOOGLE_ROOT_FOLDER / GOOGLE_WORLDS  the filing root in Drive and its worlds ("Business=_bus,Private=_pri")
     GOOGLE_READ_ACCOUNTS  other Google accounts whose Gmail may be READ (own token each,
                       `googlectl login ACCOUNT`); GOOGLE_READ_SCOPES their scopes (gmail.readonly)
 """
@@ -32,11 +33,12 @@ import sys
 import time
 import urllib.parse
 from email.message import EmailMessage
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from assistant_common import (  # noqa: E402
     HttpError, McpServer, TokenStore, env_required, extract_text, form_post, http, log, unb64,
+    parse_worlds, plan_world_targets, world_check,
 )
 
 VERSION = "0.1.0"
@@ -83,6 +85,9 @@ class Auth:
         self.client_secret = env_required("GOOGLE_CLIENT_SECRET")
         primary = env_required("GOOGLE_ACCOUNT").lower()
         token_file = env_required("GOOGLE_TOKEN_FILE")
+        # The filing root in Drive and its worlds — the same rule as in OneDrive.
+        self.root_folder = os.environ.get("GOOGLE_ROOT_FOLDER", "").strip().strip("/")
+        self.worlds = parse_worlds(os.environ.get("GOOGLE_WORLDS", ""))
         if not account or account.lower() == primary:
             self.account, self.read_only = primary, False
             self.store = TokenStore(token_file)
@@ -285,7 +290,14 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
                       "Sending mail, creating or deleting events and deleting files are visible to others — confirm when ambiguous."
                       + (f" The operator's own Gmail accounts {', '.join(readable)} can be READ with the `account` parameter "
                          "of the Gmail search/read/attachment/labels tools (receipts, invoices, letters); nothing is sent "
-                         "or modified there." if readable else "")))
+                         "or modified there." if readable else "")
+                      + (f" FILING in Drive: everything under {g.auth.root_folder}/ lives in one of its worlds — "
+                         + ", ".join(f"{g.auth.root_folder}/{w}/ (file names end with '{sfx}' before the extension)" for w, sfx in g.auth.worlds.items())
+                         + " — the same structure as in OneDrive; the drive tools refuse a path that breaks this and say the correct name."
+                         if g.auth.worlds and g.auth.root_folder else "")))
+    WORLD_NOTE = (f" Under {g.auth.root_folder}/ the next segment is the world ({', '.join(g.auth.worlds)}) and the file name ends with its suffix ("
+                  + ", ".join(f"{w}: '{sfx}'" for w, sfx in g.auth.worlds.items()) + ")." if g.auth.worlds and g.auth.root_folder else "")
+    ROOT, WORLDS = g.auth.root_folder, g.auth.worlds
 
     # The Gmail read tools take `account` only when read accounts exist; the
     # write tools never do — they act as the primary account.
@@ -510,10 +522,11 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
         out["path"] = path
         return out
 
-    @srv.tool("google_drive_upload", "Create or replace a file in Drive by path (folders are created). Text or base64, up to 5 MB.",
+    @srv.tool("google_drive_upload", "Create or replace a file in Drive by path (folders are created). Text or base64, up to 5 MB." + WORLD_NOTE,
               {"properties": {"path": {"type": "string"}, "content": {"type": "string"}, "content_base64": {"type": "string"},
                               "content_type": {"type": "string"}}, "required": ["path"]})
     def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, content_type: Optional[str] = None) -> Dict[str, Any]:
+        world_check(path, ROOT, WORLDS)
         if (content is None) == (content_base64 is None):
             raise ValueError("give exactly one of content or content_base64")
         data = content.encode("utf-8") if content is not None else unb64(content_base64 or "")
@@ -539,12 +552,16 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
 
     @srv.tool("google_drive_mkdir", "Create a folder path in Drive (existing parts are kept).", {"properties": {"path": {"type": "string"}}, "required": ["path"]})
     def drive_mkdir(path: str) -> Dict[str, Any]:
+        world_check(path, ROOT, WORLDS, is_folder=True)
         return {"path": "/" + path.strip("/"), "id": g.folder_id(path, create=True)}
 
     @srv.tool("google_drive_move", "Move and/or rename a file or folder.",
               {"properties": {"path": {"type": "string"}, "new_parent": {"type": "string"}, "new_name": {"type": "string"}}, "required": ["path"]})
     def drive_move(path: str, new_parent: Optional[str] = None, new_name: Optional[str] = None) -> Dict[str, Any]:
         f = g.item_by_path(path)
+        folder_now, _, name_now = path.strip("/").rpartition("/")
+        target = "/".join(x for x in [(new_parent if new_parent is not None else folder_now).strip("/"), new_name or name_now] if x)
+        world_check(target, ROOT, WORLDS, is_folder=f.get("mimeType") == FOLDER_MIME)
         params: Dict[str, Any] = {"fields": "id,name,mimeType,size,modifiedTime,webViewLink"}
         body: Dict[str, Any] = {}
         if new_parent is not None:
@@ -598,6 +615,41 @@ def _iso(dt: str, tz: str) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def drive_move_item(g: "Google", f: Dict[str, Any], dst: str) -> Dict[str, Any]:
+    """Move (and rename) one Drive item to the path DST; folders are created."""
+    folder, _, name = dst.rpartition("/")
+    parent = g.folder_id(folder, create=True) if folder else "root"
+    cur = g.call("GET", f"{DRIVE}/files/{f['id']}", params={"fields": "parents"}).get("parents") or []
+    moved = g.call("PATCH", f"{DRIVE}/files/{f['id']}", json_body={"name": name},
+                   params={"addParents": parent, "removeParents": ",".join(cur), "fields": "id,name,mimeType,size,modifiedTime,webViewLink"})
+    return _file_shape(moved)
+
+
+def migrate_worlds_plan(g: "Google", root: str, worlds: Dict[str, str], default: Optional[str]) -> List[Tuple[str, str]]:
+    """Every file below ROOT that is not inside a world folder, with its target."""
+    files: List[str] = []
+
+    def walk(folder_id: str, rel: str) -> None:
+        r = g.call("GET", f"{DRIVE}/files", params={"q": f"'{folder_id}' in parents and trashed = false",
+                                                    "fields": "files(id,name,mimeType)", "pageSize": 200})
+        for item in r.get("files") or []:
+            name = item.get("name") or ""
+            child = f"{rel}/{name}" if rel else name
+            if item.get("mimeType") == FOLDER_MIME:
+                if not rel and any(name.lower() == w.lower() for w in worlds):
+                    continue
+                walk(item["id"], child)
+            else:
+                files.append(child)
+
+    try:
+        root_id = g.folder_id(root)
+    except RuntimeError:
+        return []
+    walk(root_id, "")
+    return plan_world_targets(files, root, worlds, default)
+
+
 def _readers(tz: str) -> Dict[str, Google]:
     return {a: Google(Auth(a), tz) for a in read_accounts()}
 
@@ -626,6 +678,40 @@ def main(argv: List[str]) -> int:
         print(json.dumps({"ok": ok, "account": me.get("email"), "read_only": auth.read_only, "scopes": auth.store.data.get("scopes"),
                           "token_file": auth.store.path, "read_accounts": read_accounts()}))
         return 0 if ok else 1
+    if cmd == "ensure-folder":
+        if len(argv) < 3:
+            raise SystemExit("usage: ensure-folder PATH")
+        print(json.dumps({"path": "/" + argv[2].strip("/"), "id": Google(auth, tz).folder_id(argv[2], create=True)}))
+        return 0
+    if cmd == "move":
+        if len(argv) < 4:
+            raise SystemExit("usage: move SOURCE TARGET")
+        g = Google(auth, tz)
+        src, dst = argv[2].strip("/"), argv[3].strip("/")
+        f = g.item_by_path(src)
+        world_check(dst, auth.root_folder, auth.worlds, is_folder=f.get("mimeType") == FOLDER_MIME)
+        print(json.dumps(drive_move_item(g, f, dst)))
+        return 0
+    if cmd == "migrate-worlds":
+        if not auth.worlds or not auth.root_folder:
+            raise SystemExit("no worlds configured (GOOGLE_WORLDS / GOOGLE_ROOT_FOLDER)")
+        apply = "--apply" in argv[2:]
+        default = next((a.split("=", 1)[1] for a in argv[2:] if a.startswith("--default=")), None)
+        g = Google(auth, tz)
+        plan = migrate_worlds_plan(g, auth.root_folder, auth.worlds, default)
+        for src, dst in plan:
+            print(f"{src} -> {dst}")
+        if not plan:
+            print("nothing to move: everything below the root is already in a world")
+            return 0
+        if apply:
+            moved = 0
+            for src, dst in plan:
+                drive_move_item(g, g.item_by_path(src), dst); moved += 1
+            print(f"moved {moved} file(s)")
+        else:
+            print(f"{len(plan)} file(s) would move; re-run with --apply to do it")
+        return 0
     if cmd == "tools":
         print(json.dumps([t.spec() for t in build_server(Google(auth, tz), _readers(tz)).tools], indent=1))
         return 0

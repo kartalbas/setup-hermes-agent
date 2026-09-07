@@ -415,14 +415,37 @@ _assistant_google() {
     _assistant_google_wrapper
     _assistant_google_signin
     _assistant_google_signin_readers
+    _assistant_google_folders
     _assistant_google_register_all
 }
 
+# The filing root and its worlds in the agent's Drive — the OneDrive structure
+# mirrored, so a document is filed the same way whichever side holds it.
+_assistant_google_folders() {
+    local root worlds; root=$(assistant_google_root); worlds=$(assistant_google_worlds)
+    [[ -n $root ]] || return 0
+    if [[ $DRY_RUN == true ]]; then log_info "[dry-run] ensure Drive folder ${root} and its worlds (${worlds:-none})"; return 0; fi
+    [[ -s $(assistant_google_token_file) ]] || { log_skip "no Google token yet; Drive folders after the sign-in"; return 0; }
+    local IFS=',' entry world path out ctl; ctl=$(assistant_googlectl)
+    for entry in "" $worlds; do
+        world=${entry%%=*}; path="${root}${world:+/${world}}"
+        if out=$(runuser -u "$SERVICE_USER" -- "$ctl" ensure-folder "$path" 2>&1); then
+            log_ok "drive folder   ${path}${world:+ (files end with ${entry#*=})}"
+        else
+            defer_failure "assistant: could not ensure the Drive folder ${path}: ${out}"
+        fi
+    done
+}
+
+# The Drive filing root and worlds: the Google side's own values, or M365's.
+assistant_google_root()   { printf '%s' "${ASSISTANT_GOOGLE_ROOT_FOLDER:-${ASSISTANT_M365_ROOT_FOLDER:-}}"; }
+assistant_google_worlds() { printf '%s' "${ASSISTANT_GOOGLE_WORLDS:-${ASSISTANT_M365_WORLDS:-}}"; }
+
 _assistant_google_env_lines() {
-    printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nGOOGLE_ACCOUNT=%s\nGOOGLE_TOKEN_FILE=%s\nGOOGLE_TIMEZONE=%s\nGOOGLE_SCOPES=%s\nGOOGLE_READ_ACCOUNTS=%s\nGOOGLE_READ_SCOPES=%s\n' \
+    printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nGOOGLE_ACCOUNT=%s\nGOOGLE_TOKEN_FILE=%s\nGOOGLE_TIMEZONE=%s\nGOOGLE_SCOPES=%s\nGOOGLE_READ_ACCOUNTS=%s\nGOOGLE_READ_SCOPES=%s\nGOOGLE_ROOT_FOLDER=%s\nGOOGLE_WORLDS=%s\n' \
         "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_ID_VAR")" "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_SECRET_VAR")" \
         "$ASSISTANT_GOOGLE_ACCOUNT" "$(assistant_google_token_file)" "$ASSISTANT_GOOGLE_TIMEZONE" "$ASSISTANT_GOOGLE_SCOPES" \
-        "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "$ASSISTANT_GOOGLE_READ_SCOPES"
+        "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "$ASSISTANT_GOOGLE_READ_SCOPES" "$(assistant_google_root)" "$(assistant_google_worlds)"
 }
 
 _assistant_google_wrapper() {
@@ -436,7 +459,7 @@ _assistant_google_wrapper() {
     write_file "$(assistant_googlectl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Google assistant's commands with its configured environment:
-#   googlectl status [ACCOUNT] | login [ACCOUNT] | tools | serve
+#   googlectl status [ACCOUNT] | login [ACCOUNT] | ensure-folder PATH | migrate-worlds [--apply] | move SOURCE TARGET | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_google_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/google_assistant.py" "\$@"

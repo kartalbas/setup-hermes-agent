@@ -7,8 +7,10 @@ that OneDrive, and there into one of two worlds: `Secretary/Business/` for the
 operator's work and company, `Secretary/Private/` for their personal life.
 Every file name ends with the world's suffix before the extension — `_bus` or
 `_pri` (`2026-09-07 lease agreement_bus.pdf`). The drive tools refuse anything
-else and tell you the correct name; use it. Tell the operator where a thing
-went.
+else and tell you the correct name; use it. The agent's Google Drive, used when
+the operator asks for the private Google side, has exactly the same structure
+(`Secretary/Private/…_pri`, `Secretary/Business/…_bus`). Tell the operator
+where a thing went.
 
 Deciding the world comes first, for every scan, photo, attachment, mail and
 task: business when it concerns the company, a customer, a supplier, work

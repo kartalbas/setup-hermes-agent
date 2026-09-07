@@ -14,7 +14,7 @@ import google_assistant as ga  # noqa: E402
 class FakeGoogle:
     def __init__(self, answers=None):
         self.calls, self.answers, self.tz = [], answers or {}, "Europe/Zurich"
-        self.auth = mock.Mock(account="agent@gmail.example")
+        self.auth = mock.Mock(account="agent@gmail.example", root_folder="", worlds={})
 
     def call(self, method, url, **kw):
         self.calls.append((method, url, kw))
@@ -149,3 +149,24 @@ class ReadAccounts(unittest.TestCase):
             self.assertEqual(ga.read_accounts(), ["you@gmail.example", "other@gmail.example"])
             with self.assertRaises(SystemExit):
                 ga.Auth("stranger@gmail.example")
+
+
+class Worlds(unittest.TestCase):
+    """The private/business rule, mirrored in Drive."""
+
+    def test_the_drive_tools_refuse_a_misfiled_path_before_google_is_asked(self):
+        g = FakeGoogle()
+        g.auth = mock.Mock(account="agent@gmail.example", root_folder="Secretary", worlds={"Business": "_bus", "Private": "_pri"})
+        srv = ga.build_server(g)
+        with self.assertRaises(ValueError):
+            tool(srv, "google_drive_upload").fn(path="Secretary/Reports/x.txt", content="hi")
+        with self.assertRaises(ValueError):
+            tool(srv, "google_drive_mkdir").fn(path="Secretary/Stuff")
+        self.assertEqual(g.calls, [])
+        self.assertIn("Under Secretary/", tool(srv, "google_drive_upload").spec()["description"])
+        self.assertIn("FILING in Drive", srv.instructions)
+
+    def test_without_worlds_nothing_changes(self):
+        srv = ga.build_server(FakeGoogle())
+        self.assertNotIn("FILING", srv.instructions)
+        self.assertNotIn("world", tool(srv, "google_drive_upload").spec()["description"])

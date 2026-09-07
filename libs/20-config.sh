@@ -208,6 +208,10 @@ config_defaults() {
     # The operator's own Gmail accounts the assistant may READ: one read-only
     # sign-in each, AS that account, with these scopes only (README 1.11).
     : "${ASSISTANT_GOOGLE_READ_ACCOUNTS:=}"
+    # The filing root in the agent's Google Drive and its worlds: empty = the
+    # same as Microsoft 365 (resolved when used, so the file's values count).
+    : "${ASSISTANT_GOOGLE_ROOT_FOLDER:=}"
+    : "${ASSISTANT_GOOGLE_WORLDS:=}"
     : "${ASSISTANT_GOOGLE_READ_SCOPES:=openid email https://www.googleapis.com/auth/gmail.readonly}"
 
     # --- admin tooling: opsctl for the Admin bot (README 1.14) ----------------
@@ -541,6 +545,8 @@ config_validate() {
         [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"
         _check_required GOOGLE_PROJECT "${GOOGLE_PROJECT:-}" "the Cloud project holding the OAuth client"
         _check_read_accounts ASSISTANT_GOOGLE_READ_ACCOUNTS "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "${ASSISTANT_GOOGLE_ACCOUNT:-}"
+        [[ -z ${ASSISTANT_GOOGLE_WORLDS:-} || ${ASSISTANT_GOOGLE_WORLDS} =~ ^[A-Za-z0-9]+=_[a-z0-9]+(,[A-Za-z0-9]+=_[a-z0-9]+)*$ ]] ||
+            _bad "ASSISTANT_GOOGLE_WORLDS must look like Business=_bus,Private=_pri (got '${ASSISTANT_GOOGLE_WORLDS}')"
     fi
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then
         _check_required ASSISTANT_M365_ACCOUNT "${ASSISTANT_M365_ACCOUNT:-}" "the account the M365 assistant acts as"
