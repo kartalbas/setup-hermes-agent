@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Admin bot: every change carries a read-only host snapshot (`opsctl snapshot`) and Claude Code may run read-only host commands (journals, status, the assistants' listings)
+
 - Google assistant: the same drop folders in Drive (`google_drive_inbox`, `google_drive_file`, `googlectl inbox`); `inboxctl` lists both sides for the cron monitor
 - Microsoft 365 assistant: drop folders `<root>/<World>/Inbox` (created by the run), `m365_drive_inbox`, `m365_drive_file` (move, rename, twin in one call), `m365ctl inbox` as a cron monitor; the Secretary files what the operator shares from the phone via OneDrive
 

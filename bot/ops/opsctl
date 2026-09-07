@@ -8,8 +8,10 @@
 #   opsctl report              the same, compact — for the daily message
 #   opsctl check-updates       newest agent tag, GitHub MCP server release, repository state
 #   opsctl dry-run [MODULES]   the installer's preview (changes nothing); MODULES comma-separated
-#   opsctl change "<request>"  Claude Code implements the request in the repository:
-#                              tests, commit, push — then applies (OPS_APPLY=auto) or names the command
+#   opsctl change "<request>"  Claude Code implements the request in the repository, with a read-only
+#                              snapshot of the host in front of it: tests, commit, push — then applies
+#                              (OPS_APPLY=auto) or names the command
+#   opsctl snapshot [FILE]     the same host snapshot, on its own (stdout or FILE)
 #   opsctl apply [MODULES]     ask the root-side applier (hermes-ops-apply.path) to run the installer
 #                              for MODULES (or everything); the bots — this one included — restart as the run decides
 #   opsctl apply-status        state and log of the last apply
@@ -185,6 +187,61 @@ modules_for() {                   # modules_for PATH… -> "a,b" or "all"
     local IFS=','; printf '%s\n' "${mods[*]}"
 }
 
+# What Claude Code may run during a change. Repository work, and READ-ONLY
+# looks at the host: status, journals, the assistants' listings. Nothing here
+# writes to the host — no sudo, no systemctl restart, no install.sh, no
+# git push (opsctl pushes after the suite). Tools are matched by prefix.
+allowed_tools() {
+    local lib=/usr/local/lib/hermes-assistant t
+    printf '%s\n' Edit Write Read Glob Grep \
+        'Bash(tests/run.sh:*)' 'Bash(bats:*)' 'Bash(python3:*)' 'Bash(shellcheck:*)' 'Bash(bash -n:*)' \
+        'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' \
+        'Bash(grep:*)' 'Bash(sed -n:*)' 'Bash(cat:*)' 'Bash(ls:*)' 'Bash(head:*)' 'Bash(tail:*)' 'Bash(wc:*)' 'Bash(find:*)' \
+        'Bash(opsctl status)' 'Bash(opsctl report)' 'Bash(opsctl check-updates)' 'Bash(opsctl apply-status)' \
+        'Bash(journalctl:*)' 'Bash(systemctl status:*)' 'Bash(systemctl is-active:*)' 'Bash(systemctl is-enabled:*)' 'Bash(systemctl list-units:*)' \
+        'Bash(df:*)' 'Bash(free:*)' 'Bash(uptime:*)'
+    for t in m365ctl googlectl; do
+        printf 'Bash(%s status:*)\nBash(%s inbox)\nBash(%s companions)\nBash(%s tools)\n' "$t" "$t" "$t" "$t"
+        printf 'Bash(%s/%s status:*)\nBash(%s/%s inbox)\nBash(%s/%s companions)\nBash(%s/%s tools)\n' "$lib" "$t" "$lib" "$t" "$lib" "$t" "$lib" "$t"
+    done
+    printf 'Bash(inboxctl)\nBash(%s/inboxctl)\n' "$lib"
+}
+
+# What the host looks like right now, for the change to read: status, the
+# recent errors of every unit, the profiles' configuration blocks, the
+# assistants' state. Read-only, no secrets (the .env files are not included).
+diagnostic_bundle() {             # diagnostic_bundle FILE
+    local out=$1 b u
+    {
+        printf '# Host snapshot %s (read-only; the live state at the start of this change)\n\n## opsctl status\n\n' "$(date -Is)"
+        cmd_status 2>&1
+        printf '\n## Recent warnings and errors (24 h, last 15 lines per unit, the known IMAP EOF left out)\n'
+        for u in $(for b in $OPS_BOTS; do printf '%s-%s ' "$OPS_SERVICE_PREFIX" "$b"; done) "${OPS_SERVICE_NAME}-bridge" hermes-ops-apply; do
+            printf '\n### %s\n' "$u"
+            jctl -u "$u" --since '-24h' -q --no-pager -p warning 2>/dev/null | grep -vE 'socket error: EOF|check_fn ' | tail -n 15 | cut -c1-300
+        done
+        printf '\n## Profile configuration blocks (model, delegation, toolsets, tool_search, terminal)\n'
+        for b in $OPS_BOTS; do
+            local cfg="${OPS_REPO%/*}/.hermes/profiles/${b}/config.yaml"
+            [[ -f $cfg ]] || cfg="$HOME/.hermes/profiles/${b}/config.yaml"
+            printf '\n### %s (%s)\n```yaml\n' "$b" "$cfg"
+            awk '/^(model|delegation|platform_toolsets|tools|terminal):/{f=1} f&&/^[a-z_]+:/&&!/^(model|delegation|platform_toolsets|tools|terminal):/{f=0} f' "$cfg" 2>/dev/null
+            printf '```\n'
+        done
+        printf '\n## Assistants\n\n'
+        for u in m365ctl googlectl; do
+            [[ -x /usr/local/lib/hermes-assistant/$u ]] || continue
+            printf '### %s status\n%s\n' "$u" "$("/usr/local/lib/hermes-assistant/$u" status 2>&1 | cut -c1-600)"
+        done
+        if [[ -x /usr/local/lib/hermes-assistant/inboxctl ]]; then
+            printf '### drop folders\n%s\n' "$(/usr/local/lib/hermes-assistant/inboxctl 2>&1 | head -n 40)"
+        fi
+        printf '\n## Runs\n\nlast installer run: %s\nlast apply: %s\n' "$(cat /var/lib/hermes-provisioner/last-run 2>/dev/null || printf 'no record')" "$(cat "${OPS_STATE}/apply-last" 2>/dev/null || printf 'none')"
+    } >"$out" 2>&1
+    # bounded: a runaway journal must not eat the prompt
+    if (( $(wc -c <"$out") > 120000 )); then head -c 120000 "$out" >"${out}.tmp" && mv "${out}.tmp" "$out"; fi
+}
+
 cmd_change() {
     local request=${1:-}
     [[ -n $request ]] || die 'usage: opsctl change "<request>"'
@@ -202,23 +259,28 @@ cmd_change() {
     if [[ -s $sid_file ]]; then sid=$(<"$sid_file"); resume=(--resume "$sid")
     else sid=$(python3 -c 'import uuid; print(uuid.uuid4())'); printf '%s\n' "$sid" >"$sid_file"; resume=(--session-id "$sid"); fi
 
+    local ts log snapshot; ts=$(date +%Y%m%d-%H%M%S); log="${OPS_STATE}/change-${ts}.log"; snapshot="${OPS_STATE}/snapshot-${ts}.md"
+    diagnostic_bundle "$snapshot"
+
     local prompt
     prompt="You are working in the provisioner repository at ${OPS_REPO}, the checkout the installer runs from on the live host. \
 Implement the operator's request below. Rules: change code under libs/ or bot/, add or adjust tests, update README.md and, for a design \
 change, an ADR under docs/decisions/; run tests/run.sh until it passes; keep everything agnostic (no site names, addresses or secrets in \
 tracked files — config/*.conf are the operator's and gitignored); commit with a clear message and do NOT push; never run install.sh, \
-systemctl, sudo or anything that changes the host; do not edit files outside the repository. Finish with a short summary in the operator's \
-language: what changed, which tests ran, and which installer modules must run (the operator runs 'sudo ./install.sh --only ...' themselves). \
-Request: ${request}"
+systemctl restart, sudo or anything that changes the host; do not edit files outside the repository. \
+A read-only snapshot of the live host (status, recent errors of every unit, the profiles' configuration blocks, the assistants' state) \
+is at ${snapshot} — read it first when the request concerns behaviour on the host, and quote what you base a diagnosis on. You may also \
+look yourself, read-only: opsctl status|report|check-updates, journalctl, systemctl status/is-active, m365ctl/googlectl status|inbox|companions, inboxctl. \
+Finish with a short summary in the operator's language: what changed, which tests ran, what you saw on the host if relevant, and which \
+installer modules must run. Request: ${request}"
 
-    local ts log; ts=$(date +%Y%m%d-%H%M%S); log="${OPS_STATE}/change-${ts}.log"
-    printf 'request: %s\nsession: %s\nmodel: %s\n\n' "$request" "$sid" "$OPS_CLAUDE_MODEL" >"$log"
+    printf 'request: %s\nsession: %s\nmodel: %s\nsnapshot: %s\n\n' "$request" "$sid" "$OPS_CLAUDE_MODEL" "$snapshot" >"$log"
+    local -a tools=(); local t
+    while IFS= read -r t; do [[ -n $t ]] && tools+=("$t"); done < <(allowed_tools)
     local rc=0
     timeout "$OPS_CLAUDE_TIMEOUT" "$OPS_CLAUDE" -p "$prompt" "${resume[@]}" --model "$OPS_CLAUDE_MODEL" \
-        --permission-mode acceptEdits --output-format text \
-        --allowedTools Edit Write Read Glob Grep 'Bash(tests/run.sh:*)' 'Bash(bats:*)' 'Bash(python3:*)' 'Bash(shellcheck:*)' \
-                       'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' \
-                       'Bash(grep:*)' 'Bash(sed -n:*)' 'Bash(cat:*)' 'Bash(ls:*)' 'Bash(bash -n:*)' \
+        --permission-mode acceptEdits --output-format text --add-dir "$OPS_STATE" \
+        --allowedTools "${tools[@]}" \
         >>"$log" 2>&1 || rc=$?
 
     printf '=== Claude Code (exit %s) — last lines ===\n' "$rc"
@@ -304,8 +366,9 @@ main() {
         dry-run)       cmd_dry_run "${1:-}" ;;
         change)        cmd_change "${1:-}" ;;
         apply)         cmd_apply "${1:-}" ;;
+        snapshot)      if [[ -n ${1:-} ]]; then diagnostic_bundle "$1"; printf 'written: %s\n' "$1"; else local f; f=$(mktemp); diagnostic_bundle "$f"; cat "$f"; rm -f "$f"; fi ;;
         apply-status)  cmd_apply_status ;;
-        *) die "unknown command '${cmd}' (status, report, check-updates, dry-run, change, apply, apply-status, modules-for)" ;;
+        *) die "unknown command '${cmd}' (status, report, check-updates, dry-run, change, apply, apply-status, snapshot, modules-for)" ;;
     esac
 }
 

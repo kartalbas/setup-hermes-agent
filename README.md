@@ -764,8 +764,13 @@ It has exactly one instrument, `opsctl`, installed by the `ops` module:
 | `opsctl apply [modules]` / `apply-status` | writes a request; a root-side path unit runs the installer with a log; the bots restart as the run decides — the Admin bot included | the host |
 
 Two things are kept apart on purpose. **Claude Code changes the repository and
-nothing else**: its tool allowlist has no `install.sh`, `systemctl`, `sudo` or
-`git push`, and one change runs at a time (a lock). **Applying is opsctl's
+nothing else**: its tool allowlist has no `install.sh`, `systemctl restart`,
+`sudo` or `git push`, and one change runs at a time (a lock). It does see the
+host: every change starts with a read-only snapshot (`opsctl snapshot` — status,
+the recent warnings of every unit, the profiles' configuration blocks, the
+assistants' state) and may run the read-only commands itself (`journalctl`,
+`systemctl status`, `opsctl status`, `m365ctl status|inbox|companions`), so a
+request about behaviour is diagnosed against the live state, not guessed. **Applying is opsctl's
 step**, deterministic and only after the suite passed and the commit is
 pushed — `OPS_APPLY=auto` does it right away, `ask` (the default) has the bot
 offer it and wait for your word, `never` leaves the installer to your terminal.

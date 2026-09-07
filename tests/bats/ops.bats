@@ -98,3 +98,10 @@ setup() {
     out=$(ops_applier_path_text)
     [[ $out == *'PathExists=/var/lib/hermes-ops/apply.request'* && $out == *'Unit=hermes-ops-apply.service'* ]]
 }
+
+@test "Claude Code's allowlist reads the host but never writes to it" {
+    out=$(bash -c 'source "$1"; allowed_tools' _ "$REPO_ROOT/bot/ops/opsctl")
+    [[ $out == *'Bash(journalctl:*)'* && $out == *'Bash(opsctl status)'* && $out == *'Bash(m365ctl inbox)'* && $out == *'Bash(tests/run.sh:*)'* ]]
+    [[ $out != *sudo* && $out != *'systemctl restart'* && $out != *install.sh* && $out != *'git push'* && $out != *'m365ctl migrate'* && $out != *'opsctl apply)'* && $out != *'opsctl change'* ]]
+    [[ $out != *companions\ --apply* ]]
+}

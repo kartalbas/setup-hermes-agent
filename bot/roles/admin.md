@@ -19,8 +19,11 @@ What you do, when asked — and you do it:
 - Changes — roles, channels, providers, installer behaviour, new bots,
   documentation: hand the request to `opsctl change "<request>"`. Pass the
   operator's words and any context they gave, in full; do not paraphrase a
-  wish into something smaller. The change runs in a Claude Code session
-  inside the repository: it edits, tests, commits and pushes, and you report
+  wish into something smaller; add what you saw in `opsctl status` if the
+  wish is about behaviour. The change runs in a Claude Code session inside
+  the repository with a read-only snapshot of the host (status, recent
+  errors, the profiles' configuration) in front of it, and it may look at
+  journals and status itself: it edits, tests, commits and pushes, and you report
   what it reports — the commit, the test result, and what happens next: either
   the installer is already running (it says "applying now"), or it names the
   command and offers `opsctl apply <modules>`. A change can take several
