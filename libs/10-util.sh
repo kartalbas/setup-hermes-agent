@@ -51,6 +51,34 @@ unit_restarted_this_run() {       # unit_restarted_this_run UNIT
     return 1
 }
 
+# Restarts owed but not yet done. A module whose change needs a restart, and
+# which knows a later module of this run restarts the same unit anyway, hands
+# the restart over instead of doing it — a bot restarted twice in one run
+# (persona, then configuration) was 15 s each, four bots, every role change.
+# Whatever is still owed at the end of the run is restarted then.
+declare -gA _RESTART_PENDING=()
+restart_later() { _RESTART_PENDING[$1]=1; }                       # restart_later UNIT
+restart_pending() { [[ -n ${_RESTART_PENDING[$1]:-} ]]; }         # restart_pending UNIT
+restart_done() { unset '_RESTART_PENDING[$1]'; _RESTARTED_UNITS+=("$1"); }   # restart_done UNIT
+flush_pending_restarts() {
+    local u
+    for u in "${!_RESTART_PENDING[@]}"; do
+        log_info "restarting ${u}: a change earlier in this run is still waiting for it"
+        run systemctl restart "$u"   # gated: only units a module handed over
+        restart_done "$u"
+    done
+}
+
+# Modules this run executes (install.sh --only/--skip). Empty means all —
+# libraries loaded outside install.sh (tests) see every module as selected.
+declare -ga SELECTED_MODULES=()
+module_selected() {               # module_selected NAME
+    (( ${#SELECTED_MODULES[@]} == 0 )) && return 0
+    local m
+    for m in "${SELECTED_MODULES[@]}"; do [[ $m == "$1" ]] && return 0; done
+    return 1
+}
+
 # A failure that must end the run, but only after the rest of it has happened.
 #
 # `die` is right when continuing would build on something broken. It is wrong

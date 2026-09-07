@@ -90,8 +90,17 @@ _profile_soul() {
     # A changed persona is read at start-up; restart only when it changed and
     # the unit already exists (on the first run the service module starts it).
     if (( CHANGE_COUNT > before )) && systemctl list-unit-files "${BOT_SERVICE}.service" 2>/dev/null | grep -q "${BOT_SERVICE}"; then
-        run systemctl restart "${BOT_SERVICE}.service"   # gated: only when SOUL.md changed
-        log_ok "restarted ${BOT_SERVICE} for the new persona"
+        if module_selected channels; then
+            # The channel pass restarts this bot when its configuration changed;
+            # one restart carries both. Handed over, not skipped: the end of the
+            # run restarts anything still owed.
+            restart_later "${BOT_SERVICE}.service"
+            log_ok "new persona for ${BOT_SERVICE}; restarts with its channel pass"
+        else
+            run systemctl restart "${BOT_SERVICE}.service"   # gated: only when SOUL.md changed
+            restart_done "${BOT_SERVICE}.service"
+            log_ok "restarted ${BOT_SERVICE} for the new persona"
+        fi
     fi
 }
 

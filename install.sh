@@ -189,6 +189,7 @@ run_modules() {
     if (( ${#selected[@]} < ${#MODULES[@]} )); then
         log_info "modules        $(join_words "${selected[@]}")  (selected; everything else is left as it is)"
     fi
+    SELECTED_MODULES=("${selected[@]}")
     MODULE_TIMES=()
     for name in "${selected[@]}"; do
         fn="${name}_apply"
@@ -203,6 +204,7 @@ run_modules() {
         MODULE_TIMES+=("${name} ${ms}")
         CURRENT_MODULE=""
     done
+    [[ $DRY_RUN == true ]] || flush_pending_restarts
     report_timing
 
     if (( ${#DEFERRED_FAILURES[@]} > 0 )); then
