@@ -240,3 +240,18 @@ assert calls and calls[0]["function"]["name"] == "terminal"
 assert "plain text" in m.NATIVE_CALL_REMINDER
 PY
 }
+
+@test "the bridge sweeps stale working directories of earlier processes, not fresh ones" {
+    tmp=$(mktemp -d)
+    mkdir -p "${tmp}/agy-shim-old" "${tmp}/agy-shim-new" "${tmp}/other-dir"
+    touch -d '3 hours ago' "${tmp}/agy-shim-old"
+    python3 - "$SHIM" "$tmp" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+root = sys.argv[2]
+assert m.sweep_stale_workdirs(root, 3600) == 1
+assert sorted(os.listdir(root)) == ["agy-shim-new", "other-dir"], os.listdir(root)
+assert m.sweep_stale_workdirs("/nonexistent-dir", 1) == 0
+PY
+    rm -rf "$tmp"
+}

@@ -230,3 +230,12 @@ setup() {
     [ "$status" -ne 0 ]
     rm -rf "$tmp"
 }
+
+@test "every persona says where scratch goes and that it is removed" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    bot_context secretary
+    out=$(profile_soul_text "$REPO_ROOT/bot/roles/secretary.md")
+    bot_context_end
+    [[ $out == *'never into the account'"'"'s home directory and never into /tmp'* ]]
+    [[ $out == *'working directory'* ]]
+}

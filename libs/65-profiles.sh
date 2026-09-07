@@ -20,6 +20,7 @@ profiles_apply() {
         bot_context "$key"
         _profile_ensure
         _profile_soul
+        _profile_workdir
         bot_context_end
     done < <(bots)
 }
@@ -61,6 +62,15 @@ _profile_ensure() {
 # name comes from configuration, so it is put first here — with the
 # instruction not to call itself by the vendor's name, which a second built-in
 # hint ("You run on Hermes Agent") would otherwise invite.
+# The bot's scratch space: the terminal's working directory and TMPDIR both
+# point here (channels and service modules), so whatever a bot writes for
+# itself lands in one place — never in the account's home, never in /tmp —
+# and a tmpfiles rule (host module) removes it after two days.
+_profile_workdir() {
+    ensure_dir "${BOT_HOME}/work" 0750 "${SERVICE_USER}:${SERVICE_GROUP}"
+    ensure_dir "${BOT_HOME}/work/tmp" 0750 "${SERVICE_USER}:${SERVICE_GROUP}"
+}
+
 profile_soul_text() {          # profile_soul_text ROLE_FILE -> the SOUL.md content
     local role=$1
     cat <<EOF
@@ -72,6 +82,12 @@ detail the operator does not want to see. You are one of the operator's private
 assistant bots; everything you produce (names, subjects, files) is in English
 unless the operator writes it or asks for another language, and you answer in
 the operator's language — in German with the informal "du", never "Sie".
+
+Scratch files — anything you generate on this machine on the way to a result —
+go into your working directory (the directory you start in, \`work/\` in your
+profile), never into the account's home directory and never into /tmp. Hand
+results to the operator through the tools (OneDrive, mail, chat), then remove
+what you created; the working directory is emptied of old files anyway.
 
 EOF
     # The role body without its own title line.

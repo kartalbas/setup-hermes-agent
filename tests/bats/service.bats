@@ -28,3 +28,17 @@ setup() {
     SERVICE_START_TIMEOUT=120
     [[ $(_service_dropin_content) == *'TimeoutStartSec=120'* ]]
 }
+
+@test "a bot unit sends the tools' temporary files into the profile's work directory" {
+    BOT_HOME=/home/x/.hermes/profiles/b
+    out=$(_service_dropin_content)                      # the drop-in stays free of it: the unit itself carries TMPDIR
+    [[ $out != *TMPDIR* ]]
+    grep -q 'Environment="TMPDIR=${BOT_HOME}/work/tmp"' "$REPO_ROOT/libs/70-service.sh"
+}
+
+@test "the tmpfiles rules age out the bots' scratch and the assistants' download folders" {
+    HERMES_HOME=/home/x/.hermes
+    out=$(host_tmpfiles_text)
+    [[ $out == *'e /home/x/.hermes/profiles/*/work - - - 2d'* && $out == *'e /tmp/onedrive-* - - - 1d'* && $out == *'e /tmp/share-* - - - 1d'* ]]
+    [[ $out != *'R '* ]]                                 # age-based cleaning only, nothing unconditional
+}

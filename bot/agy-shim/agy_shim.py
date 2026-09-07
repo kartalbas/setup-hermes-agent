@@ -348,8 +348,33 @@ SUMMARY_REQUEST = (
 )
 
 
+def sweep_stale_workdirs(root: str, max_age_s: float = 3600.0) -> int:
+    """Remove `agy-shim-*` directories under ROOT older than MAX_AGE_S — what a
+    killed bridge or an older version left behind (37 of them on one host)."""
+    removed = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    now = time.time()
+    for name in names:
+        if not name.startswith("agy-shim-"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_s:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 class Pool:
     def __init__(self, args):
+        swept = sweep_stale_workdirs(args.workdir or tempfile.gettempdir())
+        if swept:
+            log.info("removed %d stale working directories of earlier bridge processes", swept)
         self.args = args
         self.procs: dict[str, AgentProcess] = {}
         self.spares: dict[str, AgentProcess] = {}   # pre-warmed, stateless mode

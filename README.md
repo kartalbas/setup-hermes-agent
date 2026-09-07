@@ -1107,6 +1107,16 @@ systemctl is-active '<service-prefix>-*'      # the bots
 and one message per bot in Teams. A relay that answers its first IMAP poll with
 `EOF` is the known hiccup and self-heals.
 
+**Where the bots write.** Each bot's terminal starts in its profile's `work/`
+directory and its `TMPDIR` points to `work/tmp`; the shared persona says so and
+tells the bot to remove what it made. A tmpfiles rule
+(`/etc/tmpfiles.d/hermes-provisioner.conf`, systemd's daily clean) removes files
+older than two days from every `work/` and older than a day from the download
+folders the assistants create for photos and scans. The bridge removes working
+directories that earlier processes left behind when it starts. What a model
+puts elsewhere by name (a venv in `/tmp`, a clone) is the model disobeying its
+persona — worth a word in its role, not a rule here.
+
 **Backups.** A timer runs `hermes backup` — consistent SQLite snapshots, not a
 `tar` of a live directory. Restore is manual and needs the gateway stopped; the
 procedure is in `docs/runbook.md`, and it has to be rehearsed before you need it.

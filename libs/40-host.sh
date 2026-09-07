@@ -11,6 +11,29 @@ host_apply() {
     _host_directories
     _host_firewall
     _host_journal_cap
+    _host_tmpfiles
+}
+
+# Scratch the bots leave behind is short-lived by rule, not by hope: systemd's
+# daily tmpfiles clean removes old files from every bot's work directory and
+# from the download folders the assistants create for photos and scans.
+host_tmpfiles_text() {
+    cat <<EOF
+# Managed by setup-hermes-agent: the bots' scratch space is short-lived.
+# e = clean the contents of existing directories by age (systemd-tmpfiles-clean.timer, daily).
+e ${HERMES_HOME}/profiles/*/work - - - 2d
+e ${HERMES_HOME}/profiles/*/work/tmp - - - 2d
+e ${HERMES_HOME}/work - - - 2d
+e /tmp/onedrive-* - - - 1d
+e /tmp/share-* - - - 1d
+EOF
+}
+
+_host_tmpfiles() {
+    [[ -n ${HERMES_HOME:-} ]] || return 0
+    if [[ $DRY_RUN == true ]]; then log_info "[dry-run] write /etc/tmpfiles.d/hermes-provisioner.conf"; return 0; fi
+    ensure_dir /etc/tmpfiles.d 0755
+    write_file /etc/tmpfiles.d/hermes-provisioner.conf 0644 <<<"$(host_tmpfiles_text)"
 }
 
 # ---------------------------------------------------------------------------

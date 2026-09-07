@@ -132,6 +132,14 @@ _session_reset_configure() {
     yaml_merge <<<"$(session_reset_yaml "$spec")"
 }
 
+# The terminal's working directory: the profile's work/ (see _profile_workdir).
+_workdir_configure() {
+    local home=${BOT_HOME:-$HERMES_HOME}
+    [[ -n $home ]] || return 0
+    [[ $DRY_RUN == true ]] || ensure_dir "${home}/work" 0750 "${SERVICE_USER}:${SERVICE_GROUP}"
+    _config_set terminal.cwd "${home}/work"
+}
+
 # MCP tools inline or behind the agent's meta-tools — see AGENT_TOOL_SEARCH.
 _tool_search_configure() {
     local mode=${BOT_KEY:+$(bot_field "$BOT_KEY" TOOL_SEARCH)}
@@ -358,6 +366,7 @@ _policy_configure() {
     _config_set approvals.cron_mode       "$CHANNELS_CRON_MODE"
     _session_reset_configure
     _tool_search_configure
+    _workdir_configure
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
         # Kept as a denylist rather than a habit: the agent can otherwise be

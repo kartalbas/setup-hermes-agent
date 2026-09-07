@@ -110,6 +110,7 @@ Environment="PATH=${HERMES_HOME}/node:${dir}/venv/bin:${dir}/node_modules/.bin:$
 Environment="VIRTUAL_ENV=${dir}/venv"
 Environment="HERMES_HOME=${BOT_HOME}"
 Environment="HERMES_SUPERVISED_CHILD=1"
+Environment="TMPDIR=${BOT_HOME}/work/tmp"
 Restart=always
 RestartSec=5
 RestartForceExitStatus=75
