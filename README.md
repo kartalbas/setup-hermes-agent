@@ -939,7 +939,9 @@ Modules run in their canonical order whatever order you name them. A named
 module must find what the earlier ones installed; a missing prerequisite is an
 error, not a fallback — `--only channels` on a host with no agent fails and says
 so. Every run ends with the time each module took, slowest first, so a slow
-module has a name to put in `--skip`.
+module has a name to put in `--skip`. A bot is restarted at most once per run:
+a role change hands its restart to the channel pass, and anything still owed
+is restarted at the end.
 
 **Upgrading.** Raise `HERMES_REF` in `config/hermes.conf`, mirror, re-run.
 

@@ -316,3 +316,13 @@ setup() {
     [ "$CHANGED" = true ]
     [ "$CHANGE_COUNT" -eq 2 ]
 }
+
+@test "restarts can be handed over, and a module selection is honoured" {
+    _RESTART_PENDING=(); _RESTARTED_UNITS=()
+    ! restart_pending x.service
+    restart_later x.service; restart_pending x.service
+    restart_done x.service; ! restart_pending x.service; unit_restarted_this_run x.service
+    SELECTED_MODULES=(); module_selected channels          # empty selection = everything
+    SELECTED_MODULES=(preflight profiles); ! module_selected channels; module_selected profiles
+    SELECTED_MODULES=()
+}

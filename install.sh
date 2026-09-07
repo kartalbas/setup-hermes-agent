@@ -189,6 +189,7 @@ run_modules() {
     if (( ${#selected[@]} < ${#MODULES[@]} )); then
         log_info "modules        $(join_words "${selected[@]}")  (selected; everything else is left as it is)"
     fi
+    # shellcheck disable=SC2034  # read by module_selected in libs/10-util.sh
     SELECTED_MODULES=("${selected[@]}")
     MODULE_TIMES=()
     for name in "${selected[@]}"; do

@@ -212,9 +212,12 @@ _config_set() {
         log_skip "${key} already ${value}"
         return 0
     fi
-    hermes_cli config set "$key" "$value" >/dev/null 2>&1 ||
+    if hermes_cli config set "$key" "$value" >/dev/null 2>&1; then
+        log_ok "set ${key} = ${value}"
+        mark_changed
+    else
         log_warn "could not set ${key}; set it by hand if the agent needs it"
-    mark_changed
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -751,12 +754,13 @@ _channels_restart_if_changed() {
     # Judge by THIS pass's changes, not the run-wide flag: a directory created
     # in the host module is not a reason to restart the gateway here. The
     # service module restarts it for unit and drop-in changes on its own.
-    if (( CHANGE_COUNT == ${_CHANNELS_COUNT_BEFORE:-0} )); then
+    if (( CHANGE_COUNT == ${_CHANNELS_COUNT_BEFORE:-0} )) && ! restart_pending "${unit}.service"; then
         log_skip "no channel changes; not restarting ${unit}"
         return 0
     fi
     [[ $SERVICE_SCOPE == system ]] || return 0
     have_cmd systemctl || return 0
     run systemctl restart "${unit}.service"
+    restart_done "${unit}.service"
     log_ok "restarted ${unit} to pick up the new configuration"
 }
