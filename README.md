@@ -1347,6 +1347,19 @@ a misfiled document with the corrected name. The model normally retries with
 that name; if it keeps failing, the request itself named a path outside the
 worlds — say "business" or "private", or give the full path.
 
+### A pasted link arrives as a name; the Secretary cannot open a SharePoint file
+
+Two causes, both handled. Teams renders a pasted URL as a named link and puts
+the URL only into the `text/html` attachment it mirrors on every message; the
+adapter skipped that attachment. The run carries a patch (like the e-mail
+folder one) that appends the missing hrefs to the text as `(link: …)`, and the
+bots restart once after it is applied. And a SharePoint or OneDrive link needs
+the tenant's access: the web tools have none, so the Secretary opens such links
+with `m365_share_read` (text of a PDF or Word file) or `m365_share_download`
+(photos, scans) through Graph's sharing endpoint — the scope `Files.Read.All`
+is declared and consented by the run for it. Links the agent's account cannot
+open (not shared with it) fail with Graph's own `accessDenied`.
+
 ### `assistant: the mailbox … is not readable by … yet`
 
 The Exchange delegation is missing or not applied yet. Sign in to the Exchange

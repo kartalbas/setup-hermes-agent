@@ -30,11 +30,13 @@ hermes_apply() {
         log_skip "already installed at ${sha:0:12}; skipping the vendor installer"
         _hermes_record_revision "$sha"
         _hermes_patch_email_folder
+        _hermes_patch_teams_links
         return 0
     fi
 
     _hermes_run_installer "$sha"
     _hermes_patch_email_folder
+    _hermes_patch_teams_links
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -355,5 +357,71 @@ _hermes_patch_email_folder() {
         0) mark_changed; log_ok "e-mail adapter patched: folder from EMAIL_IMAP_FOLDER" ;;
         3) log_skip "e-mail adapter folder patch present" ;;
         *) die "could not patch the e-mail adapter for a configurable folder" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Carried patch 2: links in Teams messages.
+#
+# When a URL is pasted into Teams, the client often renders it as a named link
+# — the activity's `text` then carries only the display name, and the URL
+# survives solely in the text/html attachment Teams mirrors on every message.
+# The adapter skips that attachment. The patch reads the hrefs out of it and
+# appends the ones missing from the text as "(link: URL)", so the model sees
+# what the operator pasted. Idempotent by its marker; re-applied after updates.
+# ---------------------------------------------------------------------------
+hermes_teams_adapter_path() { printf '%s/plugins/platforms/teams/adapter.py' "$(hermes_install_dir)"; }
+
+hermes_patch_teams_links_file() {   # hermes_patch_teams_links_file FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+MARK = "setup-hermes-agent: named links"
+if MARK in s:
+    sys.exit(3)
+old = ('            if content_type in ("text/html", "text/plain") and not content_url:\n'
+       '                continue\n')
+if s.count(old) != 1:
+    sys.exit("the text/html attachment skip was not found exactly once; the adapter changed — review the patch")
+new = ('            if content_type in ("text/html", "text/plain") and not content_url:\n'
+       '                # ' + MARK + ': a pasted URL that Teams rendered as a named link\n'
+       '                # survives only in this mirrored HTML; hand the URL to the model.\n'
+       '                _html = getattr(att, "content", None)\n'
+       '                if isinstance(_html, str) and "href" in _html:\n'
+       '                    import re as _re\n'
+       '                    for _u in _re.findall(r\'href="([^"]+)"\', _html):\n'
+       '                        _u = _u.replace("&amp;", "&")\n'
+       '                        if _u.startswith("http") and _u not in text:\n'
+       '                            text = (text + "\\n" if text else "") + "(link: " + _u + ")"\n'
+       '                continue\n')
+s = s.replace(old, new)
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_teams_links() {
+    local f; f=$(hermes_teams_adapter_path)
+    [[ -f $f ]] || { log_warn "Teams adapter not found at ${f}; link patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q "setup-hermes-agent: named links" "$f"; then log_skip "Teams adapter link patch present"
+        else log_info "[dry-run] would patch ${f} so named links keep their URL"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_teams_links_file "$f" || rc=$?
+    case $rc in
+        0)
+            mark_changed; log_ok "Teams adapter patched: named links keep their URL"
+            # The adapter is loaded at start: every Teams bot restarts once,
+            # with its channel pass if that runs, else at the end of the run.
+            local key
+            while IFS= read -r key; do
+                [[ -n $key ]] && bot_has_channel "$key" teams && restart_later "$(bot_field "$key" SERVICE).service"
+            done < <(bots)
+            ;;
+        3) log_skip "Teams adapter link patch present" ;;
+        *) die "could not patch the Teams adapter for named links" ;;
     esac
 }

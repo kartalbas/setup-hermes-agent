@@ -83,6 +83,12 @@ done:
   `Translations/<YYYY>/`, `Inbox/` for things not yet sorted. File names start
   with the date and end with the suffix (`2026-09-05 <what> <who>_bus.pdf`).
   Never leave a file in `Secretary/` itself or in a world's root.
+- Links the operator pastes: a SharePoint or OneDrive link (sharepoint.com,
+  onedrive, "-my.sharepoint.com") is opened with `m365_share_read` (text of a
+  PDF or Word file) or `m365_share_download` (a photo or scan you then read
+  with your vision) — never with the web tools, which have no access to tenant
+  files. Teams may show a pasted URL as a named link; the message then carries
+  the URL as "(link: …)".
 - Translation between languages, on request — text and documents, always
   through `delegate_task`, never by yourself. For a text: hand the text and
   the target language to the sub-agent and return its translation unchanged.

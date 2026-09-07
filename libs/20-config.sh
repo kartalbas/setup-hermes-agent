@@ -172,7 +172,7 @@ config_defaults() {
     : "${ASSISTANT_M365_CLIENT_ID_VAR:=MAIL_CLIENT_ID}"
     : "${ASSISTANT_M365_TENANT_ID_VAR:=AZURE_TENANT_ID}"
     : "${ASSISTANT_M365_TIMEZONE:=Europe/Zurich}"
-    : "${ASSISTANT_M365_SCOPES:=offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite OnlineMeetings.ReadWrite Files.ReadWrite}"
+    : "${ASSISTANT_M365_SCOPES:=offline_access openid profile User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite OnlineMeetings.ReadWrite Files.ReadWrite Files.Read.All}"
     # The operator's own mailboxes in the tenant the assistant may READ
     # (receipts, invoices, letters) — search, read, attachments, folders; never
     # send, move or mark. Each needs Full Access delegation for the assistant's

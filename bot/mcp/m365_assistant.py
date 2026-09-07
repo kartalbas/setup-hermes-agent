@@ -21,6 +21,7 @@ Environment (the installer sets it in the MCP server entry):
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -309,6 +310,12 @@ def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: 
                 except ValueError:
                     item = {}
     return item
+
+
+def share_id(url: str) -> str:
+    """Graph's sharing-token form of a URL: 'u!' + base64url without padding."""
+    token = base64.urlsafe_b64encode(url.strip().encode("utf-8")).decode().rstrip("=")
+    return "u!" + token
 
 
 def missing_companions(graph: "Graph", start: str) -> List[str]:
@@ -877,6 +884,34 @@ def build_server(graph: Graph) -> McpServer:
         with open(local, "wb") as fh:
             fh.write(data)
         return {"path": "/" + path.strip("/"), "local_path": local, "size": len(data)}
+
+    @srv.tool("m365_share_read", "Text of a file behind a SharePoint or OneDrive link the operator pasted (pdf, docx, plain text), read "
+              "with the assistant's own access — the web tools cannot open tenant files. Use this whenever a message carries a "
+              "sharepoint.com / onedrive link; for a photo or scan use m365_share_download and your vision.",
+              {"properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000}}, "required": ["url"]})
+    def share_read(url: str, max_chars: int = 20000) -> Dict[str, Any]:
+        item = graph.call("GET", f"/shares/{share_id(url)}/driveItem", params={"$select": "id,name,size,file,folder,webUrl,@microsoft.graph.downloadUrl"})
+        if "folder" in item:
+            children = graph.call("GET", f"/shares/{share_id(url)}/driveItem/children", params={"$top": 100, "$select": "id,name,size,file,folder"})
+            return {"name": item.get("name"), "kind": "folder", "items": [_item_shape(i) for i in children.get("value") or []]}
+        dl = item.get("@microsoft.graph.downloadUrl")
+        data = graph.download(dl) if dl else graph.call("GET", f"/shares/{share_id(url)}/driveItem/content", raw=True)[0]
+        out = extract_text(item.get("name") or "file", data, max_chars)
+        out.update({"name": item.get("name"), "size": item.get("size"), "webUrl": item.get("webUrl")})
+        return out
+
+    @srv.tool("m365_share_download", "Download the file behind a SharePoint or OneDrive link to this machine (a temporary path is returned) — "
+              "for photos and scans you then read with your vision, or to file the document under the worlds rule. Remove the local copy when done.",
+              {"properties": {"url": {"type": "string"}}, "required": ["url"]})
+    def share_download(url: str) -> Dict[str, Any]:
+        item = graph.call("GET", f"/shares/{share_id(url)}/driveItem", params={"$select": "id,name,size,file,@microsoft.graph.downloadUrl"})
+        dl = item.get("@microsoft.graph.downloadUrl")
+        data = graph.download(dl) if dl else graph.call("GET", f"/shares/{share_id(url)}/driveItem/content", raw=True)[0]
+        local_dir = tempfile.mkdtemp(prefix="share-")
+        local = os.path.join(local_dir, item.get("name") or "file")
+        with open(local, "wb") as fh:
+            fh.write(data)
+        return {"name": item.get("name"), "local_path": local, "size": len(data)}
 
     @srv.tool("m365_drive_missing_text", f"Documents below {ROOT or 'the root folder'} that have no Markdown twin yet (scans, photos, PDFs filed without their text).",
               {"properties": {"path": {"type": "string", "description": "start folder; default the root folder"}}})

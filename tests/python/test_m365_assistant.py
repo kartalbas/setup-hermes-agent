@@ -438,3 +438,21 @@ class Companions(unittest.TestCase):
             common.recognized_text("a.png", b"", None)
         md = common.companion_markdown("a_bus.jpg", "Business", "text")
         self.assertTrue(md.startswith("# a_bus.jpg")); self.assertIn("- world: Business", md); self.assertTrue(md.endswith("text\n"))
+
+
+class SharedLinks(unittest.TestCase):
+    def test_share_id_is_the_url_base64url_without_padding(self):
+        import base64
+        url = "https://tenant.sharepoint.example/sites/x/Doc.pdf"
+        self.assertEqual(m365.share_id(url), "u!" + base64.urlsafe_b64encode(url.encode()).decode().rstrip("="))
+        self.assertNotIn("=", m365.share_id("https://files.example/c?d=1"))
+
+    def test_share_read_goes_through_the_shares_endpoint_and_extracts_text(self):
+        sid = m365.share_id("https://tenant.sharepoint.example/sites/x/notes.txt")
+        g = FakeGraph({("GET", f"/shares/{sid}/driveItem"): {"id": "i", "name": "notes.txt", "size": 5, "file": {}, "webUrl": "https://web.example/n",
+                                                          "@microsoft.graph.downloadUrl": "https://dl.example/notes.txt"}})
+        g.download = lambda url: b"hello"
+        srv = m365.build_server(g)
+        out = next(t for t in srv.tools if t.name == "m365_share_read").fn(url="https://tenant.sharepoint.example/sites/x/notes.txt")
+        self.assertEqual(out.get("text"), "hello"); self.assertEqual(out["name"], "notes.txt")
+        self.assertTrue(g.calls[0][1].startswith(f"/shares/{sid}/driveItem"))
