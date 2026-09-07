@@ -230,6 +230,14 @@ config_defaults() {
     # When a chat starts over with an empty transcript: none | daily@HOUR | idle@MINUTES.
     # Memory, files, calendar and cron jobs live outside the transcript and survive.
     : "${AGENT_SESSION_RESET:=none}"
+    # Which tools the model sees. The agent hides MCP tools behind three
+    # meta-tools (tool_search / tool_describe / tool_call) unless told not to.
+    # A model on the bridge follows a text protocol and needs the real names in
+    # front of it — with the meta-tools it reached for `gh` in the terminal
+    # instead of the GitHub tools (2026-09-07). Native function calling copes
+    # with the full list too, so "off" is the default here. Per bot:
+    # BOT_<KEY>_TOOL_SEARCH.
+    : "${AGENT_TOOL_SEARCH:=off}"
     : "${TUNNEL_PROTOCOL:=}"
     : "${TUNNEL_START_TIMEOUT:=90}"
     : "${TUNNEL_TOKEN_FILE:=/etc/cloudflared/token}"
@@ -429,6 +437,10 @@ _check_read_accounts() {          # _check_read_accounts NAME VALUE OWN_ACCOUNT
     done
 }
 
+_check_tool_search() {            # _check_tool_search NAME VALUE — the agent's tools.tool_search.enabled values
+    case $2 in auto|on|off) ;; *) _bad "${1} must be auto, on or off (got '${2}')" ;; esac
+}
+
 # BOT_<KEY>_DELEGATION_ENDPOINT names a global LLM_ENDPOINT_n for the bot's
 # sub-agents. Only two shapes can be written without a key landing in
 # config.yaml: a keyless custom endpoint (the bridge) or a hosted provider,
@@ -482,6 +494,7 @@ config_validate() {
         [[ -n ${TUNNEL_ZONE:-} || ${SITE_HOSTNAME:-} == *.* ]] || _bad "SITE_ENABLED=true needs TUNNEL_ZONE or SITE_HOSTNAME"
     fi
     _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
+    _check_tool_search AGENT_TOOL_SEARCH "$AGENT_TOOL_SEARCH"
     if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then
         [[ ${ASSISTANT_GITHUB_MCP_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || _bad "ASSISTANT_GITHUB_MCP_VERSION must be X.Y.Z"
     fi
@@ -839,6 +852,7 @@ bot_field() {
         TEAMS_CLIENT_SECRET_VAR) printf 'TEAMS_%s_CLIENT_SECRET' "$(bot_upper "$key")" ;;
         DASHBOARD)     printf 'false' ;;
         SESSION_RESET) printf '%s' "$AGENT_SESSION_RESET" ;;
+        TOOL_SEARCH)   printf '%s' "$AGENT_TOOL_SEARCH" ;;   # auto | on | off — MCP tools behind the meta-tools, or inline
         MAIL_ALIAS)    printf '' ;;                     # address on the shared mailbox that reaches this bot
         MAIL_FOLDER)   if [[ -n $(bot_field "$key" MAIL_ALIAS) && $(bot_field "$key" MAIL_CATCH_ALL) != true ]]; then bot_field "$key" NAME; else printf 'INBOX'; fi ;;
         MAIL_CATCH_ALL) printf 'false' ;;               # true: this bot reads INBOX (everything not routed elsewhere)
@@ -928,6 +942,7 @@ _bots_validate() {
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
         _check_session_reset "BOT_$(bot_upper "$k")_SESSION_RESET" "$(bot_field "$k" SESSION_RESET)"
+        _check_tool_search "BOT_$(bot_upper "$k")_TOOL_SEARCH" "$(bot_field "$k" TOOL_SEARCH)"
         if [[ -n $(bot_field "$k" LLM_MODEL) ]]; then
             [[ $(bot_field "$k" LLM_PROVIDER) != custom || -n $(bot_field "$k" LLM_BASE_URL) ]] ||
                 _bad "bot ${k}: BOT_$(bot_upper "$k")_LLM_BASE_URL is needed for a custom provider"

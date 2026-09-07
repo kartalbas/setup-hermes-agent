@@ -132,6 +132,13 @@ _session_reset_configure() {
     yaml_merge <<<"$(session_reset_yaml "$spec")"
 }
 
+# MCP tools inline or behind the agent's meta-tools — see AGENT_TOOL_SEARCH.
+_tool_search_configure() {
+    local mode=${BOT_KEY:+$(bot_field "$BOT_KEY" TOOL_SEARCH)}
+    mode=${mode:-$AGENT_TOOL_SEARCH}
+    _config_set tools.tool_search.enabled "$mode"
+}
+
 # Every adapter splits its allowlist on COMMAS — verified in the telegram,
 # email and teams adapters, all `split(",")`. Written space-separated, two
 # entries become one token that matches nobody. The gate fails closed, so it is
@@ -347,6 +354,7 @@ _policy_configure() {
     _config_set approvals.unattended_mode "$CHANNELS_UNATTENDED_MODE"
     _config_set approvals.cron_mode       "$CHANNELS_CRON_MODE"
     _session_reset_configure
+    _tool_search_configure
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
         # Kept as a denylist rather than a habit: the agent can otherwise be

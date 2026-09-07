@@ -222,3 +222,21 @@ PY
     grep -q '"--agent", AGENT_NAME, "--add-dir", self.workdir' "$SHIM"
     grep -q 'AGY_SHIM_AGENT_MODE' "$SHIM"
 }
+
+@test "a native call to a caller function is a decision; anything else is not" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys, json
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+step = {"step_type": "tool", "state": "ERROR", "tool_info": {"name": "terminal", "parameters": {"command": "ls"}},
+        "error": {"type": "TOOL_ERROR", "message": 'unknown tool: "terminal" — check spelling'}}
+d = m.native_call_decision(step, {"terminal", "web_search"})
+assert d == {"type": "tool_call", "name": "terminal", "arguments": {"command": "ls"}}, d
+assert m.native_call_decision(step, {"web_search"}) is None                      # not a caller function
+assert m.native_call_decision(dict(step, state="DONE"), {"terminal"}) is None    # the CLI ran it itself
+assert m.native_call_decision(dict(step, error="permission denied"), {"terminal"}) is None
+assert m.native_call_decision({"step_type": "agent_response", "state": "DONE"}, {"terminal"}) is None
+content, calls = m.parse_decision(json.dumps(d))
+assert calls and calls[0]["function"]["name"] == "terminal"
+assert "plain text" in m.NATIVE_CALL_REMINDER
+PY
+}

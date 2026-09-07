@@ -336,6 +336,12 @@ Azure Bot, the Teams package and the service. One bot carries the mailbox
 (`BOT_<KEY>_CHANNELS="teams email"`), one the dashboard, and the assistant's
 tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 
+**Which tools the model sees.** `AGENT_TOOL_SEARCH` — `off` (default) puts
+every MCP tool in front of the model by name; `auto`/`on` hides them behind the
+agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
+saves context on huge catalogues but made the bridge model reach for `gh` in the
+terminal instead of the GitHub tools. Per bot: `BOT_<KEY>_TOOL_SEARCH`.
+
 **When a chat starts over.** `AGENT_SESSION_RESET` — `none`, `daily@HOUR` (host
 time) or `idle@MINUTES` — with `BOT_<KEY>_SESSION_RESET` per bot. A reset empties
 the transcript only: memory, files, calendar and cron jobs live outside it. With
@@ -1371,6 +1377,17 @@ before the user's message. If a bot still introduces itself wrongly, check the
 bridge's `/stats` says `"mode": "stateless"` and that the profile's `SOUL.md`
 begins with the bot's display name — the name is read from its
 `Your name is **…**` line.
+
+### `The model provider failed after retries` — bridge log says `improperly formatted function call`
+
+The CLI keeps one built-in function declared whatever the agent definition
+says, so the model can emit native function calls — and does so for the
+caller's tool names. A parseable one fails as `unknown tool` and the bridge now
+takes it as the decision; an unparseable one the API rejects as malformed, the
+CLI retries three times and fails the turn. The bridge retries once with a
+plain-text reminder. If a bot still fails like this on every turn, its
+transcript is teaching the model the wrong channel: `/reset` the chat, and
+check `AGENT_TOOL_SEARCH=off` so the real tool names are in front of the model.
 
 ### `The model provider failed after retries` — and the agent never acts
 

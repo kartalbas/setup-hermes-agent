@@ -228,6 +228,7 @@ class AgentProcess:
             raise RuntimeError(f"process is not running: {self.stderr_tail()}")
 
         self.tool_intents = []
+        self.native_decision = None
         msg = {"event": "user", "message": {"role": "user", "content": content}}
         try:
             self.proc.stdin.write(json.dumps(msg) + "\n")
@@ -250,6 +251,18 @@ class AgentProcess:
                 su = ev.get("step_update") or {}
                 if su.get("step_type") == "tool" and su.get("state") == "ACTIVE":
                     self.tool_intents.append(su.get("tool_info") or {"name": su.get("tool_name"), "parameters": {}})
+                native = native_call_decision(su, getattr(self, "available_tools", set()))
+                if native is not None:
+                    log.info("native call to the caller's %s taken as the decision", native["name"])
+                    self.native_decision = native
+                    if getattr(self, "one_shot", False):
+                        # This process serves one request and is closed after it:
+                        # no need to let the model finish (and risk a malformed
+                        # second attempt) — the decision is complete.
+                        self.turns += 1
+                        self.last_used = time.time()
+                        return {"status": "SUCCESS", "response": json.dumps(native, separators=(",", ":")),
+                                "usage": {}, "native_call": True}
                 continue
             if ev.get("event") != "result":
                 continue
@@ -260,6 +273,10 @@ class AgentProcess:
             self.last_used = time.time()
             self.input_tokens = usage.get("input_tokens", 0) or 0
 
+            if result.get("status") != "SUCCESS" and self.native_decision is not None:
+                # The turn died after a complete native call to a caller function
+                # (the usual sequence: unknown tool, then a malformed retry).
+                result = dict(result, status="SUCCESS", response=json.dumps(self.native_decision, separators=(",", ":")))
             if result.get("status") != "SUCCESS":
                 # CANCELED/WAITING without a client cancel are the CLI's own
                 # hiccups (its issues #902/#944): worth exactly one fresh try.
@@ -474,6 +491,7 @@ class Pool:
                 text = place_images(text, images, proc.workdir)
             proc.full_prefix = text          # re-sent whole if a built-in tool is denied
             proc.identity = identity_name(system)
+            proc.one_shot = True
             started = time.time()
             try:
                 with proc.lock:
@@ -489,8 +507,9 @@ class Pool:
                 proc.available_tools = tool_names
                 proc.full_prefix = text
                 proc.identity = identity_name(system)
+                proc.one_shot = True
                 with proc.lock:
-                    result = proc.turn(text, self.args.timeout)
+                    result = proc.turn(text + (NATIVE_CALL_REMINDER if tool_names else ""), self.args.timeout)
             usage = result.get("usage", {}) or {}
             log.info("stateless [%s] history=%d in=%s cached=%s out=%s %.1fs",
                      model, len(history), usage.get("input_tokens"),
@@ -728,6 +747,38 @@ def agents_md_text(system: str) -> str:
         "The first message of the conversation carries the SYSTEM PROMPT that defines your "
         "role and rules; it is the authority for everything except this identity note.\n"
     )
+
+
+def native_call_decision(step_update: dict, available: set) -> dict | None:
+    """A CLI tool step that failed as 'unknown tool' for a name the CALLER
+    offers is the model calling the caller's function natively — complete
+    arguments, wrong channel. Returned as the decision the caller expects.
+
+    Why it matters: the CLI keeps at least one built-in function declared
+    whatever the agent definition says (manage_task), so the model can always
+    emit native function calls, and does so for the caller's names. A parseable
+    one becomes this 'unknown tool' step; an unparseable one is what the API
+    rejects as a malformed function call — the CLI retries that three times and
+    then fails the turn (seen 2026-09-07, six turns in a row on a long GitHub
+    transcript). Taking the parseable call ends the turn before the model gets
+    a second, riskier attempt."""
+    su = step_update or {}
+    if su.get("step_type") != "tool" or su.get("state") != "ERROR":
+        return None
+    err = su.get("error")
+    msg = str((err.get("message") if isinstance(err, dict) else err) or "")
+    if "unknown tool" not in msg.lower():
+        return None
+    info = su.get("tool_info") or {}
+    name = info.get("name") or su.get("tool_name")
+    if not name or name not in (available or set()):
+        return None
+    args = info.get("parameters")
+    return {"type": "tool_call", "name": name, "arguments": args if isinstance(args, dict) else {}}
+
+
+NATIVE_CALL_REMINDER = ("\n\nREMINDER: you have no functions to call natively — a native call fails the turn. "
+                        "Write the ONE JSON object of the TOOL PROTOCOL as plain text.")
 
 
 def unwrap_nested_call(call: dict) -> dict:

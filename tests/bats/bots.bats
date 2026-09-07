@@ -197,3 +197,13 @@ setup() {
     # valid yaml with the empty string kept as a string
     python3 -c 'import sys,yaml; d=yaml.safe_load(sys.stdin.read()); assert d["model"]["base_url"]==""' <<<"$(_model_fragment deepseek deepseek "" m)"
 }
+
+@test "tool_search is off by default, per bot overridable, and only auto/on/off pass" {
+    unset AGENT_TOOL_SEARCH; config_defaults
+    [ "$(bot_field secretary TOOL_SEARCH)" = off ]
+    BOT_SECRETARY_TOOL_SEARCH=auto
+    [ "$(bot_field secretary TOOL_SEARCH)" = auto ]; [ "$(bot_field news TOOL_SEARCH)" = off ]
+    _invalid=(); _check_tool_search X sometimes; [ "${#_invalid[@]}" -eq 1 ]
+    _invalid=(); _check_tool_search X on; [ "${#_invalid[@]}" -eq 0 ]
+    unset BOT_SECRETARY_TOOL_SEARCH
+}
