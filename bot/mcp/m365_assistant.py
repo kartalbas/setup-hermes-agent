@@ -1093,6 +1093,14 @@ def main(argv: List[str]) -> int:
         else:
             print(f"{len(plan)} file(s) would move; re-run with --apply to do it")
         return 0
+    if cmd == "refresh":
+        # refresh — renew the access token now with the configured scopes; after
+        # a consent change the cached token would otherwise lack the new scope
+        # for up to an hour.
+        auth.store.save(expires_at=0)
+        auth.access_token()
+        print(json.dumps({"refreshed": True, "scopes": auth.store.data.get("scopes")}))
+        return 0
     if cmd == "check-mailbox":
         # check-mailbox ADDRESS — the installer's "can the assistant read that
         # inbox?" Exit 1 with Graph's reason when it cannot (no delegation yet).
