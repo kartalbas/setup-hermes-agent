@@ -88,6 +88,7 @@ class Auth:
         # The filing root in Drive and its worlds — the same rule as in OneDrive.
         self.root_folder = os.environ.get("GOOGLE_ROOT_FOLDER", "").strip().strip("/")
         self.worlds = parse_worlds(os.environ.get("GOOGLE_WORLDS", ""))
+        self.inbox = os.environ.get("GOOGLE_INBOX", "Inbox").strip().strip("/") or "Inbox"
         if not account or account.lower() == primary:
             self.account, self.read_only = primary, False
             self.store = TokenStore(token_file)
@@ -559,6 +560,39 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
             out["companion"] = "/" + companion_path(path).strip("/")
         return out
 
+    @srv.tool("google_drive_inbox", f"What waits in the Drive drop folders {ROOT}/<World>/{g.auth.inbox}/ — files the operator put there. "
+              "Each is read, named and filed with google_drive_file; the folder it sits in decides the world.", {"properties": {}})
+    def drive_inbox() -> Dict[str, Any]:
+        if not ROOT:
+            raise ValueError("no root folder configured")
+        items = inbox_listing(g, ROOT, WORLDS, g.auth.inbox)
+        return {"count": len(items), "items": items}
+
+    @srv.tool("google_drive_file", "File a document that is already in Drive (typically from the drop folder): move and rename it to its final path in one step "
+              "and write its Markdown twin. The target follows the worlds rule; text_md is the recognized text (required for photos and scans; a PDF "
+              "with a text layer is extracted for you).",
+              {"properties": {"path": {"type": "string", "description": "where the file is now"},
+                              "target": {"type": "string", "description": f"final path, e.g. {ROOT}/<World>/Letters/2026/2026-09-07 <what> <who><suffix>.pdf"},
+                              **TEXT_MD}, "required": ["path", "target"]})
+    def drive_file(path: str, target: str, text_md: Optional[str] = None) -> Dict[str, Any]:
+        target = target.strip("/")
+        world = world_check(target, ROOT, WORLDS)
+        name = target.rsplit("/", 1)[-1]
+        if not name:
+            raise ValueError("target must name a file")
+        f = g.item_by_path(path)
+        twin_text: Optional[str] = None
+        if world is not None and is_document(name):
+            data: Optional[bytes] = None
+            if not text_md:
+                data, _ = g.call("GET", f"{DRIVE}/files/{f['id']}", params={"alt": "media"}, raw=True)
+            twin_text = recognized_text(name, data, text_md)      # refused before anything moves
+        out = drive_move_item(g, f, target)
+        if twin_text is not None:
+            drive_upload(companion_path(target), content=companion_markdown(name, world, twin_text), content_type="text/markdown")
+            out["companion"] = "/" + companion_path(target)
+        return out
+
     @srv.tool("google_drive_missing_text", f"Documents below {ROOT or 'the root folder'} in Drive that have no Markdown twin yet.",
               {"properties": {"path": {"type": "string", "description": "start folder; default the root folder"}}})
     def drive_missing_text(path: str = "") -> Dict[str, Any]:
@@ -631,6 +665,23 @@ def _iso(dt: str, tz: str) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def inbox_listing(g: "Google", root: str, worlds: Dict[str, str], inbox: str) -> List[Dict[str, Any]]:
+    """Every file waiting in <root>/<World>/<inbox> in Drive, sorted, without
+    timestamps — the same shape as OneDrive's, for the same cron monitor."""
+    out: List[Dict[str, Any]] = []
+    for world in worlds or {"": ""}:
+        path = "/".join(x for x in [root, world, inbox] if x)
+        try:
+            fid = g.folder_id(path)
+        except RuntimeError:
+            continue
+        r = g.call("GET", f"{DRIVE}/files", params={"q": f"'{fid}' in parents and trashed = false and mimeType != '{FOLDER_MIME}'",
+                                                    "fields": "files(id,name,size)", "pageSize": 200, "orderBy": "name"})
+        for item in r.get("files") or []:
+            out.append({"world": world, "path": f"{path}/{item.get('name')}", "name": item.get("name"), "size": int(item.get("size") or 0)})
+    return sorted(out, key=lambda x: x["path"])
+
 
 def missing_companions(g: "Google", start: str) -> List[str]:
     """Documents below START in Drive whose `.md` twin does not exist."""
@@ -723,6 +774,12 @@ def main(argv: List[str]) -> int:
         if len(argv) < 3:
             raise SystemExit("usage: ensure-folder PATH")
         print(json.dumps({"path": "/" + argv[2].strip("/"), "id": Google(auth, tz).folder_id(argv[2], create=True)}))
+        return 0
+    if cmd == "inbox":
+        if not auth.root_folder:
+            raise SystemExit("no root folder configured (GOOGLE_ROOT_FOLDER)")
+        for item in inbox_listing(Google(auth, tz), auth.root_folder, auth.worlds, auth.inbox):
+            print(f"{item['path']}  ({item.get('size') or 0} bytes)")
         return 0
     if cmd == "companions":
         if not auth.root_folder:

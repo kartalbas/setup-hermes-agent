@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# inboxctl — one listing of every drop folder the assistants watch: OneDrive
+# and Google Drive, each side only when it is installed and signed in. Sorted,
+# no timestamps — the Secretary's cron `monitor` compares this output between
+# ticks and wakes the model only when it changed. Empty output: nothing waits.
+set -uo pipefail
+LIB=${INBOXCTL_LIB:-/usr/local/lib/hermes-assistant}
+STATE=${INBOXCTL_STATE:-/var/lib/hermes-assistant}
+if [[ -x ${LIB}/m365ctl && -s ${STATE}/m365.token ]]; then
+    "${LIB}/m365ctl" inbox 2>/dev/null | sed 's/^/onedrive: /'
+fi
+if [[ -x ${LIB}/googlectl && -s ${STATE}/google.token ]]; then
+    "${LIB}/googlectl" inbox 2>/dev/null | sed 's/^/drive: /'
+fi
+exit 0

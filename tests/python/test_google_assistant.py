@@ -185,3 +185,36 @@ class Companions(unittest.TestCase):
         self.assertEqual(len(uploads), 2)
         self.assertIn(b"scan_pri.md", uploads[1][2]["data"]); self.assertIn(b"the text", uploads[1][2]["data"])
         self.assertEqual(out["companion"], "/Secretary/Private/Letters/2026/scan_pri.md")
+
+
+class DropFolders(unittest.TestCase):
+    W = {"Business": "_bus", "Private": "_pri"}
+
+    def test_the_drive_inbox_listing_is_sorted_and_skips_missing_folders(self):
+        g = FakeGoogle({("GET", ga.DRIVE + "/files"): lambda kw: {"files": [{"id": "2", "name": "b.pdf", "size": "2"}, {"id": "1", "name": "a.jpg", "size": "1"}]}})
+        g.auth = mock.Mock(account="agent@gmail.example", root_folder="Secretary", worlds=self.W, inbox="Inbox")
+        def folder_id(path, create=False):
+            if path.startswith("Secretary/Private"):
+                raise RuntimeError("no folder")
+            return "fid"
+        g.folder_id = folder_id
+        items = ga.inbox_listing(g, "Secretary", self.W, "Inbox")
+        self.assertEqual([i["path"] for i in items], ["Secretary/Business/Inbox/a.jpg", "Secretary/Business/Inbox/b.pdf"])
+        self.assertEqual(items[0]["size"], 1)
+
+    def test_filing_from_the_drive_inbox_refuses_without_the_suffix_and_writes_the_twin(self):
+        g = FakeGoogle({("GET", ga.DRIVE + "/files/f1"): {"parents": ["p0"]}, ("PATCH", ga.DRIVE + "/files/f1"): {"id": "f1", "name": "x_bus.jpg"},
+                        ("GET", ga.DRIVE + "/files"): {"files": []}, ("POST", ga.DRIVE_UPLOAD): {"id": "t"}})
+        g.auth = mock.Mock(account="agent@gmail.example", root_folder="Secretary", worlds=self.W, inbox="Inbox")
+        g.item_by_path = lambda path: {"id": "f1", "name": "scan.jpg", "mimeType": "image/jpeg"}
+        g.folder_id = lambda path, create=False: "dir"
+        srv = ga.build_server(g)
+        with self.assertRaises(ValueError):
+            tool(srv, "google_drive_file").fn(path="Secretary/Business/Inbox/scan.jpg", target="Secretary/Business/Letters/2026/x.jpg", text_md="t")
+        self.assertEqual([c for c in g.calls if c[0] == "PATCH"], [])
+        out = tool(srv, "google_drive_file").fn(path="Secretary/Business/Inbox/scan.jpg", target="Secretary/Business/Letters/2026/x_bus.jpg", text_md="the text")
+        patch = next(c for c in g.calls if c[0] == "PATCH")
+        self.assertEqual(patch[2]["json_body"]["name"], "x_bus.jpg")
+        upload = next(c for c in g.calls if c[1].startswith(ga.DRIVE_UPLOAD))
+        self.assertIn(b"x_bus.md", upload[2]["data"]); self.assertIn(b"the text", upload[2]["data"])
+        self.assertEqual(out["companion"], "/Secretary/Business/Letters/2026/x_bus.md")

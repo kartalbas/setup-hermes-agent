@@ -217,6 +217,7 @@ config_defaults() {
     # same as Microsoft 365 (resolved when used, so the file's values count).
     : "${ASSISTANT_GOOGLE_ROOT_FOLDER:=}"
     : "${ASSISTANT_GOOGLE_WORLDS:=}"
+    : "${ASSISTANT_GOOGLE_INBOX:=}"                  # empty = ASSISTANT_M365_INBOX
     : "${ASSISTANT_GOOGLE_READ_SCOPES:=openid email https://www.googleapis.com/auth/gmail.readonly}"
 
     # --- admin tooling: opsctl for the Admin bot (README 1.14) ----------------

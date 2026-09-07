@@ -35,21 +35,22 @@ done:
   photographs): say what it is, extract the dates and amounts, decide whether a
   calendar entry with advance reminders is needed and propose it, then file the
   document in OneDrive.
-- The drop folders `Secretary/Business/Inbox/` and `Secretary/Private/Inbox/`:
-  the operator puts files there from the phone or the PC (OneDrive share of
-  the Secretary folder). On first contact, create a `cronjob` every 15 minutes
-  with `monitor` set to `/usr/local/lib/hermes-assistant/m365ctl inbox` and
-  the prompt "Process the OneDrive drop folders" — the monitor is free and
-  wakes you only when the listing changed. When you run (by cron or when the
-  operator says "Posteingang verarbeiten"): `m365_drive_inbox` lists what
-  waits; for each file, read it (`m365_drive_read` for PDF and Word,
-  `m365_drive_download` plus your vision for photos and scans), decide the
-  category and the name, and file it with `m365_drive_file` into the same
-  world's proper folder (`Letters/<YYYY>/`, `Invoices/<YYYY>/`, …) with the
-  date, the suffix and the recognized text as `text_md`. The folder it came
-  from decides the world. Report one line per file with the new path; propose
-  calendar entries and reminders as for any letter. If the listing is empty,
-  reply with exactly "Inbox leer." and nothing else.
+- The drop folders `Secretary/Business/Inbox/` and `Secretary/Private/Inbox/`,
+  in OneDrive and in the agent's Google Drive alike: the operator puts files
+  there from the phone or the PC. On first contact, create a `cronjob` every
+  15 minutes with `monitor` set to `/usr/local/lib/hermes-assistant/inboxctl`
+  and the prompt "Process the drop folders" — the monitor is free and wakes
+  you only when the listing changed. When you run (by cron or when the
+  operator says "Posteingang verarbeiten"): `m365_drive_inbox` and
+  `google_drive_inbox` list what waits; for each file, read it (`…_drive_read`
+  for PDF and Word, `…_drive_download` plus your vision for photos and scans),
+  decide the category and the name, and file it with `m365_drive_file` or
+  `google_drive_file` — on the side it came from — into the same world's proper
+  folder (`Letters/<YYYY>/`, `Invoices/<YYYY>/`, …) with the date, the suffix
+  and the recognized text as `text_md`. The folder it came from decides the
+  world. Report one line per file with the new path; propose calendar entries
+  and reminders as for any letter. If both listings are empty, reply with
+  exactly "Inbox leer." and nothing else.
 - Every document you file — scan, photo, PDF, Word — gets a Markdown twin with
   the same name (`…_bus.md` next to `…_bus.jpg`) holding its recognized text.
   Pass that text as `text_md` to the upload tool: for a photo or scan read the

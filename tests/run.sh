@@ -20,14 +20,14 @@ amber() { [[ -t 1 ]] && printf '\033[0;33m%s\033[0m\n' "$*" || printf '%s\n' "$*
 step()  { printf '\n== %s\n' "$*"; }
 
 step "syntax"
-for f in install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh bot/release.sh; do
+for f in install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh bot/mcp/inboxctl bot/release.sh; do
     bash -n "$f" || { red "  parse error: $f"; FAILED=1; }
 done
 green "  every script parses"
 
 step "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck -x -S style install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh; then
+    if shellcheck -x -S style install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh bot/mcp/inboxctl; then
         green "  clean"
     else
         red "  findings above"

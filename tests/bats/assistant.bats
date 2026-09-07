@@ -173,3 +173,16 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     out=$(_assistant_m365_env_lines t c agent@example.com)
     [[ $out == *$'\nM365_INBOX=Inbox'* ]]
 }
+
+@test "inboxctl lists only the sides that are installed and signed in, each prefixed" {
+    tmp=$(mktemp -d); mkdir -p "${tmp}/lib" "${tmp}/state"
+    printf '#!/usr/bin/env bash\n[ "$1" = inbox ] && printf "Secretary/Business/Inbox/a.pdf  (1 bytes)\\n"\n' >"${tmp}/lib/m365ctl"
+    printf '#!/usr/bin/env bash\n[ "$1" = inbox ] && printf "Secretary/Private/Inbox/b.jpg  (2 bytes)\\n"\n' >"${tmp}/lib/googlectl"
+    chmod 755 "${tmp}"/lib/*ctl; printf 'x' >"${tmp}/state/m365.token"
+    out=$(INBOXCTL_LIB="${tmp}/lib" INBOXCTL_STATE="${tmp}/state" bash "$REPO_ROOT/bot/mcp/inboxctl")
+    [ "$out" = "onedrive: Secretary/Business/Inbox/a.pdf  (1 bytes)" ]          # no google token: Drive side silent
+    printf 'x' >"${tmp}/state/google.token"
+    out=$(INBOXCTL_LIB="${tmp}/lib" INBOXCTL_STATE="${tmp}/state" bash "$REPO_ROOT/bot/mcp/inboxctl")
+    [[ $out == *"drive: Secretary/Private/Inbox/b.jpg"* ]]
+    rm -rf "$tmp"
+}

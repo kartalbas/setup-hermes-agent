@@ -146,6 +146,8 @@ _assistant_install_code() {
     for f in "$src"/*.py; do
         write_file "${ASSISTANT_LIB_DIR}/$(basename "$f")" 0644 <<<"$(cat "$f")"
     done
+    # The drop folders' joint listing for the Secretary's cron monitor.
+    write_file "${ASSISTANT_LIB_DIR}/inboxctl" 0755 <<<"$(cat "${src}/inboxctl")"
     write_file "${ASSISTANT_LIB_DIR}/VERSION" 0644 <<<"$(bot_version)"
 }
 
@@ -434,13 +436,20 @@ _assistant_google_folders() {
     [[ -n $root ]] || return 0
     if [[ $DRY_RUN == true ]]; then log_info "[dry-run] ensure Drive folder ${root} and its worlds (${worlds:-none})"; return 0; fi
     [[ -s $(assistant_google_token_file) ]] || { log_skip "no Google token yet; Drive folders after the sign-in"; return 0; }
-    local IFS=',' entry world path out ctl; ctl=$(assistant_googlectl)
+    local IFS=',' entry world path out ctl inbox; ctl=$(assistant_googlectl); inbox=${ASSISTANT_GOOGLE_INBOX:-${ASSISTANT_M365_INBOX:-Inbox}}
     for entry in "" $worlds; do
         world=${entry%%=*}; path="${root}${world:+/${world}}"
         if out=$(runuser -u "$SERVICE_USER" -- "$ctl" ensure-folder "$path" 2>&1); then
             log_ok "drive folder   ${path}${world:+ (files end with ${entry#*=})}"
         else
             defer_failure "assistant: could not ensure the Drive folder ${path}: ${out}"
+            continue
+        fi
+        [[ -n $world ]] || continue
+        if out=$(runuser -u "$SERVICE_USER" -- "$ctl" ensure-folder "${path}/${inbox}" 2>&1); then
+            log_ok "drop folder    ${path}/${inbox} (Drive)"
+        else
+            defer_failure "assistant: could not ensure the Drive drop folder ${path}/${inbox}: ${out}"
         fi
     done
 }
@@ -454,6 +463,7 @@ _assistant_google_env_lines() {
         "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_ID_VAR")" "$(secret_get "$ASSISTANT_GOOGLE_CLIENT_SECRET_VAR")" \
         "$ASSISTANT_GOOGLE_ACCOUNT" "$(assistant_google_token_file)" "$ASSISTANT_GOOGLE_TIMEZONE" "$ASSISTANT_GOOGLE_SCOPES" \
         "${ASSISTANT_GOOGLE_READ_ACCOUNTS:-}" "$ASSISTANT_GOOGLE_READ_SCOPES" "$(assistant_google_root)" "$(assistant_google_worlds)"
+    printf 'GOOGLE_INBOX=%s\n' "${ASSISTANT_GOOGLE_INBOX:-${ASSISTANT_M365_INBOX:-Inbox}}"
 }
 
 _assistant_google_wrapper() {

@@ -368,6 +368,7 @@ ASSISTANT_GOOGLE_READ_ACCOUNTS=""                # e.g. "you@gmail.example"
 # as Microsoft 365 (ASSISTANT_M365_ROOT_FOLDER / ASSISTANT_M365_WORLDS).
 ASSISTANT_GOOGLE_ROOT_FOLDER=""
 ASSISTANT_GOOGLE_WORLDS=""
+ASSISTANT_GOOGLE_INBOX=""                        # empty = ASSISTANT_M365_INBOX
 GOOGLE_PROJECT="my-assistant-project"
 
 # Public pages (home, privacy policy, terms) under assistant.<zone> — what Google
