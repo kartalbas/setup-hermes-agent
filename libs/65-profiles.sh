@@ -77,18 +77,24 @@ role_summary() {               # role_summary ROLE_FILE -> text
     sed -n '2,4{/^> /{s/^> //p;q}}' "$1"
 }
 
-# What /help shows in the bot's chat: a short, readable page for the operator
-# instead of the agent's eighty developer commands (which stay behind
-# `/help all`). Rendered from bot/help.md.tpl; the gateway reads HELP.md per
-# request, so no restart is needed for a change.
+# What /help shows in the bot's chat: a readable page for the operator — what
+# the bot does, examples, the few commands worth knowing — instead of the
+# agent's eighty developer commands (which stay behind `/help all`). The page
+# is bot/help/<role>.md when the role has one, else bot/help.md.tpl; the
+# command block bot/help/_commands.md is appended to both. Teams renders a
+# subset of markdown: bold, `- ` lists and blank lines between blocks are what
+# survives, so the pages are written that way. The gateway reads HELP.md per
+# request; no restart is needed for a change.
 profile_help_text() {          # profile_help_text ROLE_FILE -> HELP.md content
-    local tpl="${SCRIPT_DIR}/bot/help.md.tpl" summary
-    [[ -f $tpl ]] || die "missing ${tpl}"
-    summary=$(role_summary "$1")
-    [[ -n $summary ]] || die "role $(basename "$1") has no summary line ('> …' under the title) for /help"
-    BOT_SUMMARY=$summary python3 - "$tpl" <<'PY'
+    local role=$1 page summary
+    page="${SCRIPT_DIR}/bot/help/$(basename "${role%.md}").md"
+    [[ -f $page ]] || page="${SCRIPT_DIR}/bot/help.md.tpl"
+    [[ -f $page ]] || die "missing ${page}"
+    summary=$(role_summary "$role")
+    [[ -n $summary ]] || die "role $(basename "$role") has no summary line ('> …' under the title) for /help"
+    BOT_SUMMARY=$summary python3 - "$page" "${SCRIPT_DIR}/bot/help/_commands.md" <<'PY'
 import os, sys
-text = open(sys.argv[1], encoding="utf-8").read()
+text = open(sys.argv[1], encoding="utf-8").read().rstrip("\n") + "\n\n" + open(sys.argv[2], encoding="utf-8").read()
 for key in ("BOT_DISPLAY_NAME", "BOT_SUMMARY"):
     text = text.replace("${" + key + "}", os.environ.get(key, ""))
 if "${" in text:

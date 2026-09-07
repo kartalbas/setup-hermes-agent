@@ -339,9 +339,12 @@ tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 **What /help shows.** The agent's own `/help` is eighty developer commands under
 its own name; in a Teams chat that is unreadable. A carried patch makes the
 gateway answer a bare `/help` with the profile's `HELP.md`, which the run
-renders from `bot/help.md.tpl` — the bot's name, the one-line summary from the
-role file (the `> …` line under its title) and the five commands worth knowing.
-`/help all` and `/help skills` still reach the original.
+renders from `bot/help/<role>.md` (what the bot does, examples) plus the shared
+command block `bot/help/_commands.md`; a role without its own page gets
+`bot/help.md.tpl` with the one-line summary from the role file (the `> …` line
+under its title). Teams keeps only bold, `- ` lists and paragraph breaks of
+markdown, so the pages are written that way. `/help all` and `/help skills`
+still reach the original.
 
 **Which toolsets a bot gets.** `BOT_<KEY>_TOOLSET` (default `CHANNEL_TEAMS_TOOLSET`,
 `hermes-telegram` — the agent's core set with terminal, files, browser, memory,

@@ -247,4 +247,7 @@ setup() {
     out=$(BOT_DISPLAY_NAME=$BOT_DISPLAY_NAME profile_help_text "$REPO_ROOT/bot/roles/secretary.md")
     bot_context_end
     [[ $out == "**X Secretary**"* && $out == *'/help all'* && $out == *secretary* && $out != *'${'* ]]
+    [[ $out == *'**What I do**'* && $out == *'**Examples**'* && $out == *'**Commands**'* ]]
+    [[ $out != *'•'* ]]                                  # Teams joins single-newline lines: only "- " lists survive
+    for r in "$REPO_ROOT"/bot/help/*.md; do ! grep -qE '^• ' "$r"; done
 }
