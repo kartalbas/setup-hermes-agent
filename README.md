@@ -346,6 +346,16 @@ under its title). Teams keeps only bold, `- ` lists and paragraph breaks of
 markdown, so the pages are written that way. `/help all` and `/help skills`
 still reach the original.
 
+**What a bot may run without asking.** The agent stops before a dangerous
+command — inline scripts (`python3 -c`, `bash -c`), recursive deletes, and the
+like — and asks in the chat; "Always allowed" whitelists that category for the
+profile, in its `command_allowlist`. `CHANNELS_COMMAND_ALLOWLIST` (per bot
+`BOT_<KEY>_COMMAND_ALLOWLIST`, semicolon-separated) records the same choice in
+configuration, so a rebuilt host has it: the run adds the entries and keeps
+whatever the chat added on top. Widen this only for bots whose senders are yours
+alone — an allowlisted category is what an injected instruction in a mail or a
+document could use without a pause.
+
 **Which toolsets a bot gets.** `BOT_<KEY>_TOOLSET` (default `CHANNEL_TEAMS_TOOLSET`,
 `hermes-telegram` — the agent's core set with terminal, files, browser, memory,
 cron) takes either one composite or a space-separated list of the agent's

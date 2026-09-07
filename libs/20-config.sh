@@ -307,6 +307,11 @@ config_defaults() {
     : "${CHANNELS_UNATTENDED_MODE:=deny}"
     : "${CHANNELS_CRON_MODE:=deny}"
     : "${CHANNELS_APPROVALS_DENY:=}"
+    # Dangerous-command categories (or exact commands) the agent may run
+    # without asking, semicolon-separated — what an "Always allowed" click in
+    # the chat writes into the profile, kept here so a rebuilt host has it too.
+    # Per bot: BOT_<KEY>_COMMAND_ALLOWLIST. Empty = ask every time.
+    : "${CHANNELS_COMMAND_ALLOWLIST:=}"
 }
 
 # ---------------------------------------------------------------------------
@@ -943,6 +948,7 @@ bot_field() {
         LLM_REASONING_FIELD) printf '' ;;
         LLM_CONTEXT_WINDOW)  printf '%s' "${LLM_CONTEXT_WINDOW:-0}" ;;
         LLM_BALANCE)   printf 'false' ;;                # true: the remaining API balance is appended to every final answer
+        COMMAND_ALLOWLIST) printf '%s' "${CHANNELS_COMMAND_ALLOWLIST:-}" ;;   # semicolon-separated approval categories/commands
         DELEGATION_ENDPOINT) printf '' ;;               # LLM_ENDPOINT_n the bot's sub-agents (delegate_task) run on; empty: they inherit the bot's model
         TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;   # one composite, or a space-separated list of the agent's toolsets
         *) die "bot_field: unknown field '${field}'" ;;

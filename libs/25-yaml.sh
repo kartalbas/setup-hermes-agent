@@ -160,3 +160,42 @@ elif cur is not None and not isinstance(cur, (dict, list)):
     print(cur)
 PY
 }
+
+# yaml_list_ensure KEY VALUE... — every VALUE present in the list at the dotted
+# KEY, existing entries kept (the agent adds its own through "always" approvals;
+# a replace would wipe them). Reports "changed" through the return value: 0 when
+# something was added, 3 when all were already there.
+yaml_list_ensure() {
+    local key=$1; shift
+    local target py
+    target=$(yaml_config_path)
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] ensure ${key} contains: $*"
+        return 0
+    fi
+    py=$(_yaml_python) || die "no interpreter with PyYAML available to edit ${target}"
+    HERMES_YAML_TARGET=$target HERMES_YAML_KEY=$key "$py" - "$@" <<'PY'
+import os, sys, tempfile, yaml
+target, key = os.environ["HERMES_YAML_TARGET"], os.environ["HERMES_YAML_KEY"]
+try:
+    with open(target) as fh:
+        cfg = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    cfg = {}
+node = cfg
+parts = key.split(".")
+for part in parts[:-1]:
+    node = node.setdefault(part, {})
+current = node.get(parts[-1]) or []
+if not isinstance(current, list):
+    sys.exit(f"{key} is not a list")
+missing = [v for v in sys.argv[1:] if v not in current]
+if not missing:
+    sys.exit(3)
+node[parts[-1]] = current + missing
+tmp = target + ".tmp"
+with open(tmp, "w") as fh:
+    yaml.safe_dump(cfg, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+os.replace(tmp, target)
+PY
+}

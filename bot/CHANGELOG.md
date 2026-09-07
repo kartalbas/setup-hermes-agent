@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Installer: `CHANNELS_COMMAND_ALLOWLIST` / `BOT_<KEY>_COMMAND_ALLOWLIST` record "Always allowed" approval categories in configuration (union with what the chat added)
+
 - Teams: `/help` shows a short page per bot (name, one-line summary, five commands) from `bot/help.md.tpl`; the agent's developer list stays behind `/help all` (carried gateway patch); every role starts with a `> summary` line
 
 - Admin bot: every change carries a read-only host snapshot (`opsctl snapshot`) and Claude Code may run read-only host commands (journals, status, the assistants' listings)

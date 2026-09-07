@@ -132,6 +132,27 @@ _session_reset_configure() {
     yaml_merge <<<"$(session_reset_yaml "$spec")"
 }
 
+# Dangerous-command categories the bot may run without asking. Union, never
+# replace: the operator's "Always allowed" clicks live in the same list.
+_command_allowlist_configure() {
+    local spec=${BOT_KEY:+$(bot_field "$BOT_KEY" COMMAND_ALLOWLIST)}
+    spec=${spec:-${CHANNELS_COMMAND_ALLOWLIST:-}}
+    [[ -n $spec ]] || return 0
+    local IFS=';' entry entries=()
+    for entry in $spec; do
+        entry=$(printf '%s' "$entry" | sed 's/^ *//; s/ *$//')
+        [[ -n $entry ]] && entries+=("$entry")
+    done
+    (( ${#entries[@]} > 0 )) || return 0
+    local rc=0
+    yaml_list_ensure command_allowlist "${entries[@]}" || rc=$?
+    case $rc in
+        0) mark_changed; log_ok "command allowlist: ${entries[*]}" ;;
+        3) log_skip "command allowlist present: ${entries[*]}" ;;
+        *) die "could not write the command allowlist" ;;
+    esac
+}
+
 # The terminal's working directory: the profile's work/ (see _profile_workdir).
 _workdir_configure() {
     local home=${BOT_HOME:-$HERMES_HOME}
@@ -367,6 +388,7 @@ _policy_configure() {
     _session_reset_configure
     _tool_search_configure
     _workdir_configure
+    _command_allowlist_configure
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
         # Kept as a denylist rather than a habit: the agent can otherwise be

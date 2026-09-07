@@ -660,3 +660,14 @@ PY
         [ -z "$missing" ] || { echo "missing in $real.conf.example: $missing"; false; }
     done
 }
+
+@test "yaml_list_ensure adds missing entries once and keeps what the agent wrote itself" {
+    tmp=$(mktemp -d); printf 'command_allowlist:\n- execute_code\nother: 1\n' >"${tmp}/config.yaml"
+    yaml_config_path() { printf '%s/config.yaml' "$tmp"; }
+    DRY_RUN=false
+    yaml_list_ensure command_allowlist "script execution via -e/-c flag" "execute_code"
+    bats_run yaml_list_ensure command_allowlist "script execution via -e/-c flag"; [ "$status" -eq 3 ]
+    python3 -c "
+import yaml,sys; c=yaml.safe_load(open(sys.argv[1])); assert c['command_allowlist']==['execute_code','script execution via -e/-c flag'], c; assert c['other']==1" "${tmp}/config.yaml"
+    rm -rf "$tmp"
+}
