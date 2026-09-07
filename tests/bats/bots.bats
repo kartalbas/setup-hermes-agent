@@ -239,3 +239,12 @@ setup() {
     [[ $out == *'never into the account'"'"'s home directory and never into /tmp'* ]]
     [[ $out == *'working directory'* ]]
 }
+
+@test "every role carries a one-line summary and /help renders it with the bot's name" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    for r in "$REPO_ROOT"/bot/roles/*.md; do [ -n "$(role_summary "$r")" ]; done
+    bot_context secretary
+    out=$(BOT_DISPLAY_NAME=$BOT_DISPLAY_NAME profile_help_text "$REPO_ROOT/bot/roles/secretary.md")
+    bot_context_end
+    [[ $out == "**X Secretary**"* && $out == *'/help all'* && $out == *secretary* && $out != *'${'* ]]
+}

@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Teams: `/help` shows a short page per bot (name, one-line summary, five commands) from `bot/help.md.tpl`; the agent's developer list stays behind `/help all` (carried gateway patch); every role starts with a `> summary` line
+
 - Admin bot: every change carries a read-only host snapshot (`opsctl snapshot`) and Claude Code may run read-only host commands (journals, status, the assistants' listings)
 
 - Google assistant: the same drop folders in Drive (`google_drive_inbox`, `google_drive_file`, `googlectl inbox`); `inboxctl` lists both sides for the cron monitor

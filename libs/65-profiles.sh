@@ -21,6 +21,7 @@ profiles_apply() {
         _profile_ensure
         _profile_soul
         _profile_workdir
+        _profile_help
         bot_context_end
     done < <(bots)
 }
@@ -69,6 +70,37 @@ _profile_ensure() {
 _profile_workdir() {
     ensure_dir "${BOT_HOME}/work" 0750 "${SERVICE_USER}:${SERVICE_GROUP}"
     ensure_dir "${BOT_HOME}/work/tmp" 0750 "${SERVICE_USER}:${SERVICE_GROUP}"
+}
+
+# The one-line summary of a role: the blockquote right under its title.
+role_summary() {               # role_summary ROLE_FILE -> text
+    sed -n '2,4{/^> /{s/^> //p;q}}' "$1"
+}
+
+# What /help shows in the bot's chat: a short, readable page for the operator
+# instead of the agent's eighty developer commands (which stay behind
+# `/help all`). Rendered from bot/help.md.tpl; the gateway reads HELP.md per
+# request, so no restart is needed for a change.
+profile_help_text() {          # profile_help_text ROLE_FILE -> HELP.md content
+    local tpl="${SCRIPT_DIR}/bot/help.md.tpl" summary
+    [[ -f $tpl ]] || die "missing ${tpl}"
+    summary=$(role_summary "$1")
+    [[ -n $summary ]] || die "role $(basename "$1") has no summary line ('> …' under the title) for /help"
+    BOT_SUMMARY=$summary python3 - "$tpl" <<'PY'
+import os, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+for key in ("BOT_DISPLAY_NAME", "BOT_SUMMARY"):
+    text = text.replace("${" + key + "}", os.environ.get(key, ""))
+if "${" in text:
+    sys.exit("help template has an unexpanded placeholder")
+sys.stdout.write(text)
+PY
+}
+
+_profile_help() {
+    local role; role=$(bot_role_file "$BOT_KEY")
+    if [[ $DRY_RUN == true ]]; then log_info "[dry-run] write ${BOT_HOME}/HELP.md"; return 0; fi
+    write_file "${BOT_HOME}/HELP.md" 0644 "${SERVICE_USER}:${SERVICE_GROUP}" <<<"$(BOT_DISPLAY_NAME=$BOT_DISPLAY_NAME profile_help_text "$role")"
 }
 
 profile_soul_text() {          # profile_soul_text ROLE_FILE -> the SOUL.md content

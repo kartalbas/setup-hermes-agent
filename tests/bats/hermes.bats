@@ -39,3 +39,36 @@ assert out == "Bericht: Doc.pdf\n(link: https://tenant.sharepoint.example/sites/
 PY
     rm -rf "$tmp"
 }
+
+@test "the help patch answers a bare /help from HELP.md and leaves /help all alone" {
+    tmp=$(mktemp -d)
+    cat >"${tmp}/slash_commands.py" <<'PY'
+import os
+class MessageEvent: pass
+class H:
+    async def _handle_help_command(self, event: MessageEvent) -> str:
+        """Handle /help command - list available commands."""
+        return "DEVELOPER LIST"
+PY
+    hermes_patch_help_file "${tmp}/slash_commands.py"
+    grep -q 'setup-hermes-agent: curated help' "${tmp}/slash_commands.py"
+    bats_run hermes_patch_help_file "${tmp}/slash_commands.py"; [ "$status" -eq 3 ]
+    python3 - "${tmp}" <<'PY'
+import asyncio, os, sys, types
+tmp = sys.argv[1]
+os.makedirs(os.path.join(tmp, "home"), exist_ok=True)
+open(os.path.join(tmp, "home", "HELP.md"), "w").write("**Bot**\nshort help\n")
+run = types.ModuleType("gateway.run"); run._hermes_home = os.path.join(tmp, "home")
+gw = types.ModuleType("gateway"); gw.run = run
+sys.modules["gateway"] = gw; sys.modules["gateway.run"] = run
+ns = {}; exec(open(os.path.join(tmp, "slash_commands.py")).read(), ns)
+class Ev:
+    def __init__(self, a): self.a = a
+    def get_command_args(self): return self.a
+h = ns["H"]()
+assert asyncio.run(h._handle_help_command(Ev(""))) == "**Bot**\nshort help"
+assert asyncio.run(h._handle_help_command(Ev("all"))) == "DEVELOPER LIST"
+assert asyncio.run(h._handle_help_command(Ev("skills"))) == "DEVELOPER LIST"
+PY
+    rm -rf "$tmp"
+}

@@ -31,12 +31,14 @@ hermes_apply() {
         _hermes_record_revision "$sha"
         _hermes_patch_email_folder
         _hermes_patch_teams_links
+        _hermes_patch_help
         return 0
     fi
 
     _hermes_run_installer "$sha"
     _hermes_patch_email_folder
     _hermes_patch_teams_links
+    _hermes_patch_help
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -423,5 +425,76 @@ _hermes_patch_teams_links() {
             ;;
         3) log_skip "Teams adapter link patch present" ;;
         *) die "could not patch the Teams adapter for named links" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Carried patch 3: /help in the bots' chats.
+#
+# The agent's /help lists some eighty developer commands under its own name —
+# unreadable in a Teams chat and half of it Telegram-only. With this patch the
+# gateway answers /help with the profile's HELP.md when one exists (written by
+# the profiles module from bot/help.md.tpl); `/help all` and `/help skills`
+# still reach the original. Idempotent by marker; re-applied after updates.
+# ---------------------------------------------------------------------------
+hermes_slash_commands_path() { printf '%s/gateway/slash_commands.py' "$(hermes_install_dir)"; }
+
+hermes_patch_help_file() {         # hermes_patch_help_file FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+MARK = "setup-hermes-agent: curated help"
+if MARK in s:
+    sys.exit(3)
+old = ('    async def _handle_help_command(self, event: MessageEvent) -> str:\n'
+       '        """Handle /help command - list available commands."""\n')
+if s.count(old) != 1:
+    sys.exit("the /help handler was not found exactly once; the gateway changed — review the patch")
+new = old + (
+    '        # ' + MARK + ': the profile\'s HELP.md, if any, is the answer; the\n'
+    '        # developer list stays behind "/help all" and "/help skills".\n'
+    '        try:\n'
+    '            _args = (event.get_command_args() or "").strip().lower()\n'
+    '        except Exception:\n'
+    '            _args = ""\n'
+    '        if not _args:\n'
+    '            try:\n'
+    '                from gateway.run import _hermes_home as _hh\n'
+    '                _p = os.path.join(str(_hh), "HELP.md")\n'
+    '                if os.path.isfile(_p):\n'
+    '                    with open(_p, encoding="utf-8") as _fh:\n'
+    '                        return _fh.read().strip()\n'
+    '            except Exception:\n'
+    '                pass\n'
+)
+s = s.replace(old, new)
+if not re.search(r"^import os\b", s, re.M):
+    s = "import os\n" + s
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_help() {
+    local f; f=$(hermes_slash_commands_path)
+    [[ -f $f ]] || { log_warn "gateway slash commands not found at ${f}; help patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q "setup-hermes-agent: curated help" "$f"; then log_skip "gateway help patch present"
+        else log_info "[dry-run] would patch ${f} so /help shows the profile's HELP.md"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_help_file "$f" || rc=$?
+    case $rc in
+        0)
+            mark_changed; log_ok "gateway patched: /help shows the profile's HELP.md"
+            local key
+            while IFS= read -r key; do
+                [[ -n $key ]] && restart_later "$(bot_field "$key" SERVICE).service"
+            done < <(bots)
+            ;;
+        3) log_skip "gateway help patch present" ;;
+        *) die "could not patch the gateway's /help" ;;
     esac
 }

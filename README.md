@@ -336,6 +336,13 @@ Azure Bot, the Teams package and the service. One bot carries the mailbox
 (`BOT_<KEY>_CHANNELS="teams email"`), one the dashboard, and the assistant's
 tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 
+**What /help shows.** The agent's own `/help` is eighty developer commands under
+its own name; in a Teams chat that is unreadable. A carried patch makes the
+gateway answer a bare `/help` with the profile's `HELP.md`, which the run
+renders from `bot/help.md.tpl` — the bot's name, the one-line summary from the
+role file (the `> …` line under its title) and the five commands worth knowing.
+`/help all` and `/help skills` still reach the original.
+
 **Which toolsets a bot gets.** `BOT_<KEY>_TOOLSET` (default `CHANNEL_TEAMS_TOOLSET`,
 `hermes-telegram` — the agent's core set with terminal, files, browser, memory,
 cron) takes either one composite or a space-separated list of the agent's
