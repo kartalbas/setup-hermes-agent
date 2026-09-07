@@ -709,7 +709,7 @@ It has exactly one instrument, `opsctl`, installed by the `ops` module:
 | `opsctl check-updates` | newest agent tag, newest GitHub MCP server release, repository vs. remote | nothing |
 | `opsctl dry-run [modules]` | the installer's preview | nothing |
 | `opsctl change "<request>"` | Claude Code edits, tests, commits; opsctl verifies with `tests/run.sh`, pushes, then applies or names the command (`OPS_APPLY`) | the repository, then the host |
-| `opsctl apply [modules]` / `apply-status` | the installer as a transient systemd unit, in the background, with a log; the bots restart as the run decides — the Admin bot included | the host |
+| `opsctl apply [modules]` / `apply-status` | writes a request; a root-side path unit runs the installer with a log; the bots restart as the run decides — the Admin bot included | the host |
 
 Two things are kept apart on purpose. **Claude Code changes the repository and
 nothing else**: its tool allowlist has no `install.sh`, `systemctl`, `sudo` or
@@ -717,8 +717,12 @@ nothing else**: its tool allowlist has no `install.sh`, `systemctl`, `sudo` or
 step**, deterministic and only after the suite passed and the commit is
 pushed — `OPS_APPLY=auto` does it right away, `ask` (the default) has the bot
 offer it and wait for your word, `never` leaves the installer to your terminal.
-Because a run restarts the bots, the Admin bot itself may go quiet for a
-minute; `opsctl apply-status` shows the log afterwards. The Claude Code session
+The bots run under `NoNewPrivileges`, where no escalation can work, so the bot
+never escalates: `opsctl apply` writes `/var/lib/hermes-ops/apply.request`, and
+the root-side `hermes-ops-apply.path` starts `apply.sh`, which runs exactly one
+command — `./install.sh [--only …]` from the repository — and logs where the
+account can read. Because a run restarts the bots, the Admin bot itself may go
+quiet for a minute; `opsctl apply-status` shows the log afterwards. The Claude Code session
 is the bot's own and persists between requests, so a follow-up has the context
 of the last one.
 

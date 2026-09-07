@@ -126,8 +126,9 @@ The operator's channel for the system itself: state questions, update
 options, and change requests that Claude Code (Opus, the operator's
 subscription) implements in the repository. Claude Code touches only the
 repository; applying is opsctl's own step (`OPS_APPLY`: auto after a green
-change — the operator's choice 2026-09-07 —, ask, or never), as a transient
-systemd unit with a log, because the run restarts the bots including this one.
+change — the operator's choice 2026-09-07 —, ask, or never): a request file
+that a root-side path unit answers by running the installer, because the bots
+run under NoNewPrivileges and the run restarts them, this one included.
 
 - [x] Role `bot/roles/admin.md`; the bot acts only through `opsctl`
 - [x] `bot/ops/opsctl`: status, report, check-updates, dry-run, change, modules-for; module `libs/66-ops.sh` installs it with `/etc/hermes-ops.conf`; the installer writes `last-run`

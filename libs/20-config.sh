@@ -214,6 +214,7 @@ config_defaults() {
     : "${OPS_BIN:=/usr/local/bin/opsctl}"
     : "${OPS_CONF:=/etc/hermes-ops.conf}"
     : "${OPS_STATE_DIR:=/var/lib/hermes-ops}"
+    : "${OPS_LIB_DIR:=/usr/local/lib/hermes-ops}"   # the root-side applier script
     if [[ -z ${OPS_CLAUDE_BIN:-} || -z ${OPS_AGY_BIN:-} ]]; then
         local _ops_home; _ops_home=$(getent passwd "${SERVICE_USER:-nobody}" 2>/dev/null | cut -d: -f6)
         : "${OPS_CLAUDE_BIN:=${_ops_home:-/nonexistent}/.local/bin/claude}"

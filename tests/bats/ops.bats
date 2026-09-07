@@ -50,12 +50,38 @@ setup() {
     [[ $(ops_conf_text) == *'OPS_APPLY=auto'* ]]
 }
 
-@test "apply refuses when switched off, before touching anything" {
+@test "apply refuses when switched off or without the applier, and never escalates itself" {
     tmp=$(mktemp -d)
     printf 'OPS_REPO=%s\nOPS_SERVICE_NAME=x\nOPS_SERVICE_PREFIX=y\nOPS_BOTS=a\nOPS_STATE=%s\nOPS_APPLY=never\n' "$REPO_ROOT" "$tmp" >"${tmp}/ops.conf"
     OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
     [ "$status" -ne 0 ]; [[ "$output" == *"switched off"* ]]
+    sed -i 's/OPS_APPLY=never/OPS_APPLY=auto/' "${tmp}/ops.conf"
+    OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
+    [ "$status" -ne 0 ]; [[ "$output" == *"applier"* ]]                  # no path unit on a test host
     OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply-status
     [ "$status" -eq 0 ]; [[ "$output" == *"no apply has been run"* ]]
+    ! grep -qE '\bsudo\b' "$REPO_ROOT/bot/ops/opsctl"
     rm -rf "$tmp"
+}
+
+@test "the applier consumes the request, runs the installer once and leaves a readable log" {
+    tmp=$(mktemp -d); mkdir -p "${tmp}/repo" "${tmp}/state"
+    printf '#!/usr/bin/env bash\nprintf "args: %%s\\n" "$*"; exit 0\n' >"${tmp}/repo/install.sh"; chmod 755 "${tmp}/repo/install.sh"
+    printf 'profiles,channels\n' >"${tmp}/state/apply.request"
+    OPS_REPO="${tmp}/repo" OPS_STATE="${tmp}/state" OPS_GROUP=$(id -gn) bash "$REPO_ROOT/bot/ops/apply.sh"
+    [ ! -f "${tmp}/state/apply.request" ]
+    log=$(ls "${tmp}"/state/apply-*.log)
+    grep -q 'args: --only profiles,channels' "$log"; grep -q 'exit=0' "$log"
+    grep -q 'state=finished exit=0' "${tmp}/state/apply-last"
+    OPS_REPO="${tmp}/repo" OPS_STATE="${tmp}/state" bash "$REPO_ROOT/bot/ops/apply.sh"     # no request: nothing happens
+    [ "$(ls "${tmp}"/state/apply-*.log | wc -l)" -eq 1 ]
+    rm -rf "$tmp"
+}
+
+@test "the applier units run the script as root from the repository and watch the request file" {
+    SCRIPT_DIR=$REPO_ROOT SERVICE_GROUP=agents
+    out=$(ops_applier_service_text)
+    [[ $out == *"WorkingDirectory=${REPO_ROOT}"* && $out == *'ExecStart=/usr/local/lib/hermes-ops/apply.sh'* && $out == *'Environment=OPS_GROUP=agents'* && $out != *User=* ]]
+    out=$(ops_applier_path_text)
+    [[ $out == *'PathExists=/var/lib/hermes-ops/apply.request'* && $out == *'Unit=hermes-ops-apply.service'* ]]
 }
