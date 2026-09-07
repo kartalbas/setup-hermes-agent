@@ -456,3 +456,41 @@ class SharedLinks(unittest.TestCase):
         out = next(t for t in srv.tools if t.name == "m365_share_read").fn(url="https://tenant.sharepoint.example/sites/x/notes.txt")
         self.assertEqual(out.get("text"), "hello"); self.assertEqual(out["name"], "notes.txt")
         self.assertTrue(g.calls[0][1].startswith(f"/shares/{sid}/driveItem"))
+
+
+class DropFolders(unittest.TestCase):
+    W = {"Business": "_bus", "Private": "_pri"}
+
+    def test_the_inbox_listing_is_sorted_and_free_of_timestamps(self):
+        def children(kw):
+            return {"value": [{"id": "2", "name": "b.pdf", "size": 2, "file": {}}, {"id": "1", "name": "a.jpg", "size": 1, "file": {}},
+                              {"id": "3", "name": "sub", "folder": {}}]}
+        g = FakeGraph({("GET", "/me/drive/root:/Secretary/Business/Inbox:/children"): children})
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=[], root_folder="Secretary", worlds=self.W, inbox="Inbox")
+        # the Private inbox does not exist yet: a 404 is "nothing there", not an error
+        real_call = g.call
+        def call(method, path, **kw):
+            if path.startswith("/me/drive/root:/Secretary/Private/Inbox"):
+                raise common.HttpError(404, "GET", path, "itemNotFound")
+            return real_call(method, path, **kw)
+        g.call = call
+        items = m365.inbox_listing(g, "Secretary", self.W, "Inbox")
+        self.assertEqual([i["path"] for i in items], ["Secretary/Business/Inbox/a.jpg", "Secretary/Business/Inbox/b.pdf"])
+        self.assertTrue(all("modified" not in i for i in items))
+
+    def test_filing_from_the_inbox_moves_renames_and_writes_the_twin_in_one_call(self):
+        g = FakeGraph({("GET", "/me/drive/root:/Secretary/Business/Inbox/scan.jpg:"): {"id": "f1", "name": "scan.jpg", "size": 3, "file": {}},
+                       ("GET", "/me/drive/root"): {"id": "dir", "name": "dir", "folder": {}},        # every folder lookup finds a folder
+                       ("PATCH", "/me/drive/items/f1"): {"id": "f1", "name": "2026-09-07 tax office_bus.jpg", "parentReference": {"path": "/drive/root:/Secretary/Business/Letters/2026"}}})
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=[], root_folder="Secretary", worlds=self.W, inbox="Inbox")
+        srv = m365.build_server(g)
+        tool = next(t for t in srv.tools if t.name == "m365_drive_file")
+        with self.assertRaises(ValueError):
+            tool.fn(path="Secretary/Business/Inbox/scan.jpg", target="Secretary/Business/Letters/2026/2026-09-07 tax office.jpg", text_md="x")   # suffix missing
+        self.assertEqual([c for c in g.calls if c[0] == "PATCH"], [])
+        out = tool.fn(path="Secretary/Business/Inbox/scan.jpg", target="Secretary/Business/Letters/2026/2026-09-07 tax office_bus.jpg", text_md="Steueramt, Frist 30.09.")
+        patch = next(c for c in g.calls if c[0] == "PATCH")
+        self.assertEqual(patch[2]["json_body"]["name"], "2026-09-07 tax office_bus.jpg")
+        put = next(c for c in g.calls if c[0] == "PUT")
+        self.assertIn("office_bus.md:/content", put[1]); self.assertIn(b"Frist 30.09.", put[2]["data"])
+        self.assertEqual(out["companion"], "/Secretary/Business/Letters/2026/2026-09-07 tax office_bus.md")

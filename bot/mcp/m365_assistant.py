@@ -77,6 +77,9 @@ class Auth:
         # corrected name rather than filed and forgotten.
         self.root_folder = os.environ.get("M365_ROOT_FOLDER", "").strip().strip("/")
         self.worlds = parse_worlds(os.environ.get("M365_WORLDS", ""))
+        # The drop folder below each world: what the operator puts there from
+        # the phone or the PC waits to be read, named and filed.
+        self.inbox = os.environ.get("M365_INBOX", "Inbox").strip().strip("/") or "Inbox"
 
     def _token_url(self) -> str:
         return f"{LOGIN}/{self.tenant}/oauth2/v2.0/token"
@@ -310,6 +313,25 @@ def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: 
                 except ValueError:
                     item = {}
     return item
+
+
+def inbox_listing(graph: "Graph", root: str, worlds: Dict[str, str], inbox: str) -> List[Dict[str, Any]]:
+    """Every file waiting in <root>/<World>/<inbox>, sorted — no timestamps, so
+    two identical listings compare equal (the cron monitor relies on that)."""
+    out: List[Dict[str, Any]] = []
+    for world in worlds or {"": ""}:
+        path = "/".join(x for x in [root, world, inbox] if x)
+        try:
+            r = graph.call("GET", f"{graph.drive_path(path)}/children", params={"$top": 200, "$select": "id,name,size,file,folder", "$orderby": "name"})
+        except HttpError as e:
+            if e.status == 404:
+                continue
+            raise
+        for item in r.get("value") or []:
+            if "folder" in item:
+                continue
+            out.append({"world": world, "path": f"{path}/{item.get('name')}", "name": item.get("name"), "size": item.get("size")})
+    return sorted(out, key=lambda x: x["path"])
 
 
 def share_id(url: str) -> str:
@@ -913,6 +935,43 @@ def build_server(graph: Graph) -> McpServer:
             fh.write(data)
         return {"name": item.get("name"), "local_path": local, "size": len(data)}
 
+    @srv.tool("m365_drive_inbox", f"What waits in the drop folders {ROOT}/<World>/{graph.auth.inbox}/ — files the operator put there from the phone or the PC. "
+              "Each is read, named and filed with m365_drive_file; the folder it sits in decides the world.", {"properties": {}})
+    def drive_inbox() -> Dict[str, Any]:
+        if not ROOT:
+            raise ValueError("no root folder configured")
+        items = inbox_listing(graph, ROOT, WORLDS, graph.auth.inbox)
+        return {"count": len(items), "items": items}
+
+    @srv.tool("m365_drive_file", "File a document that is already in OneDrive (typically from the drop folder): move and rename it to its final path in one step "
+              "and write its Markdown twin. The target follows the worlds rule; text_md is the recognized text (required for photos and scans; a PDF "
+              "with a text layer is extracted for you). The document itself is not re-uploaded.",
+              {"properties": {"path": {"type": "string", "description": "where the file is now"},
+                              "target": {"type": "string", "description": f"final path, e.g. {ROOT}/<World>/Letters/2026/2026-09-07 <what> <who><suffix>.pdf"},
+                              **TEXT_MD}, "required": ["path", "target"]})
+    def drive_file(path: str, target: str, text_md: Optional[str] = None) -> Dict[str, Any]:
+        target = target.strip("/")
+        world = world_check(target, ROOT, WORLDS)
+        folder, _, name = target.rpartition("/")
+        if not name:
+            raise ValueError("target must name a file")
+        item = graph.call("GET", graph.drive_path(path), params={"$select": "id,name,size,file,@microsoft.graph.downloadUrl"})
+        twin_text: Optional[str] = None
+        if world is not None and is_document(name):
+            data: Optional[bytes] = None
+            if not text_md:
+                dl = item.get("@microsoft.graph.downloadUrl")
+                data = graph.download(dl) if dl else graph.call("GET", f"/me/drive/items/{item['id']}/content", raw=True)[0]
+            twin_text = recognized_text(name, data, text_md)      # refused before anything moves
+        parent = graph.ensure_folder(folder) if folder else {"id": graph.call("GET", "/me/drive/root", params={"$select": "id"})["id"]}
+        moved = graph.call("PATCH", f"/me/drive/items/{item['id']}", json_body={"parentReference": {"id": parent["id"]}, "name": name})
+        out = _item_shape(moved)
+        if twin_text is not None:
+            graph.call("PUT", f"{graph.drive_path(companion_path(target))}/content", data=companion_markdown(name, world, twin_text).encode("utf-8"),
+                       content_type="text/markdown", params={"@microsoft.graph.conflictBehavior": "replace"})
+            out["companion"] = "/" + companion_path(target)
+        return out
+
     @srv.tool("m365_drive_missing_text", f"Documents below {ROOT or 'the root folder'} that have no Markdown twin yet (scans, photos, PDFs filed without their text).",
               {"properties": {"path": {"type": "string", "description": "start folder; default the root folder"}}})
     def drive_missing_text(path: str = "") -> Dict[str, Any]:
@@ -1092,6 +1151,15 @@ def main(argv: List[str]) -> int:
             print(f"moved {migrate_worlds_apply(graph, plan)} file(s)")
         else:
             print(f"{len(plan)} file(s) would move; re-run with --apply to do it")
+        return 0
+    if cmd == "inbox":
+        # inbox — one line per waiting file, sorted, no timestamps: the cron
+        # monitor compares this output between ticks and wakes the Secretary
+        # only when it changed.
+        if not auth.root_folder:
+            raise SystemExit("no root folder configured (M365_ROOT_FOLDER)")
+        for item in inbox_listing(Graph(auth, tz), auth.root_folder, auth.worlds, auth.inbox):
+            print(f"{item['path']}  ({item.get('size') or 0} bytes)")
         return 0
     if cmd == "refresh":
         # refresh — renew the access token now with the configured scopes; after

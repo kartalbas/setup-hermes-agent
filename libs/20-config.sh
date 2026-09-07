@@ -197,6 +197,7 @@ config_defaults() {
     # and every file's name ends with the world's suffix. Enforced by the
     # drive tools; empty = one undivided folder.
     : "${ASSISTANT_M365_WORLDS:=}"
+    : "${ASSISTANT_M365_INBOX:=Inbox}"               # the drop folder below each world, watched by the Secretary
     : "${ASSISTANT_M365_SHARE_WITH:=}"                # comma-separated people who get access to it
     : "${ASSISTANT_M365_SHARE_ROLE:=write}"
 

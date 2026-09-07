@@ -62,7 +62,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Photo intake, Teams side: operator sends a photo in the Secretary chat — verify the adapter's cached image reaches the same path (Secretary now on Kimi K3 with native image input) — verified 2026-09-06 (photographed letter via the Secretary chat)
 - [x] Classification rules written down (invoice → due date + reminders 7 and 1 days before; appointment → event + reminder; information → file only) and adjustable in configuration — in bot/roles/secretary.md
 
-- [ ] Intake paths: attachment to the M365 mailbox, file in the Teams chat, OneDrive folder `Assistant/Inbox` — all readable through the tools above
+- [x] Intake paths (2026-09-07): file in the Teams chat (supportsFiles), OneDrive drop folders `Secretary/<World>/Inbox/` watched by a monitor cron (`m365ctl inbox`) and filed with `m365_drive_file`; mail attachments stay switched off (`CHANNEL_EMAIL_SKIP_ATTACHMENTS`) until wanted
 - [x] Text extraction for pdf / docx / txt (scanned PDFs without text: state the limit; OCR is a later toggle) — pypdf/python-docx in the assistants; scanned PDFs are reported as such
 - [ ] Reminders: verify the cron toolset is available on Teams and delivers to the home channel; document the phrasing ("erinnere mich am …")
 - [x] Filing: the agent stores processed letters in OneDrive folders it names, and returns the location — role rules + m365_drive_upload_file / share link

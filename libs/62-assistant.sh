@@ -279,6 +279,14 @@ _assistant_m365_worlds() {
             log_ok "world folder   ${ASSISTANT_M365_ROOT_FOLDER}/${world} (files end with ${entry#*=})"
         else
             defer_failure "assistant: could not ensure the world folder ${ASSISTANT_M365_ROOT_FOLDER}/${world}: ${out}"
+            continue
+        fi
+        # The drop folder: what the operator shares from the phone lands here
+        # and the Secretary's inbox routine files it.
+        if out=$(runuser -u "$SERVICE_USER" -- "$(assistant_m365ctl)" ensure-folder "${ASSISTANT_M365_ROOT_FOLDER}/${world}/${ASSISTANT_M365_INBOX}" 2>&1); then
+            log_ok "drop folder    ${ASSISTANT_M365_ROOT_FOLDER}/${world}/${ASSISTANT_M365_INBOX}"
+        else
+            defer_failure "assistant: could not ensure the drop folder ${ASSISTANT_M365_ROOT_FOLDER}/${world}/${ASSISTANT_M365_INBOX}: ${out}"
         fi
     done
 }
@@ -286,9 +294,9 @@ _assistant_m365_worlds() {
 # The env the server runs with. Nothing here is secret: the client id is a
 # public client, and the token lives in its own 0600 file.
 _assistant_m365_env_lines() {      # _assistant_m365_env_lines TENANT CLIENT ACCOUNT -> "K=V" lines
-    printf 'M365_TENANT_ID=%s\nM365_CLIENT_ID=%s\nM365_ACCOUNT=%s\nM365_TOKEN_FILE=%s\nM365_TIMEZONE=%s\nM365_SCOPES=%s\nM365_READ_MAILBOXES=%s\nM365_ROOT_FOLDER=%s\nM365_WORLDS=%s\n' \
+    printf 'M365_TENANT_ID=%s\nM365_CLIENT_ID=%s\nM365_ACCOUNT=%s\nM365_TOKEN_FILE=%s\nM365_TIMEZONE=%s\nM365_SCOPES=%s\nM365_READ_MAILBOXES=%s\nM365_ROOT_FOLDER=%s\nM365_WORLDS=%s\nM365_INBOX=%s\n' \
         "$1" "$2" "$3" "$(assistant_m365_token_file)" "$ASSISTANT_M365_TIMEZONE" "$ASSISTANT_M365_SCOPES" "${ASSISTANT_M365_READ_MAILBOXES:-}" \
-        "${ASSISTANT_M365_ROOT_FOLDER:-}" "${ASSISTANT_M365_WORLDS:-}"
+        "${ASSISTANT_M365_ROOT_FOLDER:-}" "${ASSISTANT_M365_WORLDS:-}" "${ASSISTANT_M365_INBOX:-Inbox}"
 }
 
 _assistant_m365_fragment() {       # _assistant_m365_fragment TENANT CLIENT ACCOUNT -> yaml
@@ -324,7 +332,7 @@ _assistant_m365_wrapper() {
     write_file "$(assistant_m365ctl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Microsoft 365 assistant's commands with its configured environment:
-#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | refresh | check-mailbox ADDRESS | migrate-worlds [--apply] | companions [--apply] | download PATH LOCAL | upload LOCAL PATH [TEXT_MD_FILE] | move SOURCE TARGET | tools | serve
+#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | refresh | inbox | check-mailbox ADDRESS | migrate-worlds [--apply] | companions [--apply] | download PATH LOCAL | upload LOCAL PATH [TEXT_MD_FILE] | move SOURCE TARGET | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_m365_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/m365_assistant.py" "\$@"

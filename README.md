@@ -607,6 +607,17 @@ first world unless a folder name says otherwise, suffix added),
 `m365ctl migrate-worlds --apply --default=Business` does it. The run creates
 the world folders; the share is inherited from the root.
 
+**The drop folder — from the phone.** Teams on Android and iOS offers only
+people and channels as share targets, never a bot. The way in is OneDrive: the
+Secretary's folder is shared with you, so the OneDrive app on the phone (and the
+Explorer on the PC) can put a photo or a file into `Secretary/Business/Inbox/`
+or `Secretary/Private/Inbox/` — the run creates both (`ASSISTANT_M365_INBOX`).
+The Secretary watches them with a cron job whose `monitor` is `m365ctl inbox`, a
+free listing compared between ticks: only a change wakes the model, which then
+reads each file, names it, files it into the world's proper folder with the
+suffix and the Markdown twin (`m365_drive_file`, one call), and reports the new
+path. The folder a file was dropped into decides the world.
+
 **Every document with its text.** A scan, photo, PDF or Word file filed below
 the root is filed together with a Markdown twin of the same name
 (`2026-09-07 lease_bus.jpg` + `2026-09-07 lease_bus.md`) holding the recognized

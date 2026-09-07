@@ -166,3 +166,10 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     ASSISTANT_GOOGLE_ROOT_FOLDER=Files ASSISTANT_GOOGLE_WORLDS="Work=_w"
     [ "$(assistant_google_root)" = Files ]; [ "$(assistant_google_worlds)" = "Work=_w" ]
 }
+
+@test "the env carries the drop folder name and the default is Inbox" {
+    unset ASSISTANT_M365_INBOX; config_defaults
+    [ "$ASSISTANT_M365_INBOX" = Inbox ]
+    out=$(_assistant_m365_env_lines t c agent@example.com)
+    [[ $out == *$'\nM365_INBOX=Inbox'* ]]
+}
