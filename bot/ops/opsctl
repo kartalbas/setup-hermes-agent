@@ -9,7 +9,10 @@
 #   opsctl check-updates       newest agent tag, GitHub MCP server release, repository state
 #   opsctl dry-run [MODULES]   the installer's preview (changes nothing); MODULES comma-separated
 #   opsctl change "<request>"  Claude Code implements the request in the repository:
-#                              tests, commit, push — and names the installer command to run
+#                              tests, commit, push — then applies (OPS_APPLY=auto) or names the command
+#   opsctl apply [MODULES]     run the installer for MODULES (or everything) in the background;
+#                              the bots — this one included — restart as the run decides
+#   opsctl apply-status        state and log of the last apply
 #   opsctl modules-for PATH…   which installer modules a set of changed files needs
 #
 # Configuration: /etc/hermes-ops.conf (written by the installer; no secrets).
@@ -26,6 +29,7 @@ load_conf() {
     : "${OPS_REPO:?}" "${OPS_SERVICE_NAME:?}" "${OPS_SERVICE_PREFIX:?}" "${OPS_BOTS:?}" "${OPS_STATE:?}"
     : "${OPS_BRIDGE_PORT:=8787}" "${OPS_CLAUDE:=claude}" "${OPS_CLAUDE_MODEL:=opus}" "${OPS_CLAUDE_TIMEOUT:=1500}"
     : "${OPS_HERMES_REPO:=}" "${OPS_HERMES_REF:=}" "${OPS_GITHUB_MCP_VERSION:=}" "${OPS_AGY:=agy}"
+    : "${OPS_APPLY:=ask}"          # auto: apply after a green change | ask: name the command | never
 }
 
 # journalctl needs the journal group or root; the service account has
@@ -237,11 +241,58 @@ Request: ${request}"
         printf 'NOT pushed: tests %s, %s uncommitted file(s) — the operator decides\n' "$tests" "$dirty"
     fi
     local mods; mods=$(git diff --name-only "$head_before" HEAD | xargs -r bash "$0" modules-for)
-    case $mods in
-        none) printf '\nnothing to install: documentation or tests only\n' ;;
-        all)  printf '\nto apply:  sudo ./install.sh\n' ;;
-        *)    printf '\nto apply:  sudo ./install.sh --only %s\n' "$mods" ;;
-    esac
+    if [[ $mods == none ]]; then
+        printf '\nnothing to install: documentation or tests only\n'
+        return 0
+    fi
+    local cmd="sudo ./install.sh"; [[ $mods == all ]] || cmd+=" --only ${mods}"
+    if [[ $OPS_APPLY == auto && $tests == pass && $dirty == 0 ]]; then
+        printf '\napplying now (OPS_APPLY=auto): %s\n' "$cmd"
+        cmd_apply "$([[ $mods == all ]] || printf '%s' "$mods")"
+    elif [[ $OPS_APPLY == never ]]; then
+        printf '\nto apply (by the operator, OPS_APPLY=never):  %s\n' "$cmd"
+    else
+        printf '\nto apply:  %s   — or say so and I run: opsctl apply %s\n' "$cmd" "$([[ $mods == all ]] || printf '%s' "$mods")"
+    fi
+}
+
+# The installer, detached: a run takes minutes and restarts bots — possibly the
+# one asking — so it runs as a transient systemd unit and writes a log; the
+# caller gets the log path back at once and asks apply-status later.
+cmd_apply() {
+    local mods=${1:-}
+    [[ $OPS_APPLY != never ]] || die "applying from here is switched off (OPS_APPLY=never); the operator runs the installer"
+    sudo -n true 2>/dev/null || die "no passwordless sudo for $(id -un); the installer needs root"
+    mkdir -p "$OPS_STATE"
+    if systemctl is-active --quiet hermes-ops-apply.service 2>/dev/null; then
+        die "an apply is already running — opsctl apply-status"
+    fi
+    local ts log; ts=$(date +%Y%m%d-%H%M%S); log="${OPS_STATE}/apply-${ts}.log"
+    printf '%s modules=%s\n' "$(date -Is)" "${mods:-all}" >"${OPS_STATE}/apply-last"
+    # shellcheck disable=SC2016  # the $-free command line is built here, expanded by systemd-run's shell
+    sudo -n systemd-run --unit hermes-ops-apply --collect --quiet \
+        --property=WorkingDirectory="$OPS_REPO" \
+        bash -c "./install.sh ${mods:+--only ${mods}} >'${log}' 2>&1; echo \"exit=\$?\" >>'${log}'" ||
+        die "could not start the installer as a transient unit"
+    chgrp "$(id -gn)" "${OPS_STATE}/apply-last" 2>/dev/null || true
+    printf 'installer started in the background: modules %s\n' "${mods:-all}"
+    printf 'log: %s\nwhen the bots restart, this chat may go quiet for a minute; then ask: opsctl apply-status\n' "$log"
+}
+
+cmd_apply_status() {
+    local last log
+    last=$(cat "${OPS_STATE}/apply-last" 2>/dev/null || true)
+    [[ -n $last ]] || { printf 'no apply has been run from here\n'; return 0; }
+    printf 'last apply: %s\n' "$last"
+    if systemctl is-active --quiet hermes-ops-apply.service 2>/dev/null; then
+        printf 'state: RUNNING\n'
+    else
+        printf 'state: finished\n'
+    fi
+    log=$(find "$OPS_STATE" -maxdepth 1 -name 'apply-*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
+    [[ -n $log ]] || return 0
+    printf 'log: %s\n--- last lines ---\n' "$log"
+    sudo -n cat "$log" 2>/dev/null | grep -vE '^\s*$' | tail -n "${OPS_TAIL:-25}"
 }
 
 main() {
@@ -257,7 +308,9 @@ main() {
         check-updates) cmd_check_updates ;;
         dry-run)       cmd_dry_run "${1:-}" ;;
         change)        cmd_change "${1:-}" ;;
-        *) die "unknown command '${cmd}' (status, report, check-updates, dry-run, change, modules-for)" ;;
+        apply)         cmd_apply "${1:-}" ;;
+        apply-status)  cmd_apply_status ;;
+        *) die "unknown command '${cmd}' (status, report, check-updates, dry-run, change, apply, apply-status, modules-for)" ;;
     esac
 }
 

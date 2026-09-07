@@ -124,8 +124,10 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 
 The operator's channel for the system itself: state questions, update
 options, and change requests that Claude Code (Opus, the operator's
-subscription) implements in the repository. Two-stage by design: the bot
-prepares (commit, tests, push, installer command), the operator applies.
+subscription) implements in the repository. Claude Code touches only the
+repository; applying is opsctl's own step (`OPS_APPLY`: auto after a green
+change — the operator's choice 2026-09-07 —, ask, or never), as a transient
+systemd unit with a log, because the run restarts the bots including this one.
 
 - [x] Role `bot/roles/admin.md`; the bot acts only through `opsctl`
 - [x] `bot/ops/opsctl`: status, report, check-updates, dry-run, change, modules-for; module `libs/66-ops.sh` installs it with `/etc/hermes-ops.conf`; the installer writes `last-run`
@@ -133,5 +135,5 @@ prepares (commit, tests, push, installer command), the operator applies.
 - [ ] Full installer run (new Entra app, Azure bot, hostname, tunnel ingress, Teams package), upload the package, `/sethome`
 - [ ] First change request end to end; check the Claude Code allowlist holds (no push, no install.sh)
 - [ ] Daily 07:00 report set up by the bot; weekly `check-updates` reminder
-- [ ] Later: let the bot run small installer selections (`--only channels`) after an explicit "go", once it has earned it
+- [x] `opsctl apply` / `apply-status`; `OPS_APPLY=auto` in the operator's configuration (decided 2026-09-07: "claude muss einen restart durchführen können")
 - [ ] Later: the second VM maintained through the same bot

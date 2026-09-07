@@ -311,6 +311,7 @@ BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 
 # OPS_ENABLED=true
 # OPS_CLAUDE_MODEL="opus"               # the Claude Code model for `opsctl change`
 # OPS_CLAUDE_TIMEOUT=1500               # seconds one change may take
+# OPS_APPLY="ask"                       # auto: apply after a green change | ask: the bot asks first | never
 BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
 BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # A bot may run on its own model instead of the global LLM_ENDPOINT_1 — e.g. a

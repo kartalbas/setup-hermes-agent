@@ -210,6 +210,7 @@ config_defaults() {
     : "${OPS_ENABLED:=false}"
     : "${OPS_CLAUDE_MODEL:=opus}"                 # Claude Code model for `opsctl change`
     : "${OPS_CLAUDE_TIMEOUT:=1500}"               # seconds one change may take
+    : "${OPS_APPLY:=ask}"                         # auto | ask | never — may the Admin bot run the installer after a change
     : "${OPS_BIN:=/usr/local/bin/opsctl}"
     : "${OPS_CONF:=/etc/hermes-ops.conf}"
     : "${OPS_STATE_DIR:=/var/lib/hermes-ops}"
@@ -456,6 +457,7 @@ _check_ops() {
     is_true "${OPS_ENABLED:-false}" || return 0
     [[ ${OPS_CLAUDE_TIMEOUT:-} =~ ^[0-9]+$ ]] || _bad "OPS_CLAUDE_TIMEOUT must be a number of seconds"
     [[ -n ${OPS_CLAUDE_MODEL:-} ]] || _bad "OPS_CLAUDE_MODEL must name a Claude Code model (opus, sonnet, …)"
+    case ${OPS_APPLY:-} in auto|ask|never) ;; *) _bad "OPS_APPLY must be auto, ask or never (got '${OPS_APPLY:-}')" ;; esac
     _check_abs_path OPS_BIN "$OPS_BIN"; _check_abs_path OPS_CONF "$OPS_CONF"; _check_abs_path OPS_STATE_DIR "$OPS_STATE_DIR"
 }
 

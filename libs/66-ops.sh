@@ -6,9 +6,9 @@
 # repository checkout with the model OPS_CLAUDE_MODEL; the CLI is the service
 # account's (clis module), signed in through the operator's subscription.
 #
-# What this module deliberately does not do: give any bot the installer. A
-# change ends as a commit and the name of the installer command; running it
-# stays with the operator (docs/decisions/0015).
+# Applying is a separate, deterministic step: `opsctl apply` runs the installer
+# as a transient systemd unit (OPS_APPLY: auto after a green change, ask, or
+# never). Claude Code itself never gets the installer, systemctl or sudo.
 #
 # Order: after `assistant`, before `dashboard`.
 
@@ -35,6 +35,7 @@ OPS_BRIDGE_PORT=${AGY_SHIM_PORT:-8787}
 OPS_CLAUDE=${OPS_CLAUDE_BIN}
 OPS_CLAUDE_MODEL=${OPS_CLAUDE_MODEL}
 OPS_CLAUDE_TIMEOUT=${OPS_CLAUDE_TIMEOUT}
+OPS_APPLY=${OPS_APPLY}
 OPS_HERMES_REPO=${HERMES_REPO}
 OPS_HERMES_REF=${HERMES_REF}
 OPS_GITHUB_MCP_VERSION=${ASSISTANT_GITHUB_MCP_VERSION}

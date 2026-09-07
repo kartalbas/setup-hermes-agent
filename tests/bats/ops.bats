@@ -41,3 +41,21 @@ setup() {
     OPS_CLAUDE_TIMEOUT=900 OPS_CLAUDE_MODEL=""; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *OPS_CLAUDE_MODEL* ]]
     OPS_CLAUDE_MODEL=opus; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 0 ]
 }
+
+@test "OPS_APPLY takes auto, ask or never, and the configuration carries it" {
+    OPS_ENABLED=true OPS_CLAUDE_TIMEOUT=900 OPS_CLAUDE_MODEL=opus
+    OPS_APPLY=sometimes; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 1 ]
+    OPS_APPLY=auto; _invalid=(); _check_ops; [ "${#_invalid[@]}" -eq 0 ]
+    BOTS="admin" BOT_SERVICE_PREFIX=acme SERVICE_NAME=agent-gw
+    [[ $(ops_conf_text) == *'OPS_APPLY=auto'* ]]
+}
+
+@test "apply refuses when switched off, before touching anything" {
+    tmp=$(mktemp -d)
+    printf 'OPS_REPO=%s\nOPS_SERVICE_NAME=x\nOPS_SERVICE_PREFIX=y\nOPS_BOTS=a\nOPS_STATE=%s\nOPS_APPLY=never\n' "$REPO_ROOT" "$tmp" >"${tmp}/ops.conf"
+    OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply channels
+    [ "$status" -ne 0 ]; [[ "$output" == *"switched off"* ]]
+    OPSCTL_CONF="${tmp}/ops.conf" bats_run bash "$REPO_ROOT/bot/ops/opsctl" apply-status
+    [ "$status" -eq 0 ]; [[ "$output" == *"no apply has been run"* ]]
+    rm -rf "$tmp"
+}

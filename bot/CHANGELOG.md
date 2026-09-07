@@ -5,6 +5,7 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Admin bot: `opsctl apply` runs the installer as a transient unit after a green change (`OPS_APPLY` auto/ask/never), `apply-status` shows the log
 - Admin bot: `bot/roles/admin.md` and `opsctl` (module `ops`) — host state, update check, installer preview, and change requests that Claude Code turns into tested commits; the installer records its last run for it
 
 - Bridge: a native call to a caller function (the CLI's `unknown tool` step) is taken as the decision; the retry after a malformed-call failure carries a plain-text reminder
