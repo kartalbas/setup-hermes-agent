@@ -325,6 +325,11 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # bot itself — the number of a global LLM_ENDPOINT_n. A bot on an API model
 # keeps the analyses of your own mailboxes on the subscription bridge this way:
 # BOT_SECRETARY_DELEGATION_ENDPOINT=1            # the bridge; empty = sub-agents inherit the bot's model
+# Which of the agent's toolsets a bot gets. Default: the core composite
+# (hermes-telegram — web, terminal, files, browser, memory, cron, …). A list of
+# toolset names instead composes a smaller set; leaving `terminal` and `file`
+# out is how a bot runs without a shell. MCP servers join on their own.
+# BOT_GITHUB_TOOLSET="web memory session_search clarify cronjob todo"
 # BOT_<KEY>_NAME, _HOSTNAME (<key>.<TUNNEL_ZONE>), _ROLE (bot/roles/<role>.md),
 # _TEAMS_CLIENT_ID_VAR / _TEAMS_CLIENT_SECRET_VAR (TEAMS_<KEY>_CLIENT_ID / _SECRET),
 # _TOOLSET, _DESCRIPTION all have derived defaults.

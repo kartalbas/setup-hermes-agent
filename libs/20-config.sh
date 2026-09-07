@@ -864,7 +864,7 @@ bot_field() {
         LLM_REASONING_FIELD) printf '' ;;
         LLM_CONTEXT_WINDOW)  printf '%s' "${LLM_CONTEXT_WINDOW:-0}" ;;
         DELEGATION_ENDPOINT) printf '' ;;               # LLM_ENDPOINT_n the bot's sub-agents (delegate_task) run on; empty: they inherit the bot's model
-        TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;
+        TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;   # one composite, or a space-separated list of the agent's toolsets
         *) die "bot_field: unknown field '${field}'" ;;
     esac
 }

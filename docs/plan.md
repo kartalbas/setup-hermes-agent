@@ -89,6 +89,8 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Secretary reads the operator's own mailboxes for receipts and invoices (2026-09-07): Exchange mailbox via Full Access delegation + Mail.Read.Shared, private Gmail via its own read-only sign-in; analysis on the bridge (Secretary moved off Kimi)
 - [x] Sub-agents on another endpoint (2026-09-07): `BOT_<KEY>_DELEGATION_ENDPOINT` → `delegation` block; the Secretary hands mailbox analyses to `delegate_task` on the bridge — ADR 0022
 - [x] Installer hardening (2026-09-07): servers' commands via runuser (a nested sudo under sudo-rs `use_pty` swallowed the paste-back and Ctrl-C); bots restart when their MCP servers' code or env changed (stamp per bot)
+- [x] Bridge malformed-call failures (2026-09-07): native calls to caller functions taken as decisions, reminder on retry; `AGENT_TOOL_SEARCH=off` so MCP tools are inline; GitHub bot without terminal (toolset list) — docs/research/agy-cli.md
+- [x] Installer speed (2026-09-07): `--only`/`--skip`, per-module timing, config keys compared before the agent's CLI is called, one restart per bot and run
 - [ ] Receipts end to end: Teams question → delegate_task on the bridge → CSV in `Secretary/Receipts/<YYYY>/` — first real run pending
 - [ ] Antigravity terms item 6 (third-party tools accessing the service): spawn-only wrapper is a grey zone Google has not answered; operator decision to record in an ADR
 

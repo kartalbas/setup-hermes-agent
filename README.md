@@ -336,6 +336,14 @@ Azure Bot, the Teams package and the service. One bot carries the mailbox
 (`BOT_<KEY>_CHANNELS="teams email"`), one the dashboard, and the assistant's
 tools go to the bots that list them (`BOT_<KEY>_MCP="m365"`). See ADR 0020.
 
+**Which toolsets a bot gets.** `BOT_<KEY>_TOOLSET` (default `CHANNEL_TEAMS_TOOLSET`,
+`hermes-telegram` — the agent's core set with terminal, files, browser, memory,
+cron) takes either one composite or a space-separated list of the agent's
+toolsets (`web memory session_search clarify cronjob todo`, …). The list is how
+a bot runs **without a shell**: the GitHub bot, for one, reached for `gh` in the
+terminal instead of its GitHub tools until the terminal was gone. MCP servers
+join every list on their own; names are checked against the installed registry.
+
 **Which tools the model sees.** `AGENT_TOOL_SEARCH` — `off` (default) puts
 every MCP tool in front of the model by name; `auto`/`on` hides them behind the
 agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
@@ -1177,9 +1185,9 @@ accept is a spoofed `From:` that Exchange's own anti-spoofing lets through.
 
 The pinned release ships a default configuration naming a toolset it does not
 define, so Teams ran without tools (upstream issue #38798). The installer sets
-`platform_toolsets.teams` to `CHANNEL_TEAMS_TOOLSET` (default `hermes-telegram`,
-the core set) and refuses a name that the installed `toolsets.py` does not
-define.
+`platform_toolsets.teams` to `CHANNEL_TEAMS_TOOLSET` / `BOT_<KEY>_TOOLSET`
+(default `hermes-telegram`, the core set; or a list of toolsets) and refuses a
+name that the installed `toolsets.py` does not define.
 
 ### `named custom provider 'bridge' has no resolvable api_key` on every turn
 

@@ -207,3 +207,26 @@ setup() {
     _invalid=(); _check_tool_search X on; [ "${#_invalid[@]}" -eq 0 ]
     unset BOT_SECRETARY_TOOL_SEARCH
 }
+
+@test "a bot's toolset may be a list, rendered as the platform's toolset list" {
+    [ "$(_teams_toolset_yaml hermes-telegram)" = $'platform_toolsets:\n  teams:\n    - hermes-telegram' ]
+    [ "$(_teams_toolset_yaml "web memory cronjob")" = $'platform_toolsets:\n  teams:\n    - web\n    - memory\n    - cronjob' ]
+    BOTS="github" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
+    BOT_GITHUB_TOOLSET="web memory"
+    [ "$(bot_field github TOOLSET)" = "web memory" ]
+    [ "$(bot_field secretary TOOLSET)" = hermes-telegram ]
+    unset BOT_GITHUB_TOOLSET
+}
+
+@test "toolset names are checked against the registry; MCP servers and no_mcp pass" {
+    tmp=$(mktemp -d); printf '    "web": {\n    "memory": {\n    "hermes-telegram": {\n' >"${tmp}/toolsets.py"
+    hermes_install_dir() { printf '%s' "$tmp"; }
+    die() { printf 'die: %s\n' "$*"; exit 1; }
+    ASSISTANT_GITHUB_ENABLED=true ASSISTANT_M365_ENABLED=false
+    ( _teams_toolset_check "web memory github no_mcp" )
+    bats_run _teams_toolset_check "web terminal"        # bats_run: the libs define their own `run`
+    [ "$status" -ne 0 ] && [[ "$output" == *"'terminal'"* ]]
+    bats_run _teams_toolset_check "m365"
+    [ "$status" -ne 0 ]
+    rm -rf "$tmp"
+}

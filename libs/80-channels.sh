@@ -734,19 +734,38 @@ _channel_teams() {
 # The toolset the agent may use on Teams. Verified against the installed
 # release's toolsets.py: a name that does not exist there leaves Teams without
 # tools and only a WARNING in the journal to say so.
-_channel_teams_toolset() {
-    local name=${CHANNEL_TEAMS_TOOLSET:?} reg
+# One composite (hermes-telegram, the core set) or a list of the agent's own
+# toolsets — web, memory, cronjob, … — which is how a bot runs WITHOUT a
+# terminal: name the toolsets it needs and leave `terminal` and `file` out.
+# MCP servers join every list on their own (the agent adds all enabled servers
+# unless a list names some, or `no_mcp`). Names are checked against the
+# installed registry; an MCP server name or `no_mcp` passes as well.
+_teams_toolset_yaml() {           # _teams_toolset_yaml "NAME [NAME...]" -> yaml
+    local IFS=$' \t\n' name
+    printf 'platform_toolsets:\n  teams:\n'
+    for name in $1; do printf '    - %s\n' "$name"; done
+}
+
+_teams_toolset_check() {          # _teams_toolset_check "NAME [NAME...]" — dies on an unknown name
+    local IFS=$' \t\n' name reg
     reg="$(hermes_install_dir)/toolsets.py"
-    if [[ $DRY_RUN != true ]]; then
-        [[ -f $reg ]] || die "cannot verify CHANNEL_TEAMS_TOOLSET: ${reg} not found"
+    [[ -f $reg ]] || die "cannot verify the Teams toolset: ${reg} not found"
+    for name in $1; do
+        case $name in
+            no_mcp) continue ;;
+            m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   && continue ;;
+            google) is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" && continue ;;
+            github) is_true "${ASSISTANT_GITHUB_ENABLED:-false}" && continue ;;
+        esac
         grep -q "\"${name}\": {" "$reg" ||
-            die "CHANNEL_TEAMS_TOOLSET='${name}' is not defined in ${reg}"
-    fi
-    yaml_merge <<EOF
-platform_toolsets:
-  teams:
-    - ${name}
-EOF
+            die "toolset '${name}' (CHANNEL_TEAMS_TOOLSET / BOT_<KEY>_TOOLSET) is not defined in ${reg}, and is no enabled MCP server"
+    done
+}
+
+_channel_teams_toolset() {
+    local names=${CHANNEL_TEAMS_TOOLSET:?}
+    [[ $DRY_RUN == true ]] || _teams_toolset_check "$names"
+    yaml_merge <<<"$(_teams_toolset_yaml "$names")"
 }
 
 _channels_restart_if_changed() {
