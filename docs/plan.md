@@ -94,6 +94,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [x] Private/business split in OneDrive (2026-09-07): `Secretary/Business/` and `Secretary/Private/`, file names end with `_bus` / `_pri`, enforced by the drive tools, world decided at intake for every scan, photo, mail and task; `m365ctl migrate-worlds` for existing files; the same structure in the agent's Google Drive (`googlectl migrate-worlds`)
 - [x] Text twin for every filed document (2026-09-07): `<name>.md` with the recognized text next to the scan, enforced by the upload tools; backfill via `m365ctl companions --apply` (PDF/Word) and the Secretary's eyes (photos)
 - [x] Links in Teams (2026-09-07): named links keep their URL (adapter patch); SharePoint/OneDrive links opened through Graph's sharing endpoint (`m365_share_read`, `m365_share_download`, scope Files.Read.All)
+- [x] Balance footer (2026-09-07): `(DeepSeek-Guthaben: …)` at the end of every Secretary answer via a loopback proxy in front of the provider; free, a dozen tokens of history per turn
 - [ ] Reboot test of the four-bot host (units ordered after bridge/relay since 2026-09-07; never rebooted since the bots exist): reboot at a quiet hour, then the checklist in README part 5
 - [ ] Receipts end to end: Teams question → delegate_task on the bridge → CSV in `Secretary/Receipts/<YYYY>/` — first real run pending
 - [ ] Antigravity terms item 6 (third-party tools accessing the service): spawn-only wrapper is a grey zone Google has not answered; operator decision to record in an ADR

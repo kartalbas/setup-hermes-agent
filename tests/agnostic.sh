@@ -197,6 +197,15 @@ check_local_identity() {
     if [[ -n $svc ]]; then
         denylist=$(grep -vixF -- "$svc" <<<"$denylist" || true)
     fi
+    # A host on the allowlist is a vendor's endpoint (a model API named in the
+    # configuration), not the site's identity: a file may reference it.
+    local kept="" t
+    while IFS= read -r t; do
+        [[ -z $t ]] && continue
+        host_allowed "$t" && continue
+        kept+="${t}"$'\n'
+    done <<<"$denylist"
+    denylist=${kept%$'\n'}
     [[ -z $denylist ]] && { warn "could not derive any local identity terms"; return 0; }
 
     while IFS= read -r term; do

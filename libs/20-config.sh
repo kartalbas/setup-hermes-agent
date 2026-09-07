@@ -83,6 +83,10 @@ config_defaults() {
     : "${AGY_SHIM_HOST:=127.0.0.1}"
     : "${AGY_SHIM_PORT:=8787}"
     : "${AGY_SHIM_LIB_DIR:=/usr/local/lib/hermes-provisioner}"
+    # The balance proxy (libs/36-apiproxy.sh): one loopback port per hosted
+    # provider a bot wants its balance from, counted from here.
+    : "${API_PROXY_PORT_BASE:=8790}"
+    : "${API_PROXY_CACHE:=60}"                       # seconds a fetched balance is reused
     : "${AGY_SHIM_MODELS:=}"
     : "${AGY_SHIM_MODEL_ALIASES:=}"
     : "${AGY_SHIM_UNKNOWN_MODEL:=reject}"
@@ -480,6 +484,33 @@ _check_ops() {
 
 _check_tool_search() {            # _check_tool_search NAME VALUE — the agent's tools.tool_search.enabled values
     case $2 in auto|on|off) ;; *) _bad "${1} must be auto, on or off (got '${2}')" ;; esac
+}
+
+# Which balance provider a bot's model belongs to: the hosted `deepseek`, or
+# Moonshot behind a custom endpoint. Empty (return 1) for anything else.
+apiproxy_provider_for() {         # apiproxy_provider_for KEY -> deepseek | moonshot
+    local provider base
+    provider=$(bot_field "$1" LLM_PROVIDER); base=$(bot_field "$1" LLM_BASE_URL)
+    case $provider in
+        deepseek) printf 'deepseek'; return 0 ;;
+        kimi-coding|kimi-coding-cn) printf 'moonshot'; return 0 ;;
+        custom)
+            case $base in
+                https://api.deepseek.com*) printf 'deepseek'; return 0 ;;
+                https://api.moonshot.ai*|https://api.moonshot.cn*) printf 'moonshot'; return 0 ;;
+            esac ;;
+    esac
+    return 1
+}
+apiproxy_port()     { case $1 in deepseek) printf '%s' "$API_PROXY_PORT_BASE" ;; moonshot) printf '%s' $(( API_PROXY_PORT_BASE + 1 )) ;; *) return 1 ;; esac; }
+apiproxy_upstream() { case $1 in deepseek) printf 'https://api.deepseek.com' ;; moonshot) printf 'https://api.moonshot.ai' ;; *) return 1 ;; esac; }
+
+_check_balance() {                # _check_balance KEY
+    local k=$1
+    is_true "$(bot_field "$k" LLM_BALANCE)" || return 0
+    [[ -n $(bot_field "$k" LLM_MODEL) ]] || { _bad "bot ${k}: BOT_$(bot_upper "$k")_LLM_BALANCE needs the bot's own model (BOT_$(bot_upper "$k")_LLM_MODEL)"; return 0; }
+    apiproxy_provider_for "$k" >/dev/null ||
+        _bad "bot ${k}: BOT_$(bot_upper "$k")_LLM_BALANCE works for DeepSeek and Moonshot only (provider deepseek, kimi-coding, or a custom endpoint at api.deepseek.com / api.moonshot.ai)"
 }
 
 # BOT_<KEY>_DELEGATION_ENDPOINT names a global LLM_ENDPOINT_n for the bot's
@@ -909,6 +940,7 @@ bot_field() {
         LLM_TOKEN_VAR) printf '' ;;
         LLM_REASONING_FIELD) printf '' ;;
         LLM_CONTEXT_WINDOW)  printf '%s' "${LLM_CONTEXT_WINDOW:-0}" ;;
+        LLM_BALANCE)   printf 'false' ;;                # true: the remaining API balance is appended to every final answer
         DELEGATION_ENDPOINT) printf '' ;;               # LLM_ENDPOINT_n the bot's sub-agents (delegate_task) run on; empty: they inherit the bot's model
         TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;   # one composite, or a space-separated list of the agent's toolsets
         *) die "bot_field: unknown field '${field}'" ;;
@@ -996,6 +1028,7 @@ _bots_validate() {
             [[ -z $tv ]] || secret_nonempty "$tv" || _bad "bot ${k}: secret '${tv}' (its LLM key) is missing or empty in the secrets file"
         fi
         _check_delegation_endpoint "$k"
+        _check_balance "$k"
     done < <(bots)
     (( ${#keys[@]} == 0 )) && return 0
     [[ -n ${BOT_PREFIX:-} ]] || _bad "BOT_PREFIX is empty; bots are displayed as '<prefix> <Name>'"
@@ -1038,6 +1071,14 @@ bot_llm_apply() {
     LLM_ENDPOINT_1_TOKEN_VAR=$(bot_field "$key" LLM_TOKEN_VAR)
     LLM_REASONING_FIELD=$(bot_field "$key" LLM_REASONING_FIELD)
     LLM_CONTEXT_WINDOW=$(bot_field "$key" LLM_CONTEXT_WINDOW)
+    # With a balance footer the bot talks to the loopback proxy instead of the
+    # provider: a custom endpoint whose key is still the provider's key.
+    if is_true "$(bot_field "$key" LLM_BALANCE)"; then
+        local p; p=$(apiproxy_provider_for "$key") || die "bot ${key}: no balance provider for its model"
+        LLM_ENDPOINT_1_PROVIDER=custom
+        LLM_ENDPOINT_1_NAME="${p}-balance"
+        LLM_ENDPOINT_1_BASE_URL="http://127.0.0.1:$(apiproxy_port "$p")/v1"
+    fi
 }
 
 bot_llm_restore() {

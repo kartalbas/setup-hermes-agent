@@ -377,6 +377,16 @@ gives. A hosted provider the agent knows (`deepseek`, `anthropic`, `openai`,
 `openrouter`, `kimi-coding`, …) takes no base URL; `custom` is any
 OpenAI-compatible endpoint with one.
 
+**The balance at the end of every answer.** `BOT_<KEY>_LLM_BALANCE=true`
+appends the account's remaining API balance to each final answer of a bot on
+DeepSeek or Moonshot — `(DeepSeek-Guthaben: 18.42 USD)`. A loopback proxy
+(module `apiproxy`, one instance per provider) sits between the bot and the
+provider, forwards every request unchanged with the bot's own key, and, when a
+turn ends as a message rather than a tool call, adds the line; the balance
+endpoint is free and cached for `API_PROXY_CACHE` seconds. Tool-call turns are
+untouched. The footer lands in the bot's history as a dozen tokens per turn,
+which is the whole cost.
+
 **A bot's sub-agents may run elsewhere.** The agent's `delegate_task` tool
 hands work to sub-agents, which inherit the bot's tools. With
 `BOT_<KEY>_DELEGATION_ENDPOINT=<n>` they run on the global `LLM_ENDPOINT_<n>`
@@ -1359,6 +1369,12 @@ with `m365_share_read` (text of a PDF or Word file) or `m365_share_download`
 (photos, scans) through Graph's sharing endpoint — the scope `Files.Read.All`
 is declared and consented by the run for it. Links the agent's account cannot
 open (not shared with it) fail with Graph's own `accessDenied`.
+
+### The balance line says `unbekannt`
+
+The proxy could not reach the provider's balance endpoint with the bot's key:
+`journalctl -u <service>-balance-deepseek` names the reason. The answer itself
+was delivered; the balance is fetched again after `API_PROXY_CACHE` seconds.
 
 ### `assistant: the mailbox … is not readable by … yet`
 

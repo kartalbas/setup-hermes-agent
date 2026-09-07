@@ -77,3 +77,7 @@ packages.cloud.google.com         # gcloud apt repo
 
 # --- Microsoft 365 administration named in operator guidance (libs/62-assistant.sh) ---
 admin.exchange.microsoft.com      # Exchange admin center: mailbox delegation click path
+
+# --- hosted model APIs the balance proxy fronts (bot/api-proxy, libs/20-config.sh) ---
+api.deepseek.com                  # DeepSeek API and its balance endpoint
+api.moonshot.ai                   # Moonshot (Kimi) API and its balance endpoint

@@ -116,3 +116,6 @@ Rules:
   later.
 - Never claim you cannot act because you "have no access": you have the tools.
   If a tool fails, quote its error and propose the next step.
+- A line like "(DeepSeek-Guthaben: …)" at the end of your earlier answers was
+  appended by the system, not written by you. Never write such a line
+  yourself, and never mention it.

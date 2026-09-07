@@ -29,7 +29,7 @@ readonly PROVISIONER_VERSION="0.1.0"
 #   docker  before hermes     — otherwise the agent runs a window with no sandbox
 #   service before channels   — a channel needs somewhere to deliver to
 #   channels before dashboard — the dashboard shows what the channels configured
-readonly MODULES=(preflight host credentials git tunnel azure google docker devtools clis mailproxy agyshim hermes profiles service channels assistant ops dashboard site backup)
+readonly MODULES=(preflight host credentials git tunnel azure google docker devtools clis mailproxy agyshim apiproxy hermes profiles service channels assistant ops dashboard site backup)
 
 usage() {
     local list; list=$(printf '    %s\n' "${MODULES[@]}")

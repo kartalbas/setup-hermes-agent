@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Balance proxy (`bot/api-proxy/balance_proxy.py`, module `apiproxy`): the remaining API balance appended to every final answer of a bot on DeepSeek or Moonshot (`BOT_<KEY>_LLM_BALANCE`)
+
 - Teams: carried adapter patch — a pasted URL rendered as a named link keeps its URL (`(link: …)`); M365 assistant: `m365_share_read` / `m365_share_download` open SharePoint and OneDrive links through Graph (`Files.Read.All`)
 - Assistants: every document filed below the root gets a Markdown twin with its recognized text (`text_md`, refused without it for photos; PDFs extracted); `m365_drive_missing_text`, `m365_drive_download`, `m365ctl companions [--apply]`, `googlectl companions`
 - Google assistant: the same worlds in Drive (`ASSISTANT_GOOGLE_ROOT_FOLDER` / `ASSISTANT_GOOGLE_WORLDS`, default the M365 values); `googlectl ensure-folder`, `migrate-worlds`, `move`

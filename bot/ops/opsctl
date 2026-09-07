@@ -161,6 +161,7 @@ modules_for() {                   # modules_for PATH… -> "a,b" or "all"
             libs/00-*|libs/10-*|libs/20-*|libs/25-*|install.sh) printf 'all\n'; return 0 ;;
             bot/roles/*|libs/65-*)              add profiles ;;
             bot/agy-shim/*|libs/35-*)           add agyshim ;;
+            bot/api-proxy/*|libs/36-*)          add apiproxy ;;
             bot/mcp/*|libs/62-*)                add assistant ;;
             bot/ops/*|libs/66-*)                add ops ;;
             bot/teams-app/*|bot/assets/*|libs/47-*|bot/VERSION) add azure ;;

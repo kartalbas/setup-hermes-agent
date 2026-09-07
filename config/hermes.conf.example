@@ -336,6 +336,10 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # BOT_SECRETARY_LLM_TOKEN_VAR="DEEPSEEK_API_KEY"
 # BOT_SECRETARY_LLM_REASONING_FIELD="reasoning_content"
 # BOT_SECRETARY_LLM_CONTEXT_WINDOW=512000
+# The remaining API balance at the end of every final answer, "(DeepSeek-Guthaben:
+# 18.42 USD)": a loopback proxy in front of the provider fetches it with the
+# same key (free) and appends it. DeepSeek and Moonshot only.
+# BOT_SECRETARY_LLM_BALANCE=true
 # Sub-agents (the delegate_task tool) may run on a different endpoint than the
 # bot itself — the number of a global LLM_ENDPOINT_n. A bot on an API model
 # keeps the analyses of your own mailboxes on the subscription bridge this way:
