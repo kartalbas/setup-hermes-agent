@@ -7,11 +7,13 @@
 #
 #   ./install.sh --dry-run       show every intended action, change nothing
 #   sudo ./install.sh            apply
+#   sudo ./install.sh --only channels,assistant   run named modules (preflight always)
 #   ./install.sh --help          full usage
 #
 # Everything below is a function definition until `main "$@"` on the last line.
 # That is deliberate: a truncated download then either fails to parse or defines
-# functions and exits without touching the system.
+# functions and exits without touching the system. The last line runs main only
+# when the file is executed, so the test suite can source the functions.
 
 set -Eeuo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -30,7 +32,8 @@ readonly PROVISIONER_VERSION="0.1.0"
 readonly MODULES=(preflight host credentials git tunnel azure google docker devtools clis mailproxy agyshim hermes profiles service channels assistant dashboard site backup)
 
 usage() {
-    cat <<'HELPTEXT'
+    local list; list=$(printf '    %s\n' "${MODULES[@]}")
+    sed "s|MODULE_LIST_PLACEHOLDER|${list//$'\n'/\\n}|" <<'HELPTEXT'
 Hermes Agent provisioner
 
 USAGE
@@ -42,6 +45,12 @@ OPTIONS
         --account FILE      which account     (default: config/bootstrap.conf)
         --channels FILE     channel config   (default: config/channels.conf)
     -n, --dry-run           print intended actions, change nothing
+    -m, --only MODULES      run only these modules (comma-separated, repeatable);
+                            preflight always runs. A named module must find what
+                            the earlier ones install — a missing prerequisite is
+                            an error, not a fallback
+        --skip MODULES      run everything except these
+        --list-modules      print the module names in run order and exit
     -y, --yes               assume yes; required when there is no terminal
         --log-level LEVEL   debug|info|warn|error
         --ref REF           install this revision instead of the configured one
@@ -50,13 +59,18 @@ OPTIONS
     -V, --version           print version and exit
     -h, --help              this text
 
-MODULES
-    preflight host credentials git tunnel docker devtools clis mailproxy agyshim hermes service channels dashboard backup
+MODULES (run order)
+MODULE_LIST_PLACEHOLDER
 
 EXAMPLES
     ./install.sh --dry-run
     sudo ./install.sh
+    sudo ./install.sh --only channels,assistant     # after a role or provider change
+    sudo ./install.sh --skip azure,tunnel,devtools  # nothing cloud-side changed
     sudo ./install.sh --uninstall
+
+Every module prints its duration at the end of the run, so the slow ones are
+easy to name in --skip.
 
 UPGRADING
     Raise the revision and re-run; the run is idempotent, so only what changed
@@ -105,9 +119,14 @@ parse_args() {
     LOG_LEVEL_OVERRIDE=""
     DO_UNINSTALL=false
     DO_PURGE=false
+    ONLY_MODULES=""
+    SKIP_MODULES=""
 
     while (( $# )); do
         case $1 in
+            -m|--only)       ONLY_MODULES="${ONLY_MODULES:+${ONLY_MODULES},}$2"; shift 2 ;;
+            --skip)          SKIP_MODULES="${SKIP_MODULES:+${SKIP_MODULES},}$2"; shift 2 ;;
+            --list-modules)  printf '%s\n' "${MODULES[@]}"; exit 0 ;;
             -c|--config)     CONFIG_FILE=$2; shift 2 ;;
             --channels)      CHANNELS_FILE=$2; shift 2 ;;
             --install)       INSTALL_FILE=$2; shift 2 ;;
@@ -136,18 +155,55 @@ load_libraries() {
     done
 }
 
+# --only / --skip: names checked against MODULES, canonical order kept.
+# preflight always runs — it is the check that the configuration is sane and
+# the ports are ours, and it costs seconds.
+join_words() { local IFS=' '; printf '%s' "$*"; }   # IFS is newline/tab in this program
+
+module_known() {
+    local m
+    for m in "${MODULES[@]}"; do [[ $m == "$1" ]] && return 0; done
+    return 1
+}
+
+selected_modules() {              # -> the modules this run executes, in order
+    local IFS=$' ,\t\n' m only=() skip=() out=()
+    for m in ${ONLY_MODULES:-}; do module_known "$m" || die "unknown module '${m}' — modules: $(join_words "${MODULES[@]}")"; only+=("$m"); done
+    for m in ${SKIP_MODULES:-}; do module_known "$m" || die "unknown module '${m}' — modules: $(join_words "${MODULES[@]}")"; skip+=("$m"); done
+    for m in "${MODULES[@]}"; do
+        if (( ${#only[@]} > 0 )) && [[ $m != preflight ]]; then
+            printf '%s\n' "${only[@]}" | grep -qx "$m" || continue
+        fi
+        if (( ${#skip[@]} > 0 )) && printf '%s\n' "${skip[@]}" | grep -qx "$m"; then
+            [[ $m == preflight ]] || continue
+        fi
+        out+=("$m")
+    done
+    printf '%s\n' "${out[@]}"
+}
+
 run_modules() {
-    local name fn
-    for name in "${MODULES[@]}"; do
+    local name fn started ms
+    local -a selected=()
+    while IFS= read -r name; do [[ -n $name ]] && selected+=("$name"); done < <(selected_modules)
+    if (( ${#selected[@]} < ${#MODULES[@]} )); then
+        log_info "modules        $(join_words "${selected[@]}")  (selected; everything else is left as it is)"
+    fi
+    MODULE_TIMES=()
+    for name in "${selected[@]}"; do
         fn="${name}_apply"
         if ! declare -F "$fn" >/dev/null 2>&1; then
-            die "module '${name}' has no ${fn}() — src/ is incomplete"
+            die "module '${name}' has no ${fn}() — libs/ is incomplete"
         fi
 
         CURRENT_MODULE=$name
+        started=$(date +%s%N)
         "$fn"
+        ms=$(( ($(date +%s%N) - started) / 1000000 ))
+        MODULE_TIMES+=("${name} ${ms}")
         CURRENT_MODULE=""
     done
+    report_timing
 
     if (( ${#DEFERRED_FAILURES[@]} > 0 )); then
         local f
@@ -166,6 +222,20 @@ run_uninstall() {
     CURRENT_MODULE=uninstall
     uninstall_apply
     CURRENT_MODULE=""
+}
+
+# Where the time went — one line per module, slowest first, so a slow module
+# has a name and --skip has an argument.
+report_timing() {
+    local entry total=0 ms
+    (( ${#MODULE_TIMES[@]} > 0 )) || return 0
+    for entry in "${MODULE_TIMES[@]}"; do total=$(( total + ${entry##* } )); done
+    printf '\n' >&2
+    log_info "time           $(( total / 1000 ))s in total —"
+    while IFS= read -r entry; do
+        ms=${entry##* }
+        log_info "  $(printf '%-12s %5d.%01ds' "${entry%% *}" $(( ms / 1000 )) $(( (ms % 1000) / 100 )))"
+    done < <(printf '%s\n' "${MODULE_TIMES[@]}" | sort -k2 -n -r | head -n 8)
 }
 
 report_outcome() {
@@ -190,6 +260,9 @@ main() {
     load_libraries
 
     trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
+
+    # A misspelt module name should fail before anything is read or locked.
+    selected_modules >/dev/null
 
     config_defaults
     # bootstrap.conf first: it names the account, and both scripts read the same
@@ -234,4 +307,4 @@ main() {
     report_outcome
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

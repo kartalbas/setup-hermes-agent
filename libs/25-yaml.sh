@@ -136,3 +136,27 @@ PY
         chown "${SERVICE_USER}:${SERVICE_GROUP}" "$target" 2>/dev/null || true
     fi
 }
+
+# yaml_get KEY — the current value of a dotted key in config.yaml, or nothing.
+# A PyYAML read costs a python start; the agent's own `config set` costs the
+# whole agent's import — a hundred times more, four bots times every key on
+# every run. Bools print lower-case, so "true" compares with "true".
+yaml_get() {
+    local target py
+    target=$(yaml_config_path)
+    [[ -f $target ]] || return 0
+    py=$(_yaml_python) || return 0
+    HERMES_YAML_TARGET=$target HERMES_YAML_KEY=$1 "$py" - <<'PY' 2>/dev/null || true
+import os, yaml
+with open(os.environ["HERMES_YAML_TARGET"]) as fh:
+    cur = yaml.safe_load(fh) or {}
+for part in os.environ["HERMES_YAML_KEY"].split("."):
+    if not isinstance(cur, dict) or part not in cur:
+        raise SystemExit(0)
+    cur = cur[part]
+if isinstance(cur, bool):
+    print(str(cur).lower())
+elif cur is not None and not isinstance(cur, (dict, list)):
+    print(cur)
+PY
+}

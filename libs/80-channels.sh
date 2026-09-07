@@ -198,8 +198,16 @@ _config_set() {
         log_info "[dry-run] config set ${key} = ${value}"
         return 0
     fi
+    # Read first: the agent's CLI takes seconds per call, and most keys are
+    # already right on every run after the first.
+    local current; current=$(yaml_get "$key")
+    if [[ $current == "$value" || $current == "${value,,}" ]]; then
+        log_skip "${key} already ${value}"
+        return 0
+    fi
     hermes_cli config set "$key" "$value" >/dev/null 2>&1 ||
         log_warn "could not set ${key}; set it by hand if the agent needs it"
+    mark_changed
 }
 
 # ---------------------------------------------------------------------------

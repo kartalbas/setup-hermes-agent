@@ -918,6 +918,23 @@ sudo ./install.sh --uninstall    # remove service and code, keep the agent's sta
 sudo ./install.sh --uninstall --purge   # also remove state and the account
 ```
 
+**Running part of it.** A full run touches every module, and the cloud-side
+ones (Azure, tunnel, developer tools, Google) spend most of the time asking
+APIs whether anything changed. After a role, provider or channel change, name
+what you need:
+
+```bash
+sudo ./install.sh --only channels,assistant      # preflight always runs first
+sudo ./install.sh --skip azure,tunnel,devtools   # everything but the slow cloud checks
+./install.sh --list-modules                      # the names, in run order
+```
+
+Modules run in their canonical order whatever order you name them. A named
+module must find what the earlier ones installed; a missing prerequisite is an
+error, not a fallback — `--only channels` on a host with no agent fails and says
+so. Every run ends with the time each module took, slowest first, so a slow
+module has a name to put in `--skip`.
+
 **Upgrading.** Raise `HERMES_REF` in `config/hermes.conf`, mirror, re-run.
 
 > **Never run the agent's own updater.** It checks the tree back out onto the
