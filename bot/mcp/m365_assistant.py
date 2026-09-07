@@ -103,8 +103,9 @@ def world_check(path: str, root: str, worlds: Dict[str, str], is_folder: bool = 
 def plan_world_targets(files: List[str], root: str, worlds: Dict[str, str], default: Optional[str] = None) -> List[Tuple[str, str]]:
     """Where existing files below the root (paths relative to it, not yet in a
     world) go: into DEFAULT (the first world unless given), or into the world
-    whose name a path segment already carries; the file name gets the suffix
-    unless it has it. Returns (source, target) pairs with full paths."""
+    that a folder name or a word in the file name already carries ("privat");
+    the file name gets the suffix unless it has it. Returns (source, target)
+    pairs with full paths."""
     if not worlds:
         return []
     names = list(worlds)
@@ -121,6 +122,11 @@ def plan_world_targets(files: List[str], root: str, worlds: Dict[str, str], defa
                 world, hit_at = hit, i
                 break
         stem, ext = _split_name(parts[-1])
+        if hit_at is None:
+            words = stem.lower().replace("_", " ").replace("-", " ").split()
+            hint = next((w for w in names if any(x.startswith(w.lower()[:4]) for x in words)), None)
+            if hint:
+                world = hint
         name = parts[-1] if stem.endswith(worlds[world]) else f"{stem}{worlds[world]}{ext}"
         folders = [p for i, p in enumerate(parts[:-1]) if i != hit_at]     # the segment that named the world is the world
         plan.append((f"{root}/{rel.strip('/')}", "/".join([root, world] + folders + [name])))
@@ -946,6 +952,20 @@ def main(argv: List[str]) -> int:
                           "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path,
                           "read_mailboxes": auth.read_mailboxes}))
         return 0 if ok else 1
+    if cmd == "move":
+        # move SOURCE TARGET — one file or folder, target folders created; the
+        # worlds rule applies as it does for the bot.
+        if len(argv) < 4:
+            raise SystemExit("usage: move SOURCE TARGET")
+        graph = Graph(auth, tz)
+        src, dst = argv[2].strip("/"), argv[3].strip("/")
+        item = graph.call("GET", graph.drive_path(src), params={"$select": "id,name,folder"})
+        world_check(dst, auth.root_folder, auth.worlds, is_folder="folder" in item)
+        folder, _, name = dst.rpartition("/")
+        parent = graph.ensure_folder(folder) if folder else {"id": graph.call("GET", "/me/drive/root", params={"$select": "id"})["id"]}
+        moved = graph.call("PATCH", f"/me/drive/items/{item['id']}", json_body={"parentReference": {"id": parent["id"]}, "name": name})
+        print(json.dumps(_item_shape(moved)))
+        return 0
     if cmd == "migrate-worlds":
         # migrate-worlds [--apply] [--default=World] — existing files below the
         # root folder that are not in a world yet: show where they would go

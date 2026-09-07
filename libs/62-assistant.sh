@@ -324,7 +324,7 @@ _assistant_m365_wrapper() {
     write_file "$(assistant_m365ctl)" 0755 <<EOF
 #!/usr/bin/env bash
 # Runs the Microsoft 365 assistant's commands with its configured environment:
-#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | check-mailbox ADDRESS | migrate-worlds [--apply] | tools | serve
+#   m365ctl status | login | ensure-folder PATH [EMAILS [read|write]] | ensure-mail-rule ALIAS FOLDER | check-mailbox ADDRESS | migrate-worlds [--apply] | move SOURCE TARGET | tools | serve
 set -euo pipefail
 set -a; . "$(assistant_m365_env_file)"; set +a
 exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/m365_assistant.py" "\$@"

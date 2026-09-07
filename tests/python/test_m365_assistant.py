@@ -382,11 +382,13 @@ class Worlds(unittest.TestCase):
 
     def test_existing_files_are_planned_into_the_default_world_with_the_suffix(self):
         plan = m365.plan_world_targets(["Timesheets/Acme/2026-09.csv", "Letters/2026/2026-09-01 notice_bus.pdf",
-                                        "Privat/Insurance/policy.pdf", "loose.txt"], "Secretary", self.W, "Business")
+                                        "Privat/Insurance/policy.pdf", "loose.txt",
+                                        "Letters/2026/2026-08-28 tax office papers privat.jpg"], "Secretary", self.W, "Business")
         self.assertEqual(dict(plan), {
             "Secretary/Timesheets/Acme/2026-09.csv": "Secretary/Business/Timesheets/Acme/2026-09_bus.csv",
             "Secretary/Letters/2026/2026-09-01 notice_bus.pdf": "Secretary/Business/Letters/2026/2026-09-01 notice_bus.pdf",
             "Secretary/Privat/Insurance/policy.pdf": "Secretary/Private/Insurance/policy_pri.pdf",
             "Secretary/loose.txt": "Secretary/Business/loose_bus.txt",
+            "Secretary/Letters/2026/2026-08-28 tax office papers privat.jpg": "Secretary/Private/Letters/2026/2026-08-28 tax office papers privat_pri.jpg",
         })
         self.assertEqual(m365.plan_world_targets(["x.pdf"], "Secretary", {}, None), [])
