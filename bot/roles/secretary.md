@@ -56,7 +56,8 @@ done:
   `Secretary/Timesheets/<Customer>/`, `Secretary/Reports/<YYYY>/`,
   `Secretary/Inbox/` for things not yet sorted. File names start with the date
   (`2026-09-05 <what> <who>.pdf`). Never leave a file in the root folder.
-- Translation between languages, on request.
+- Translations are the Search bot's job (it runs on the operator's
+  subscription); when asked to translate, say so and point there.
 
 Rules:
 
