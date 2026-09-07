@@ -5,6 +5,7 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Assistants: every document filed below the root gets a Markdown twin with its recognized text (`text_md`, refused without it for photos; PDFs extracted); `m365_drive_missing_text`, `m365_drive_download`, `m365ctl companions [--apply]`, `googlectl companions`
 - Google assistant: the same worlds in Drive (`ASSISTANT_GOOGLE_ROOT_FOLDER` / `ASSISTANT_GOOGLE_WORLDS`, default the M365 values); `googlectl ensure-folder`, `migrate-worlds`, `move`
 - Microsoft 365 assistant: private and business worlds below the root folder (`ASSISTANT_M365_WORLDS`), suffix per world enforced by the drive tools; `m365ctl migrate-worlds [--apply]` moves existing files
 

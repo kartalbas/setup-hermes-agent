@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from assistant_common import (  # noqa: E402
     HttpError, McpServer, TokenStore, env_required, extract_text, form_post, http, log, unb64,
-    parse_worlds, plan_world_targets, world_check,
+    parse_worlds, plan_world_targets, world_check, is_document, companion_path, recognized_text, companion_markdown,
 )
 
 VERSION = "0.1.0"
@@ -298,6 +298,9 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
     WORLD_NOTE = (f" Under {g.auth.root_folder}/ the next segment is the world ({', '.join(g.auth.worlds)}) and the file name ends with its suffix ("
                   + ", ".join(f"{w}: '{sfx}'" for w, sfx in g.auth.worlds.items()) + ")." if g.auth.worlds and g.auth.root_folder else "")
     ROOT, WORLDS = g.auth.root_folder, g.auth.worlds
+    TEXT_NOTE = (f" A document (scan, photo, PDF, Word) under {ROOT}/ is filed together with a Markdown twin of the same name holding its "
+                 "recognized text: pass it as text_md (read a photo with your vision first; a PDF with a text layer is extracted for you)." if ROOT else "")
+    TEXT_MD = {"text_md": {"type": "string", "description": "the document's recognized text, filed as <same name>.md next to it; required for photos and scans"}}
 
     # The Gmail read tools take `account` only when read accounts exist; the
     # write tools never do — they act as the primary account.
@@ -522,11 +525,12 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
         out["path"] = path
         return out
 
-    @srv.tool("google_drive_upload", "Create or replace a file in Drive by path (folders are created). Text or base64, up to 5 MB." + WORLD_NOTE,
+    @srv.tool("google_drive_upload", "Create or replace a file in Drive by path (folders are created). Text or base64, up to 5 MB." + WORLD_NOTE + TEXT_NOTE,
               {"properties": {"path": {"type": "string"}, "content": {"type": "string"}, "content_base64": {"type": "string"},
-                              "content_type": {"type": "string"}}, "required": ["path"]})
-    def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, content_type: Optional[str] = None) -> Dict[str, Any]:
-        world_check(path, ROOT, WORLDS)
+                              "content_type": {"type": "string"}, **TEXT_MD}, "required": ["path"]})
+    def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, content_type: Optional[str] = None,
+                     text_md: Optional[str] = None) -> Dict[str, Any]:
+        world = world_check(path, ROOT, WORLDS)
         if (content is None) == (content_base64 is None):
             raise ValueError("give exactly one of content or content_base64")
         data = content.encode("utf-8") if content is not None else unb64(content_base64 or "")
@@ -535,6 +539,8 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
         folder, _, name = path.strip("/").rpartition("/")
         if not name:
             raise ValueError("path must name a file")
+        # The twin's text is checked BEFORE anything is written: no document without its text.
+        twin_text = recognized_text(name, data, text_md) if (world is not None and is_document(name)) else None
         parent = g.folder_id(folder, create=True) if folder else "root"
         ctype = content_type or mimetypes.guess_type(name)[0] or ("text/plain" if content is not None else "application/octet-stream")
         existing = g.call("GET", f"{DRIVE}/files", params={"q": f"'{parent}' in parents and name = '{_q(name)}' and trashed = false", "fields": "files(id)", "pageSize": 1}).get("files") or []
@@ -548,7 +554,18 @@ def build_server(g: Google, readers: Optional[Dict[str, Google]] = None) -> McpS
         out = _file_shape(f)
         out["path"] = "/" + path.strip("/")
         out["replaced"] = bool(existing)
+        if twin_text is not None:
+            drive_upload(companion_path(path), content=companion_markdown(name, world, twin_text), content_type="text/markdown")
+            out["companion"] = "/" + companion_path(path).strip("/")
         return out
+
+    @srv.tool("google_drive_missing_text", f"Documents below {ROOT or 'the root folder'} in Drive that have no Markdown twin yet.",
+              {"properties": {"path": {"type": "string", "description": "start folder; default the root folder"}}})
+    def drive_missing_text(path: str = "") -> Dict[str, Any]:
+        start = (path or ROOT).strip("/")
+        if not start:
+            raise ValueError("no root folder configured; give a path")
+        return {"path": "/" + start, "missing": missing_companions(g, start)}
 
     @srv.tool("google_drive_mkdir", "Create a folder path in Drive (existing parts are kept).", {"properties": {"path": {"type": "string"}}, "required": ["path"]})
     def drive_mkdir(path: str) -> Dict[str, Any]:
@@ -614,6 +631,30 @@ def _iso(dt: str, tz: str) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def missing_companions(g: "Google", start: str) -> List[str]:
+    """Documents below START in Drive whose `.md` twin does not exist."""
+    out: List[str] = []
+
+    def walk(folder_id: str, rel: str) -> None:
+        r = g.call("GET", f"{DRIVE}/files", params={"q": f"'{folder_id}' in parents and trashed = false",
+                                                    "fields": "files(id,name,mimeType)", "pageSize": 200})
+        items = r.get("files") or []
+        names = {(i.get("name") or "") for i in items}
+        for item in items:
+            name = item.get("name") or ""
+            child = f"{rel}/{name}"
+            if item.get("mimeType") == FOLDER_MIME:
+                walk(item["id"], child)
+            elif is_document(name) and companion_path(name) not in names:
+                out.append(child)
+
+    try:
+        walk(g.folder_id(start), start.strip("/"))
+    except RuntimeError:
+        return []
+    return out
+
 
 def drive_move_item(g: "Google", f: Dict[str, Any], dst: str) -> Dict[str, Any]:
     """Move (and rename) one Drive item to the path DST; folders are created."""
@@ -682,6 +723,14 @@ def main(argv: List[str]) -> int:
         if len(argv) < 3:
             raise SystemExit("usage: ensure-folder PATH")
         print(json.dumps({"path": "/" + argv[2].strip("/"), "id": Google(auth, tz).folder_id(argv[2], create=True)}))
+        return 0
+    if cmd == "companions":
+        if not auth.root_folder:
+            raise SystemExit("no root folder configured (GOOGLE_ROOT_FOLDER)")
+        missing = missing_companions(Google(auth, tz), auth.root_folder)
+        for m in missing:
+            print(f"missing twin: {m}")
+        print(f"{len(missing)} document(s) without a text twin" if missing else "every document below the root has its text twin")
         return 0
     if cmd == "move":
         if len(argv) < 4:

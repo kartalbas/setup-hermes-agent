@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import sys
 import time
 import urllib.parse
@@ -44,7 +45,9 @@ WELL_KNOWN_FOLDERS = {"inbox", "archive", "deleteditems", "drafts", "sentitems",
 FOLDER_ALIASES = {"deleted": "deleteditems", "trash": "deleteditems", "sent": "sentitems", "junk": "junkemail", "spam": "junkemail"}
 
 
-from assistant_common import parse_worlds, world_check, world_of, plan_world_targets  # noqa: E402,F401  (shared with the Google server)
+from assistant_common import (  # noqa: E402,F401  (shared with the Google server)
+    parse_worlds, world_check, world_of, plan_world_targets, is_document, companion_path, recognized_text, companion_markdown,
+)
 
 
 def parse_list(value: str) -> List[str]:
@@ -308,6 +311,47 @@ def upload_session(graph: "Graph", path: str, local: str, size: int, if_exists: 
     return item
 
 
+def missing_companions(graph: "Graph", start: str) -> List[str]:
+    """Documents below START whose `.md` twin does not exist, as paths."""
+    out: List[str] = []
+
+    def walk(path: str) -> None:
+        r = graph.call("GET", f"{graph.drive_path(path)}/children", params={"$top": 200, "$select": "id,name,folder,file"})
+        names = {(i.get("name") or "") for i in r.get("value") or []}
+        for item in r.get("value") or []:
+            name = item.get("name") or ""
+            child = f"{path}/{name}"
+            if "folder" in item:
+                walk(child)
+            elif is_document(name) and companion_path(name) not in names:
+                out.append(child)
+
+    walk(start.strip("/"))
+    return out
+
+
+def companions_apply(graph: "Graph", paths: List[str], root: str, worlds: Dict[str, str]) -> Tuple[List[str], List[str]]:
+    """Create the twin for every document whose text the server can extract
+    (PDF, Word); return (done, needs_eyes) — the rest waits for the model."""
+    done: List[str] = []; eyes: List[str] = []
+    for path in paths:
+        name = path.rsplit("/", 1)[-1]
+        try:
+            meta = graph.call("GET", graph.drive_path(path), params={"$select": "id,name,@microsoft.graph.downloadUrl"})
+            url = meta.get("@microsoft.graph.downloadUrl")
+            data = graph.download(url) if url else graph.call("GET", f"/me/drive/items/{meta['id']}/content", raw=True)[0]
+            text = recognized_text(name, data, None)
+        except ValueError:
+            eyes.append(path)
+            continue
+        found = world_of(path, root, worlds) if worlds else None
+        world = found[0] if found else None
+        graph.call("PUT", f"{graph.drive_path(companion_path(path))}/content", data=companion_markdown(name, world, text).encode("utf-8"),
+                   content_type="text/markdown", params={"@microsoft.graph.conflictBehavior": "replace"})
+        done.append(companion_path(path))
+    return done, eyes
+
+
 def migrate_worlds_plan(graph: "Graph", root: str, worlds: Dict[str, str], default: Optional[str]) -> List[Tuple[str, str]]:
     """Every file below ROOT that is not inside a world folder, with its target."""
     files: List[str] = []
@@ -409,6 +453,19 @@ def build_server(graph: Graph) -> McpServer:
     WORLD_NOTE = (f" Under {graph.auth.root_folder}/ the next segment is the world ({', '.join(graph.auth.worlds)}) and the file name ends with its suffix ("
                   + ", ".join(f"{w}: '{sfx}'" for w, sfx in graph.auth.worlds.items()) + ")." if graph.auth.worlds and graph.auth.root_folder else "")
     ROOT, WORLDS = graph.auth.root_folder, graph.auth.worlds
+    TEXT_NOTE = (f" A document (scan, photo, PDF, Word) under {ROOT}/ is filed together with a Markdown twin of the same name holding its "
+                 "recognized text: pass it as text_md (read a photo with your vision first; a PDF with a text layer is extracted for you)." if ROOT else "")
+    TEXT_MD = {"text_md": {"type": "string", "description": "the document's recognized text, filed as <same name>.md next to it; required for photos and scans"}}
+
+    def file_companion(path: str, world: Optional[str], name: str, data: Optional[bytes], text_md: Optional[str], if_exists: str) -> Optional[str]:
+        """The twin for a document below the root — text checked BEFORE the
+        document itself is uploaded (see the callers), written right after."""
+        if world is None or not is_document(name):
+            return None
+        twin = companion_path(path)
+        graph.call("PUT", f"{graph.drive_path(twin)}/content", data=companion_markdown(name, world, recognized_text(name, data, text_md)).encode("utf-8"),
+                   content_type="text/markdown", params={"@microsoft.graph.conflictBehavior": if_exists})
+        return "/" + twin.strip("/")
 
     ATTENDEE = {"type": "object", "additionalProperties": False, "required": ["email"],
                 "properties": {"email": {"type": "string"}, "name": {"type": "string"},
@@ -743,11 +800,12 @@ def build_server(graph: Graph) -> McpServer:
         out["path"] = path
         return out
 
-    @srv.tool("m365_drive_upload", "Create or replace a file in OneDrive by path (folders are created). Text or base64 content, up to 4 MB." + WORLD_NOTE,
+    @srv.tool("m365_drive_upload", "Create or replace a file in OneDrive by path (folders are created). Text or base64 content, up to 4 MB." + WORLD_NOTE + TEXT_NOTE,
               {"properties": {"path": {"type": "string"}, "content": {"type": "string"}, "content_base64": {"type": "string"},
-                              "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}}, "required": ["path"]})
-    def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, if_exists: str = "replace") -> Dict[str, Any]:
-        world_check(path, ROOT, WORLDS)
+                              "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}, **TEXT_MD}, "required": ["path"]})
+    def drive_upload(path: str, content: Optional[str] = None, content_base64: Optional[str] = None, if_exists: str = "replace",
+                     text_md: Optional[str] = None) -> Dict[str, Any]:
+        world = world_check(path, ROOT, WORLDS)
         if (content is None) == (content_base64 is None):
             raise ValueError("give exactly one of content or content_base64")
         data = content.encode("utf-8") if content is not None else unb64(content_base64 or "")
@@ -756,20 +814,27 @@ def build_server(graph: Graph) -> McpServer:
         folder, _, name = path.strip("/").rpartition("/")
         if not name:
             raise ValueError("path must name a file")
+        if world is not None and is_document(name):
+            recognized_text(name, data, text_md)          # refuse before anything is written
         if folder:
             graph.ensure_folder(folder)
         item = graph.call("PUT", f"{graph.drive_path(path)}/content", data=data, content_type="application/octet-stream",
                           params={"@microsoft.graph.conflictBehavior": if_exists})
-        return _item_shape(item)
+        out = _item_shape(item)
+        twin = file_companion(path, world, name, data, text_md, if_exists)
+        if twin:
+            out["companion"] = twin
+        return out
 
     @srv.tool("m365_drive_upload_file",
               "Upload a file that exists on this machine (e.g. a PDF you generated) to OneDrive by path, then delete the local copy. "
-              "Use this for every document you produce: nothing stays on the server. Large files are uploaded in chunks." + WORLD_NOTE,
+              "Use this for every document you produce: nothing stays on the server. Large files are uploaded in chunks." + WORLD_NOTE + TEXT_NOTE,
               {"properties": {"local_path": {"type": "string"}, "path": {"type": "string", "description": "destination path in OneDrive, e.g. <root>/<World>/Reports/2026/2026-09-06 trip plan<suffix>.pdf"},
-                              "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}, "keep_local": {"type": "boolean"}},
+                              "if_exists": {"type": "string", "enum": ["replace", "fail", "rename"]}, "keep_local": {"type": "boolean"}, **TEXT_MD},
                "required": ["local_path", "path"]})
-    def drive_upload_file(local_path: str, path: str, if_exists: str = "replace", keep_local: bool = False) -> Dict[str, Any]:
-        world_check(path, ROOT, WORLDS)
+    def drive_upload_file(local_path: str, path: str, if_exists: str = "replace", keep_local: bool = False,
+                          text_md: Optional[str] = None) -> Dict[str, Any]:
+        world = world_check(path, ROOT, WORLDS)
         local = os.path.expanduser(local_path)
         if not os.path.isfile(local):
             raise ValueError(f"no such file on this machine: {local_path}")
@@ -777,6 +842,11 @@ def build_server(graph: Graph) -> McpServer:
         folder, _, name = path.strip("/").rpartition("/")
         if not name:
             raise ValueError("path must name a file")
+        twin_data: Optional[bytes] = None
+        if world is not None and is_document(name):
+            with open(local, "rb") as fh:
+                twin_data = fh.read() if size <= 50 * 1024 * 1024 else None
+            recognized_text(name, twin_data, text_md)     # refuse before anything is written
         if folder:
             graph.ensure_folder(folder)
         if size <= UPLOAD_LIMIT:
@@ -787,10 +857,34 @@ def build_server(graph: Graph) -> McpServer:
         else:
             item = upload_session(graph, path, local, size, if_exists)
         out = _item_shape(item)
+        twin = file_companion(path, world, name, twin_data, text_md, if_exists)
+        if twin:
+            out["companion"] = twin
         if not keep_local:
             os.remove(local)
             out["local_removed"] = True
         return out
+
+    @srv.tool("m365_drive_download", "Download a OneDrive file to this machine (a temporary path is returned) — to read a photo or scan "
+              "with your vision before filing its text. Remove the local copy when done.",
+              {"properties": {"path": {"type": "string"}}, "required": ["path"]})
+    def drive_download(path: str) -> Dict[str, Any]:
+        meta = graph.call("GET", graph.drive_path(path), params={"$select": "id,name,size,file,@microsoft.graph.downloadUrl"})
+        url = meta.get("@microsoft.graph.downloadUrl")
+        data = graph.download(url) if url else graph.call("GET", f"/me/drive/items/{meta['id']}/content", raw=True)[0]
+        local_dir = tempfile.mkdtemp(prefix="onedrive-")
+        local = os.path.join(local_dir, meta.get("name") or "file")
+        with open(local, "wb") as fh:
+            fh.write(data)
+        return {"path": "/" + path.strip("/"), "local_path": local, "size": len(data)}
+
+    @srv.tool("m365_drive_missing_text", f"Documents below {ROOT or 'the root folder'} that have no Markdown twin yet (scans, photos, PDFs filed without their text).",
+              {"properties": {"path": {"type": "string", "description": "start folder; default the root folder"}}})
+    def drive_missing_text(path: str = "") -> Dict[str, Any]:
+        start = (path or ROOT).strip("/")
+        if not start:
+            raise ValueError("no root folder configured; give a path")
+        return {"path": "/" + start, "missing": missing_companions(graph, start)}
 
     @srv.tool("m365_drive_mkdir", "Create a folder path in OneDrive (existing parts are kept).",
               {"properties": {"path": {"type": "string"}}, "required": ["path"]})
@@ -871,6 +965,28 @@ def main(argv: List[str]) -> int:
                           "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path,
                           "read_mailboxes": auth.read_mailboxes}))
         return 0 if ok else 1
+    if cmd == "companions":
+        # companions [--apply] — documents below the root without a Markdown
+        # twin; --apply writes the twin where the text can be extracted (PDF,
+        # Word) and lists what needs the Secretary's eyes (photos, scans).
+        if not auth.root_folder:
+            raise SystemExit("no root folder configured (M365_ROOT_FOLDER)")
+        graph = Graph(auth, tz)
+        missing = missing_companions(graph, auth.root_folder)
+        if not missing:
+            print("every document below the root has its text twin")
+            return 0
+        if "--apply" in argv[2:]:
+            done, eyes = companions_apply(graph, missing, auth.root_folder, auth.worlds)
+            for d in done:
+                print(f"written: {d}")
+            for e in eyes:
+                print(f"needs the Secretary's eyes (image or no text layer): {e}")
+        else:
+            for m in missing:
+                print(f"missing twin: {m}")
+            print(f"{len(missing)} document(s); re-run with --apply to write the twins the server can extract")
+        return 0
     if cmd == "move":
         # move SOURCE TARGET — one file or folder, target folders created; the
         # worlds rule applies as it does for the bot.

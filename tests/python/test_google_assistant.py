@@ -170,3 +170,18 @@ class Worlds(unittest.TestCase):
         srv = ga.build_server(FakeGoogle())
         self.assertNotIn("FILING", srv.instructions)
         self.assertNotIn("world", tool(srv, "google_drive_upload").spec()["description"])
+
+
+class Companions(unittest.TestCase):
+    def test_a_photo_needs_its_text_and_gets_a_twin_in_drive(self):
+        g = FakeGoogle({("GET", ga.DRIVE + "/files"): {"files": [{"id": "f1", "name": "x"}]}, ("POST", ga.DRIVE_UPLOAD): {"id": "n"}, ("PATCH", ga.DRIVE_UPLOAD): {"id": "n"}})
+        g.auth = mock.Mock(account="agent@gmail.example", root_folder="Secretary", worlds={"Business": "_bus", "Private": "_pri"})
+        srv = ga.build_server(g)
+        with self.assertRaises(ValueError):
+            tool(srv, "google_drive_upload").fn(path="Secretary/Private/Letters/2026/scan_pri.jpg", content_base64="AAAA")
+        self.assertEqual(g.calls, [])
+        out = tool(srv, "google_drive_upload").fn(path="Secretary/Private/Letters/2026/scan_pri.jpg", content_base64="AAAA", text_md="the text")
+        uploads = [c for c in g.calls if c[1].startswith(ga.DRIVE_UPLOAD)]
+        self.assertEqual(len(uploads), 2)
+        self.assertIn(b"scan_pri.md", uploads[1][2]["data"]); self.assertIn(b"the text", uploads[1][2]["data"])
+        self.assertEqual(out["companion"], "/Secretary/Private/Letters/2026/scan_pri.md")

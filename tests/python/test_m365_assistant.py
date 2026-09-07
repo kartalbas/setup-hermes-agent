@@ -392,3 +392,49 @@ class Worlds(unittest.TestCase):
             "Secretary/Letters/2026/2026-08-28 tax office papers privat.jpg": "Secretary/Private/Letters/2026/2026-08-28 tax office papers privat_pri.jpg",
         })
         self.assertEqual(m365.plan_world_targets(["x.pdf"], "Secretary", {}, None), [])
+
+
+class Companions(unittest.TestCase):
+    """A filed document comes with its text twin — or not at all."""
+    W = {"Business": "_bus", "Private": "_pri"}
+
+    def server(self):
+        # every folder lookup finds a folder, so ensure_folder creates nothing
+        g = FakeGraph({("GET", "/me/drive/root"): {"id": "dir", "name": "dir", "folder": {}}})
+        g.auth = mock.Mock(account="agent@example.com", read_mailboxes=[], root_folder="Secretary", worlds=self.W)
+        return g, m365.build_server(g)
+
+    def test_a_photo_without_its_text_is_refused_before_anything_is_written(self):
+        g, srv = self.server()
+        with self.assertRaises(ValueError) as cm:
+            next(t for t in srv.tools if t.name == "m365_drive_upload").fn(path="Secretary/Private/Letters/2026/scan_pri.jpg", content_base64="AAAA")
+        self.assertIn("text_md", str(cm.exception))
+        self.assertEqual(g.calls, [])
+
+    def test_a_photo_with_its_text_gets_a_markdown_twin_next_to_it(self):
+        g, srv = self.server()
+        out = next(t for t in srv.tools if t.name == "m365_drive_upload").fn(
+            path="Secretary/Private/Letters/2026/2026-09-07 tax_pri.jpg", content_base64="AAAA", text_md="Steuerverwaltung: Veranlagung 2025, Frist 30.09.")
+        puts = [c for c in g.calls if c[0] == "PUT"]
+        self.assertEqual(len(puts), 2)
+        self.assertIn("tax_pri.jpg:/content", puts[0][1])
+        self.assertIn("tax_pri.md:/content", puts[1][1])
+        body = puts[1][2]["data"].decode()
+        self.assertIn("# 2026-09-07 tax_pri.jpg", body); self.assertIn("- world: Private", body); self.assertIn("Frist 30.09.", body)
+        self.assertEqual(out["companion"], "/Secretary/Private/Letters/2026/2026-09-07 tax_pri.md")
+
+    def test_text_files_and_files_outside_the_root_need_no_twin(self):
+        g, srv = self.server()
+        up = next(t for t in srv.tools if t.name == "m365_drive_upload")
+        up.fn(path="Secretary/Business/Timesheets/Acme/2026-09_bus.csv", content="date,start")
+        up.fn(path="Elsewhere/photo.jpg", content_base64="AAAA")
+        self.assertEqual(len([c for c in g.calls if c[0] == "PUT"]), 2)
+
+    def test_companion_helpers(self):
+        self.assertEqual(common.companion_path("Secretary/Business/Letters/2026/a_bus.jpg"), "Secretary/Business/Letters/2026/a_bus.md")
+        self.assertTrue(common.is_document("x.PDF")); self.assertTrue(common.is_document("x.heic")); self.assertFalse(common.is_document("x.md"))
+        self.assertEqual(common.recognized_text("a.jpg", b"", "  hello "), "hello")
+        with self.assertRaises(ValueError):
+            common.recognized_text("a.png", b"", None)
+        md = common.companion_markdown("a_bus.jpg", "Business", "text")
+        self.assertTrue(md.startswith("# a_bus.jpg")); self.assertIn("- world: Business", md); self.assertTrue(md.endswith("text\n"))

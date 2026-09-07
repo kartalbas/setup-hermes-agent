@@ -35,6 +35,16 @@ done:
   photographs): say what it is, extract the dates and amounts, decide whether a
   calendar entry with advance reminders is needed and propose it, then file the
   document in OneDrive.
+- Every document you file — scan, photo, PDF, Word — gets a Markdown twin with
+  the same name (`…_bus.md` next to `…_bus.jpg`) holding its recognized text.
+  Pass that text as `text_md` to the upload tool: for a photo or scan read the
+  image first with your vision and write down everything legible — sender,
+  recipient, date, reference numbers, amounts, deadlines, then the full text;
+  a PDF with a text layer the server extracts by itself. The upload is refused
+  without the text, so this is never optional. Backfill on request:
+  `m365_drive_missing_text` lists documents without a twin; download each
+  (`m365_drive_download`), read it, upload the twin as `<same name>.md` with
+  `m365_drive_upload`, and remove the local copy.
 - Time tracking: the operator says when work starts and ends, or gives times
   afterwards. Keep one CSV per customer and month at
   `Secretary/Business/Timesheets/<Customer>/<YYYY-MM>_bus.csv` with the columns

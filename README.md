@@ -597,6 +597,16 @@ first world unless a folder name says otherwise, suffix added),
 `m365ctl migrate-worlds --apply --default=Business` does it. The run creates
 the world folders; the share is inherited from the root.
 
+**Every document with its text.** A scan, photo, PDF or Word file filed below
+the root is filed together with a Markdown twin of the same name
+(`2026-09-07 lease_bus.jpg` + `2026-09-07 lease_bus.md`) holding the recognized
+text — searchable, quotable, readable without the scan. The upload tools take it
+as `text_md`; a photo without it is refused, a PDF with a text layer is extracted
+by the server. `m365ctl companions` lists documents without a twin,
+`--apply` writes the twins the server can extract and names the photos and
+scans that need the Secretary's eyes (ask the bot to backfill them: it lists,
+downloads, reads and uploads). The same in Drive: `googlectl companions`.
+
 **Reading your own mailbox.** For receipts, invoices and letters that arrive in
 *your* mailbox rather than the agent's, list it in `ASSISTANT_M365_READ_MAILBOXES`
 (comma-separated). The agent then reads it — search, read, attachments,

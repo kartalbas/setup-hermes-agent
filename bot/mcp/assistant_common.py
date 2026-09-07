@@ -445,3 +445,54 @@ def plan_world_targets(files: List[str], root: str, worlds: Dict[str, str], defa
         folders = [p for i, p in enumerate(parts[:-1]) if i != hit_at]     # the segment that named the world is the world
         plan.append((f"{root}/{rel.strip('/')}", "/".join([root, world] + folders + [name])))
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Companion text: every document filed below the root gets a Markdown twin
+# with the same name holding the recognized text — searchable, quotable,
+# readable without opening the scan.
+# ---------------------------------------------------------------------------
+
+DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff", ".gif", ".bmp"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff", ".gif", ".bmp"}
+
+
+def _ext(name: str) -> str:
+    return ("." + name.rsplit(".", 1)[1].lower()) if "." in name.rsplit("/", 1)[-1] else ""
+
+
+def is_document(name: str) -> bool:
+    """A scan, photo, PDF or Word file — something whose text is not the file."""
+    return _ext(name) in DOCUMENT_EXTS
+
+
+def companion_path(path: str) -> str:
+    """The twin's path: same folder, same stem, `.md`."""
+    p = path.rstrip("/")
+    stem = p.rsplit(".", 1)[0] if "." in p.rsplit("/", 1)[-1] else p
+    return stem + ".md"
+
+
+def recognized_text(name: str, data: Optional[bytes], text_md: Optional[str]) -> str:
+    """The text that goes into the twin: what the caller recognized (text_md),
+    or, for a PDF or Word file with a text layer, what the file itself yields.
+    A photo or a scan without a text layer needs the caller's eyes — refused
+    with the reason, so nothing is filed without its text."""
+    if text_md and text_md.strip():
+        return text_md.strip()
+    ext = _ext(name)
+    if ext in IMAGE_EXTS or data is None:
+        raise ValueError(f"'{name}' is filed together with its recognized text: read the image first and pass it as text_md")
+    got = extract_text(name, data, max_chars=200000)
+    text = (got.get("text") or "").strip() if isinstance(got, dict) else ""
+    if not text:
+        raise ValueError(f"'{name}' has no text layer to extract: read it and pass the text as text_md")
+    return text
+
+
+def companion_markdown(name: str, world: Optional[str], text: str) -> str:
+    """The twin's content: a small header, then the recognized text."""
+    head = [f"# {name}", "", f"- source: {name}", f"- filed: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}"]
+    if world:
+        head.append(f"- world: {world}")
+    return "\n".join(head) + "\n\n" + text.rstrip() + "\n"
