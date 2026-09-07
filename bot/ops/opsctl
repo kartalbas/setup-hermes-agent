@@ -54,8 +54,12 @@ unit_line() {                     # unit_line UNIT -> "unit  active/enabled  sin
     printf '  %-34s %-9s %-9s %s\n' "$u" "${act:-?}" "${en:-?}" "${since:-}"
 }
 
-errors_24h() {                    # errors_24h UNIT -> count of ERROR/502 lines in the last 24 h
-    jctl -u "$1" --since '-24h' -q --no-pager 2>/dev/null | grep -cE ' ERROR |WARNING 502' || true
+errors_24h() {                    # errors_24h UNIT -> "N (M imap-eof)": ERROR/502 lines in the last 24 h, the known relay hiccup counted apart
+    local lines total eof
+    lines=$(jctl -u "$1" --since '-24h' -q --no-pager 2>/dev/null | grep -E ' ERROR |WARNING 502' || true)
+    total=$(grep -c . <<<"$lines" || true); eof=$(grep -c 'socket error: EOF' <<<"$lines" || true)
+    [[ -z $lines ]] && { printf '0'; return 0; }
+    printf '%s' "$total"; (( eof > 0 )) && printf ' (%s imap-eof)' "$eof"; return 0
 }
 
 cmd_status() {

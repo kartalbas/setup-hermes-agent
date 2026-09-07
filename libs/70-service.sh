@@ -52,6 +52,11 @@ _service_retire_default() {
         run systemctl disable --now "$default"
         run systemctl reset-failed "$default" || true
         mark_changed
+    elif systemctl is-failed --quiet "$default" 2>/dev/null; then
+        # Disabled, but still listed as failed from its last attempt to run:
+        # that is what every "failed units" check shows first. Clear it.
+        run systemctl reset-failed "$default"
+        log_ok "cleared the failed state of the retired ${default}"
     else
         log_skip "${default} already retired"
     fi
