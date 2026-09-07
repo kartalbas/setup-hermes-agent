@@ -965,6 +965,43 @@ def main(argv: List[str]) -> int:
                           "scopes": auth.store.data.get("scopes"), "token_file": auth.store.path,
                           "read_mailboxes": auth.read_mailboxes}))
         return 0 if ok else 1
+    if cmd == "download":
+        # download PATH LOCAL — one file to this machine (the operator's shell).
+        if len(argv) < 4:
+            raise SystemExit("usage: download PATH LOCAL")
+        graph = Graph(auth, tz)
+        meta = graph.call("GET", graph.drive_path(argv[2]), params={"$select": "id,name,size,@microsoft.graph.downloadUrl"})
+        url = meta.get("@microsoft.graph.downloadUrl")
+        data = graph.download(url) if url else graph.call("GET", f"/me/drive/items/{meta['id']}/content", raw=True)[0]
+        with open(argv[3], "wb") as fh:
+            fh.write(data)
+        print(json.dumps({"path": "/" + argv[2].strip("/"), "local": argv[3], "size": len(data)}))
+        return 0
+    if cmd == "upload":
+        # upload LOCAL PATH [TEXT_MD_FILE] — one file, under the worlds rule; a
+        # document needs its text twin (from the file named third, or extracted).
+        if len(argv) < 4:
+            raise SystemExit("usage: upload LOCAL PATH [TEXT_MD_FILE]")
+        graph = Graph(auth, tz)
+        local, dst = argv[2], argv[3].strip("/")
+        text_md = open(argv[4], encoding="utf-8").read() if len(argv) > 4 else None
+        with open(local, "rb") as fh:
+            data = fh.read()
+        world = world_check(dst, auth.root_folder, auth.worlds)
+        name = dst.rsplit("/", 1)[-1]
+        twin = recognized_text(name, data, text_md) if (world is not None and is_document(name)) else None
+        folder = dst.rpartition("/")[0]
+        if folder:
+            graph.ensure_folder(folder)
+        item = graph.call("PUT", f"{graph.drive_path(dst)}/content", data=data, content_type="application/octet-stream",
+                          params={"@microsoft.graph.conflictBehavior": "replace"})
+        out = _item_shape(item)
+        if twin is not None:
+            graph.call("PUT", f"{graph.drive_path(companion_path(dst))}/content", data=companion_markdown(name, world, twin).encode("utf-8"),
+                       content_type="text/markdown", params={"@microsoft.graph.conflictBehavior": "replace"})
+            out["companion"] = "/" + companion_path(dst)
+        print(json.dumps(out))
+        return 0
     if cmd == "companions":
         # companions [--apply] — documents below the root without a Markdown
         # twin; --apply writes the twin where the text can be extracted (PDF,
