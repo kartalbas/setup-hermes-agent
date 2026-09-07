@@ -206,6 +206,19 @@ config_defaults() {
     : "${ASSISTANT_GOOGLE_READ_ACCOUNTS:=}"
     : "${ASSISTANT_GOOGLE_READ_SCOPES:=openid email https://www.googleapis.com/auth/gmail.readonly}"
 
+    # --- admin tooling: opsctl for the Admin bot (README 1.14) ----------------
+    : "${OPS_ENABLED:=false}"
+    : "${OPS_CLAUDE_MODEL:=opus}"                 # Claude Code model for `opsctl change`
+    : "${OPS_CLAUDE_TIMEOUT:=1500}"               # seconds one change may take
+    : "${OPS_BIN:=/usr/local/bin/opsctl}"
+    : "${OPS_CONF:=/etc/hermes-ops.conf}"
+    : "${OPS_STATE_DIR:=/var/lib/hermes-ops}"
+    if [[ -z ${OPS_CLAUDE_BIN:-} || -z ${OPS_AGY_BIN:-} ]]; then
+        local _ops_home; _ops_home=$(getent passwd "${SERVICE_USER:-nobody}" 2>/dev/null | cut -d: -f6)
+        : "${OPS_CLAUDE_BIN:=${_ops_home:-/nonexistent}/.local/bin/claude}"
+        : "${OPS_AGY_BIN:=${_ops_home:-/nonexistent}/.local/bin/agy}"
+    fi
+
     # --- assistant, GitHub side: the official GitHub MCP server ---------------
     : "${ASSISTANT_GITHUB_ENABLED:=false}"
     : "${ASSISTANT_GITHUB_TOKEN_VAR:=GITHUB_MCP_TOKEN}"  # a personal access token in the secrets file
@@ -438,6 +451,14 @@ _check_read_accounts() {          # _check_read_accounts NAME VALUE OWN_ACCOUNT
     done
 }
 
+# The admin tooling's settings, only when it is switched on.
+_check_ops() {
+    is_true "${OPS_ENABLED:-false}" || return 0
+    [[ ${OPS_CLAUDE_TIMEOUT:-} =~ ^[0-9]+$ ]] || _bad "OPS_CLAUDE_TIMEOUT must be a number of seconds"
+    [[ -n ${OPS_CLAUDE_MODEL:-} ]] || _bad "OPS_CLAUDE_MODEL must name a Claude Code model (opus, sonnet, …)"
+    _check_abs_path OPS_BIN "$OPS_BIN"; _check_abs_path OPS_CONF "$OPS_CONF"; _check_abs_path OPS_STATE_DIR "$OPS_STATE_DIR"
+}
+
 _check_tool_search() {            # _check_tool_search NAME VALUE — the agent's tools.tool_search.enabled values
     case $2 in auto|on|off) ;; *) _bad "${1} must be auto, on or off (got '${2}')" ;; esac
 }
@@ -499,6 +520,7 @@ config_validate() {
     if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then
         [[ ${ASSISTANT_GITHUB_MCP_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || _bad "ASSISTANT_GITHUB_MCP_VERSION must be X.Y.Z"
     fi
+    _check_ops
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then
         _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"
         [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"

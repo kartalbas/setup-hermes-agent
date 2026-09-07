@@ -692,6 +692,47 @@ merges or deletes only on explicit confirmation.
 
 ---
 
+## 1.14 · The Admin bot
+
+A fifth kind of bot, for the operator alone: it answers what state the host is
+in, what could be updated, and it turns a change request into a reviewed
+commit — by running **Claude Code** inside the repository checkout, with the
+model `OPS_CLAUDE_MODEL` (default `opus`), through the service account's own
+`claude` sign-in (part 3.3, no API key). The bot itself runs on the bridge; it
+only orchestrates.
+
+It has exactly one instrument, `opsctl`, installed by the `ops` module:
+
+| Command | What it does | Writes |
+|---------|--------------|--------|
+| `opsctl status` / `report` | units, failed units, disk, memory, versions, bridge health, errors of the last 24 h, last installer run | nothing |
+| `opsctl check-updates` | newest agent tag, newest GitHub MCP server release, repository vs. remote | nothing |
+| `opsctl dry-run [modules]` | the installer's preview | nothing |
+| `opsctl change "<request>"` | Claude Code edits, tests, commits; opsctl verifies with `tests/run.sh`, pushes, and names the installer command | the repository |
+
+The line that matters: **nothing here applies anything to the host.** A change
+ends as a commit and a line such as `to apply: sudo ./install.sh --only
+profiles,channels`; running it is your step, from your terminal. The role
+forbids the bot every other command, the tool allowlist handed to Claude Code
+forbids `install.sh`, `systemctl`, `sudo` and `git push`, and one change runs at
+a time (a lock). The Claude Code session is the bot's own and persists between
+requests, so a follow-up request has the context of the last one.
+
+```bash
+BOTS="secretary search news github admin"
+BOT_ADMIN_CHANNELS="teams"                       # no mail: change requests come from you, in Teams
+BOT_ADMIN_TOOLSET="terminal memory session_search clarify cronjob todo web"
+OPS_ENABLED=true
+OPS_CLAUDE_MODEL="opus"
+OPS_CLAUDE_TIMEOUT=1500
+```
+
+What the bot needs from you: nothing new — the `claude` CLI is signed in for the
+service account (3.3a), and the bot's Teams app is installed like the others
+(1.5). On first contact it sets up a daily `opsctl report` at 07:00 in its chat.
+
+---
+
 # PART 2 — Fill the configuration
 
 ## 2.1 · The five files

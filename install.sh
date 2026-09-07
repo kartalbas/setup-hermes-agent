@@ -29,7 +29,7 @@ readonly PROVISIONER_VERSION="0.1.0"
 #   docker  before hermes     — otherwise the agent runs a window with no sandbox
 #   service before channels   — a channel needs somewhere to deliver to
 #   channels before dashboard — the dashboard shows what the channels configured
-readonly MODULES=(preflight host credentials git tunnel azure google docker devtools clis mailproxy agyshim hermes profiles service channels assistant dashboard site backup)
+readonly MODULES=(preflight host credentials git tunnel azure google docker devtools clis mailproxy agyshim hermes profiles service channels assistant ops dashboard site backup)
 
 usage() {
     local list; list=$(printf '    %s\n' "${MODULES[@]}")
@@ -250,6 +250,17 @@ report_outcome() {
     else
         log_ok "done — already in the desired state, nothing changed"
     fi
+    record_last_run
+}
+
+# One line about this run for whoever asks later (opsctl status): when, which
+# modules, whether anything changed, how many deferred failures.
+record_last_run() {
+    [[ $DRY_RUN == true || $EUID -ne 0 ]] && return 0
+    local dir=${PROVISIONER_STATE_DIR:-/var/lib/hermes-provisioner}
+    [[ -d $dir ]] || return 0
+    printf '%s modules=%s changed=%s deferred=%s\n' "$(date -Is)" "$(join_words "${SELECTED_MODULES[@]+"${SELECTED_MODULES[@]}"}")" \
+        "${CHANGED:-false}" "${#DEFERRED_FAILURES[@]}" >"${dir}/last-run" 2>/dev/null || true
 }
 
 main() {

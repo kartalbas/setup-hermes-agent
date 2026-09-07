@@ -119,3 +119,19 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [ ] Sporadic `IMAP fetch error: EOF` (self-healing; ~2 per 15 min) — root cause
 - [x] Commit the repository (nothing is committed yet) and push to the private remote — public repository since 2026-09-06; only examples and structure files tracked, site configuration ignored
 - [ ] Second VM: bootstrap → config → `az login` → `install.sh` → upload Teams package → `/sethome` → sign-ins (M365 device code, Google paste) — everything else automatic; run it and fix whatever is not
+
+## 7 · Admin bot ("<prefix> Admin") — decided 2026-09-07
+
+The operator's channel for the system itself: state questions, update
+options, and change requests that Claude Code (Opus, the operator's
+subscription) implements in the repository. Two-stage by design: the bot
+prepares (commit, tests, push, installer command), the operator applies.
+
+- [x] Role `bot/roles/admin.md`; the bot acts only through `opsctl`
+- [x] `bot/ops/opsctl`: status, report, check-updates, dry-run, change, modules-for; module `libs/66-ops.sh` installs it with `/etc/hermes-ops.conf`; the installer writes `last-run`
+- [x] Configuration: `admin` in BOTS, Teams only, toolset with terminal (for opsctl) and no files; `OPS_ENABLED`, `OPS_CLAUDE_MODEL`, `OPS_CLAUDE_TIMEOUT`
+- [ ] Full installer run (new Entra app, Azure bot, hostname, tunnel ingress, Teams package), upload the package, `/sethome`
+- [ ] First change request end to end; check the Claude Code allowlist holds (no push, no install.sh)
+- [ ] Daily 07:00 report set up by the bot; weekly `check-updates` reminder
+- [ ] Later: let the bot run small installer selections (`--only channels`) after an explicit "go", once it has earned it
+- [ ] Later: the second VM maintained through the same bot

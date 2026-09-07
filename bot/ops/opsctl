@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+#
+# opsctl — the Admin bot's hands on this host: a few fixed commands instead of
+# a free shell. Everything it reports is read-only; the one thing that writes
+# is `change`, and it writes into the repository, never onto the host.
+#
+#   opsctl status              units, failed units, disk, memory, versions, bridge health, last run
+#   opsctl report              the same, compact — for the daily message
+#   opsctl check-updates       newest agent tag, GitHub MCP server release, repository state
+#   opsctl dry-run [MODULES]   the installer's preview (changes nothing); MODULES comma-separated
+#   opsctl change "<request>"  Claude Code implements the request in the repository:
+#                              tests, commit, push — and names the installer command to run
+#   opsctl modules-for PATH…   which installer modules a set of changed files needs
+#
+# Configuration: /etc/hermes-ops.conf (written by the installer; no secrets).
+set -Eeuo pipefail
+
+OPSCTL_CONF=${OPSCTL_CONF:-/etc/hermes-ops.conf}
+
+die() { printf 'opsctl: %s\n' "$*" >&2; exit 1; }
+
+load_conf() {
+    [[ -r $OPSCTL_CONF ]] || die "no configuration at ${OPSCTL_CONF}; run the installer with OPS_ENABLED=true"
+    # shellcheck disable=SC1090
+    . "$OPSCTL_CONF"
+    : "${OPS_REPO:?}" "${OPS_SERVICE_NAME:?}" "${OPS_SERVICE_PREFIX:?}" "${OPS_BOTS:?}" "${OPS_STATE:?}"
+    : "${OPS_BRIDGE_PORT:=8787}" "${OPS_CLAUDE:=claude}" "${OPS_CLAUDE_MODEL:=opus}" "${OPS_CLAUDE_TIMEOUT:=1500}"
+    : "${OPS_HERMES_REPO:=}" "${OPS_HERMES_REF:=}" "${OPS_GITHUB_MCP_VERSION:=}" "${OPS_AGY:=agy}"
+}
+
+# journalctl needs the journal group or root; the service account has
+# passwordless sudo by the bootstrap's design, and -n never prompts.
+jctl() { if sudo -n true 2>/dev/null; then sudo -n journalctl "$@"; else journalctl "$@"; fi; }
+
+# The units this installation runs: one per bot, plus whatever else exists.
+units() {
+    local b u
+    for b in $OPS_BOTS; do printf '%s\n' "${OPS_SERVICE_PREFIX}-${b}"; done
+    for u in "${OPS_SERVICE_NAME}-bridge" "${OPS_SERVICE_NAME}-mailproxy" cloudflared nginx; do
+        systemctl list-unit-files "${u}.service" 2>/dev/null | grep -q "^${u}\.service" && printf '%s\n' "$u"
+    done
+    for b in $OPS_BOTS; do
+        u="${OPS_SERVICE_PREFIX}-${b}-dashboard"
+        systemctl list-unit-files "${u}.service" 2>/dev/null | grep -q "^${u}\.service" && printf '%s\n' "$u"
+    done
+    return 0
+}
+
+unit_line() {                     # unit_line UNIT -> "unit  active/enabled  since"
+    local u=$1 act en since
+    act=$(systemctl is-active "$u" 2>/dev/null || true)
+    en=$(systemctl is-enabled "$u" 2>/dev/null || true)
+    since=$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null | cut -d' ' -f2-3)
+    printf '  %-34s %-9s %-9s %s\n' "$u" "${act:-?}" "${en:-?}" "${since:-}"
+}
+
+errors_24h() {                    # errors_24h UNIT -> count of ERROR/502 lines in the last 24 h
+    jctl -u "$1" --since '-24h' -q --no-pager 2>/dev/null | grep -cE ' ERROR |WARNING 502' || true
+}
+
+cmd_status() {
+    local u
+    printf 'UNITS\n'
+    while IFS= read -r u; do [[ -n $u ]] && unit_line "$u"; done < <(units)
+    local failed; failed=$(systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+    printf '  failed: %s\n' "${failed:-none}"
+
+    printf '\nHOST\n'
+    printf '  %s\n' "$(uptime -p 2>/dev/null || true)"
+    df -h / 2>/dev/null | awk 'NR==2 {printf "  disk /: %s used of %s (%s)\n", $3, $2, $5}'
+    free -m 2>/dev/null | awk 'NR==2 {printf "  memory: %s MB used of %s MB\n", $3, $2}'
+
+    printf '\nVERSIONS\n'
+    printf '  agent revision: %s (configured %s)\n' "$(cat /var/lib/hermes-provisioner/revision 2>/dev/null | cut -c1-12 || printf '?')" "${OPS_HERMES_REF:-?}"
+    printf '  bot: %s\n' "$(cat "${OPS_REPO}/bot/VERSION" 2>/dev/null || printf '?')"
+    printf '  repository: %s\n' "$(git -C "$OPS_REPO" log -1 --format='%h %s' 2>/dev/null || printf '?')"
+    local dirty; dirty=$(git -C "$OPS_REPO" status --short 2>/dev/null | wc -l | tr -d ' ')
+    printf '  uncommitted files in the repository: %s\n' "$dirty"
+    printf '  agy: %s   claude: %s\n' "$("$OPS_AGY" --version 2>/dev/null | head -n1 || printf '?')" "$("$OPS_CLAUDE" --version 2>/dev/null | head -n1 || printf '?')"
+
+    printf '\nBRIDGE\n'
+    local stats; stats=$(curl -s --max-time 3 "http://127.0.0.1:${OPS_BRIDGE_PORT}/stats" 2>/dev/null || true)
+    printf '  %s\n' "${stats:0:200}"
+    printf '  errors in the last 24 h: %s\n' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"
+
+    printf '\nBOT ERRORS (last 24 h)\n'
+    local b
+    for b in $OPS_BOTS; do printf '  %-14s %s\n' "$b" "$(errors_24h "${OPS_SERVICE_PREFIX}-${b}")"; done
+
+    printf '\nLAST INSTALLER RUN\n'
+    printf '  %s\n' "$(cat /var/lib/hermes-provisioner/last-run 2>/dev/null || printf 'no record (never run since this file was introduced)')"
+}
+
+cmd_report() {
+    local u total=0 up=0 failed
+    while IFS= read -r u; do
+        [[ -n $u ]] || continue
+        total=$((total + 1)); systemctl is-active --quiet "$u" 2>/dev/null && up=$((up + 1))
+    done < <(units)
+    failed=$(systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+    printf 'units %s/%s active; failed: %s\n' "$up" "$total" "${failed:-none}"
+    df -h / 2>/dev/null | awk 'NR==2 {printf "disk / %s used; ", $5}'
+    free -m 2>/dev/null | awk 'NR==2 {printf "memory %s/%s MB\n", $3, $2}'
+    printf 'bridge errors 24h: %s; bot errors 24h:' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"
+    local b; for b in $OPS_BOTS; do printf ' %s=%s' "$b" "$(errors_24h "${OPS_SERVICE_PREFIX}-${b}")"; done; printf '\n'
+    printf 'agent %s, bot %s, repo %s\n' "$(cat /var/lib/hermes-provisioner/revision 2>/dev/null | cut -c1-12 || printf '?')" \
+        "$(cat "${OPS_REPO}/bot/VERSION" 2>/dev/null || printf '?')" "$(git -C "$OPS_REPO" log -1 --format=%h 2>/dev/null || printf '?')"
+    printf 'last run: %s\n' "$(cat /var/lib/hermes-provisioner/last-run 2>/dev/null || printf 'no record')"
+}
+
+latest_tag() {                    # latest_tag REPO_URL PATTERN -> highest version tag
+    git ls-remote --tags --refs "$1" "$2" 2>/dev/null | sed 's|.*refs/tags/||' | sort -V | tail -n1
+}
+
+cmd_check_updates() {
+    local latest
+    if [[ -n $OPS_HERMES_REPO ]]; then
+        latest=$(latest_tag "https://github.com/${OPS_HERMES_REPO}.git" 'v*')
+        printf 'agent:              configured %s, newest tag %s%s\n' "${OPS_HERMES_REF:-?}" "${latest:-?}" \
+            "$([[ -n $latest && $latest != "$OPS_HERMES_REF" ]] && printf '  <- update available (HERMES_REF)')"
+    fi
+    if [[ -n $OPS_GITHUB_MCP_VERSION ]]; then
+        latest=$(latest_tag https://github.com/github/github-mcp-server.git 'v*')
+        printf 'github-mcp-server:  configured %s, newest %s%s\n' "$OPS_GITHUB_MCP_VERSION" "${latest#v}" \
+            "$([[ -n $latest && ${latest#v} != "$OPS_GITHUB_MCP_VERSION" ]] && printf '  <- update available (ASSISTANT_GITHUB_MCP_VERSION)')"
+    fi
+    printf 'agy:                %s (subscription CLI; updates itself when allowed)\n' "$("$OPS_AGY" --version 2>/dev/null | head -n1 || printf '?')"
+    printf 'claude:             %s\n' "$("$OPS_CLAUDE" --version 2>/dev/null | head -n1 || printf '?')"
+    if git -C "$OPS_REPO" fetch -q origin 2>/dev/null; then
+        local behind ahead
+        behind=$(git -C "$OPS_REPO" rev-list --count HEAD..origin/master 2>/dev/null || printf '?')
+        ahead=$(git -C "$OPS_REPO" rev-list --count origin/master..HEAD 2>/dev/null || printf '?')
+        printf 'repository:         %s commit(s) behind origin, %s ahead; %s uncommitted file(s)\n' "$behind" "$ahead" \
+            "$(git -C "$OPS_REPO" status --short | wc -l | tr -d ' ')"
+    else
+        printf 'repository:         origin not reachable\n'
+    fi
+}
+
+cmd_dry_run() {
+    local mods=${1:-}
+    cd "$OPS_REPO"
+    if sudo -n true 2>/dev/null; then
+        sudo -n ./install.sh --dry-run ${mods:+--only "$mods"} 2>&1 | tail -n "${OPS_TAIL:-80}"
+    else
+        ./install.sh --dry-run ${mods:+--only "$mods"} 2>&1 | tail -n "${OPS_TAIL:-80}"
+    fi
+}
+
+# Which installer modules a set of changed repository paths calls for.
+modules_for() {                   # modules_for PATH… -> "a,b" or "all"
+    local p mods=()
+    add() { local x; for x in "${mods[@]+"${mods[@]}"}"; do [[ $x == "$1" ]] && return 0; done; mods+=("$1"); }
+    for p in "$@"; do
+        case $p in
+            libs/00-*|libs/10-*|libs/20-*|libs/25-*|install.sh) printf 'all\n'; return 0 ;;
+            bot/roles/*|libs/65-*)              add profiles ;;
+            bot/agy-shim/*|libs/35-*)           add agyshim ;;
+            bot/mcp/*|libs/62-*)                add assistant ;;
+            bot/ops/*|libs/66-*)                add ops ;;
+            bot/teams-app/*|bot/assets/*|libs/47-*|bot/VERSION) add azure ;;
+            bot/site/*|libs/87-*)               add site ;;
+            libs/80-*)                          add channels ;;
+            libs/70-*)                          add service ;;
+            libs/85-*)                          add dashboard ;;
+            libs/45-*)                          add tunnel ;;
+            libs/55-*)                          add mailproxy ;;
+            libs/60-*)                          add hermes ;;
+            libs/48-*)                          add google ;;
+            libs/58-*)                          add devtools ;;
+            libs/33-*)                          add clis ;;
+            libs/40-*)                          add host ;;
+            libs/44-*)                          add git ;;
+            libs/90-*)                          add backup ;;
+            *) ;;                               # docs, tests, configs: no module
+        esac
+    done
+    if (( ${#mods[@]} == 0 )); then printf 'none\n'; return 0; fi
+    local IFS=','; printf '%s\n' "${mods[*]}"
+}
+
+cmd_change() {
+    local request=${1:-}
+    [[ -n $request ]] || die 'usage: opsctl change "<request>"'
+    [[ -x $OPS_CLAUDE ]] || die "Claude Code not found at ${OPS_CLAUDE}"
+    mkdir -p "$OPS_STATE"
+    exec 9>"${OPS_STATE}/change.lock"
+    flock -n 9 || die "a change is already running; wait for it to finish"
+    cd "$OPS_REPO"
+    [[ -z $(git status --short) ]] || die "the repository has uncommitted changes; a change starts from a clean tree"
+    local head_before; head_before=$(git rev-parse HEAD)
+
+    # One Claude Code conversation for all changes: context survives between
+    # requests, and it is not anyone else's conversation in this directory.
+    local sid_file="${OPS_STATE}/claude-session" sid resume=()
+    if [[ -s $sid_file ]]; then sid=$(<"$sid_file"); resume=(--resume "$sid")
+    else sid=$(python3 -c 'import uuid; print(uuid.uuid4())'); printf '%s\n' "$sid" >"$sid_file"; resume=(--session-id "$sid"); fi
+
+    local prompt
+    prompt="You are working in the provisioner repository at ${OPS_REPO}, the checkout the installer runs from on the live host. \
+Implement the operator's request below. Rules: change code under libs/ or bot/, add or adjust tests, update README.md and, for a design \
+change, an ADR under docs/decisions/; run tests/run.sh until it passes; keep everything agnostic (no site names, addresses or secrets in \
+tracked files — config/*.conf are the operator's and gitignored); commit with a clear message and do NOT push; never run install.sh, \
+systemctl, sudo or anything that changes the host; do not edit files outside the repository. Finish with a short summary in the operator's \
+language: what changed, which tests ran, and which installer modules must run (the operator runs 'sudo ./install.sh --only ...' themselves). \
+Request: ${request}"
+
+    local ts log; ts=$(date +%Y%m%d-%H%M%S); log="${OPS_STATE}/change-${ts}.log"
+    printf 'request: %s\nsession: %s\nmodel: %s\n\n' "$request" "$sid" "$OPS_CLAUDE_MODEL" >"$log"
+    local rc=0
+    timeout "$OPS_CLAUDE_TIMEOUT" "$OPS_CLAUDE" -p "$prompt" "${resume[@]}" --model "$OPS_CLAUDE_MODEL" \
+        --permission-mode acceptEdits --output-format text \
+        --allowedTools Edit Write Read Glob Grep 'Bash(tests/run.sh:*)' 'Bash(bats:*)' 'Bash(python3:*)' 'Bash(shellcheck:*)' \
+                       'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' \
+                       'Bash(grep:*)' 'Bash(sed -n:*)' 'Bash(cat:*)' 'Bash(ls:*)' 'Bash(bash -n:*)' \
+        >>"$log" 2>&1 || rc=$?
+
+    printf '=== Claude Code (exit %s) — last lines ===\n' "$rc"
+    tail -n 40 "$log"
+    printf '\n=== verification ===\n'
+    local tests=fail
+    if tests/run.sh >"${log}.tests" 2>&1; then tests=pass; fi
+    printf 'tests/run.sh: %s\n' "$tests"
+    local dirty; dirty=$(git status --short | wc -l | tr -d ' ')
+    if [[ $(git rev-parse HEAD) == "$head_before" ]]; then
+        printf 'no commit was made'; (( dirty > 0 )) && printf ' — %s file(s) left uncommitted (see %s)' "$dirty" "$log"; printf '\n'
+        return 1
+    fi
+    printf '\n=== commit ===\n'; git log --oneline "${head_before}..HEAD"; git diff --stat "${head_before}" HEAD | tail -n 1
+    if [[ $tests == pass && $dirty == 0 ]]; then
+        git push -q origin master && printf 'pushed to origin\n'
+    else
+        printf 'NOT pushed: tests %s, %s uncommitted file(s) — the operator decides\n' "$tests" "$dirty"
+    fi
+    local mods; mods=$(git diff --name-only "$head_before" HEAD | xargs -r bash "$0" modules-for)
+    case $mods in
+        none) printf '\nnothing to install: documentation or tests only\n' ;;
+        all)  printf '\nto apply:  sudo ./install.sh\n' ;;
+        *)    printf '\nto apply:  sudo ./install.sh --only %s\n' "$mods" ;;
+    esac
+}
+
+main() {
+    local cmd=${1:-}; shift || true
+    case $cmd in
+        modules-for) modules_for "$@"; return 0 ;;
+        ""|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
+    esac
+    load_conf
+    case $cmd in
+        status)        cmd_status ;;
+        report)        cmd_report ;;
+        check-updates) cmd_check_updates ;;
+        dry-run)       cmd_dry_run "${1:-}" ;;
+        change)        cmd_change "${1:-}" ;;
+        *) die "unknown command '${cmd}' (status, report, check-updates, dry-run, change, modules-for)" ;;
+    esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

@@ -303,6 +303,14 @@ BOT_GITHUB_NAME="GitHub"                             # the derived default would
 BOT_GITHUB_CHANNELS="teams email"
 BOT_GITHUB_MAIL_ALIAS="github@example.com"
 BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 1.13)
+# The Admin bot (README 1.14): state of the host, updates, and change requests
+# that Claude Code turns into commits. Add "admin" to BOTS and switch on OPS_ENABLED.
+# BOT_ADMIN_NAME="Admin"
+# BOT_ADMIN_CHANNELS="teams"
+# BOT_ADMIN_TOOLSET="terminal memory session_search clarify cronjob todo web"   # terminal for opsctl, nothing else needs it
+# OPS_ENABLED=true
+# OPS_CLAUDE_MODEL="opus"               # the Claude Code model for `opsctl change`
+# OPS_CLAUDE_TIMEOUT=1500               # seconds one change may take
 BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
 BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # A bot may run on its own model instead of the global LLM_ENDPOINT_1 — e.g. a
