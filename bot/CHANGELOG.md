@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Bridge: a turn decided through the tools server is allowed to end (grace 45 s) instead of being cut short, so its token counts reach the log and the caller — the first live turn reported none (2026-09-09); a turn decided through the *rejected* native channel still ends at once, there being nothing to wait for
+
 ## 0.4.0 — 2026-09-09
 
 - Bridge: the caller's functions reach the model as REAL tools — an MCP server (`bot/agy-shim/tools_mcp.py`) the CLI spawns per conversation, registered with the CLI by the run together with its allow rule; a completed call to it is the decision, the framework still executes. Ends the "improperly formatted function call" retries that cost about half the subscription's turns since 2026-09-07 (ADR 0024, `AGY_SHIM_NATIVE_TOOLS`)

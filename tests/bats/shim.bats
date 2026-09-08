@@ -360,3 +360,50 @@ assert proc.kw["agent_def"] == ""
 assert "Acme News" in proc.pending_prefix, "without agent mode the prompt must ride along"
 PY
 }
+
+@test "a call through the tools server lets the turn finish, so its token counts survive" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, json, queue, sys, threading, types
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+def fake(events):
+    p = types.SimpleNamespace()
+    p._events = queue.Queue()
+    for e in events:
+        p._events.put(e)
+    p.proc = types.SimpleNamespace(stdin=types.SimpleNamespace(write=lambda s: None, flush=lambda: None, closed=False), poll=lambda: None)
+    p._closed = False; p.turns = 0; p.last_used = 0; p.input_tokens = 0
+    p.tool_intents = []; p.native_decision = None; p.available_tools = set(); p.one_shot = True
+    p.stderr_tail = lambda: ""
+    p.alive = lambda: True
+    p.turn = types.MethodType(m.AgentProcess.turn, p)
+    return p
+
+def mcp_step(state, args):
+    return {"event": "step_update", "step_update": {"step_type": "tool", "state": state, "tool_info": {
+        "name": "call_mcp_tool", "parameters": {"ServerName": "tools", "ToolName": "web_search", "Arguments": args}}}}
+
+# the offered channel: decision taken, the turn still ends normally and the usage survives
+res = fake([mcp_step("DONE", {"query": "x"}),
+            {"event": "step_update", "step_update": {"step_type": "agent_response", "state": "DONE"}},
+            {"event": "result", "result": {"status": "SUCCESS", "response": "pending",
+                                           "usage": {"input_tokens": 7000, "cache_read_tokens": 6000, "output_tokens": 40}}}]).turn("hi", 5)
+assert json.loads(res["response"]) == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}, res
+assert res["usage"]["input_tokens"] == 7000, res["usage"]
+
+# a turn that dies after the decision still yields the decision
+res = fake([mcp_step("DONE", {"query": "x"}),
+            {"event": "result", "result": {"status": "ERROR", "error": "improperly formatted function call",
+                                           "usage": {"input_tokens": 99}}}]).turn("hi", 5)
+assert json.loads(res["response"])["name"] == "web_search" and res["usage"]["input_tokens"] == 99
+
+# the broken channel (unknown tool) ends the one-shot turn at once — nothing to wait for
+res = fake([{"event": "step_update", "step_update": {"step_type": "tool", "state": "ERROR",
+             "tool_info": {"name": "terminal", "parameters": {"command": "ls"}},
+             "error": {"message": 'unknown tool: "terminal"'}}}])
+res.available_tools = {"terminal"}
+out = res.turn("hi", 5)
+assert out["native_call"] is True and json.loads(out["response"])["name"] == "terminal"
+PY
+    grep -q 'DECISION_GRACE_SECONDS' "$SHIM"
+}

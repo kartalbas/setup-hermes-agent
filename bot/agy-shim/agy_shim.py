@@ -67,6 +67,11 @@ log = logging.getLogger("agy-shim")
 # slow turn is reported by us (with context), not cut by the CLI (without).
 PRINT_TIMEOUT_SECONDS = 900
 
+# How long a turn may still run once the decision is in: the model was told to
+# end it, and what it writes after that is discarded — but the result event it
+# ends with carries the token counts, so it is worth a short wait.
+DECISION_GRACE_SECONDS = 45
+
 # The caller's tools, offered to the CLI as a real MCP server so the model calls
 # them natively (ADR 0024). The server is tools_mcp.py next to this file; it
 # reads TOOLS_FILE from the CLI's working directory — the per-conversation
@@ -256,6 +261,14 @@ class AgentProcess:
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
+                if self.native_decision is not None:
+                    # The decision is complete; only the model's closing line is
+                    # missing, and it is discarded anyway.
+                    log.info("decision taken, closing line not written within %.0fs; going with it", DECISION_GRACE_SECONDS)
+                    self.turns += 1
+                    self.last_used = time.time()
+                    return {"status": "SUCCESS", "response": json.dumps(self.native_decision, separators=(",", ":")),
+                            "usage": {}, "native_call": True}
                 raise TimeoutError(f"no result within {timeout}s")
             try:
                 ev = self._events.get(timeout=remaining)
@@ -267,23 +280,31 @@ class AgentProcess:
                 su = ev.get("step_update") or {}
                 if su.get("step_type") == "tool" and su.get("state") == "ACTIVE":
                     self.tool_intents.append(su.get("tool_info") or {"name": su.get("tool_name"), "parameters": {}})
-                native = native_call_decision(su, getattr(self, "available_tools", set()))
-                if native is not None:
-                    log.info("native call to the caller's %s taken as the decision", native["name"])
-                else:
-                    native = mcp_call_decision(su)
-                    if native is not None:
-                        log.info("call through the tools server to %s taken as the decision", native["name"])
-                if native is not None and self.native_decision is None:
-                    self.native_decision = native
+                broken = native_call_decision(su, getattr(self, "available_tools", set()))
+                if broken is not None:
+                    # The wrong channel: the CLI rejected the call and the turn
+                    # is already lost. Nothing worth waiting for — and on a
+                    # one-shot process, waiting only invites a second, malformed
+                    # attempt.
+                    log.info("native call to the caller's %s taken as the decision", broken["name"])
+                    if self.native_decision is None:
+                        self.native_decision = broken
                     if getattr(self, "one_shot", False):
-                        # This process serves one request and is closed after it:
-                        # no need to let the model finish (and risk a malformed
-                        # second attempt) — the decision is complete.
                         self.turns += 1
                         self.last_used = time.time()
-                        return {"status": "SUCCESS", "response": json.dumps(native, separators=(",", ":")),
+                        return {"status": "SUCCESS", "response": json.dumps(broken, separators=(",", ":")),
                                 "usage": {}, "native_call": True}
+                    continue
+                offered = mcp_call_decision(su)
+                if offered is not None and self.native_decision is None:
+                    # The channel this bridge offers: the model called a tool of
+                    # ours and was told to end its turn. Its closing line is
+                    # discarded, but the turn is allowed to finish — that is
+                    # where the token counts live, and they are the whole
+                    # measure of whether this arrangement is affordable.
+                    log.info("call through the tools server to %s taken as the decision", offered["name"])
+                    self.native_decision = offered
+                    deadline = min(deadline, time.time() + DECISION_GRACE_SECONDS)
                 continue
             if ev.get("event") != "result":
                 continue
