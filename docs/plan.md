@@ -165,3 +165,38 @@ Planner has none. ADR 0023.
 - [ ] The two tax cards from the old personal plan recreated through the bot (or moved in the app); the old plan deleted
 - [ ] Morning digest set up by the bot on first contact; Secretary's next letter with a deadline lands as a card
 - [ ] Later: a card's checklist and attachments; tenant-specific defaults (priority, lead time)
+
+## 9 · Ideas on file — not decided, not started (2026-09-08)
+
+Recorded so they are not lost; each becomes a decision or a part above only
+when the operator says so.
+
+**Safeguards first**
+- [ ] Reboot test of the six-bot host (checklist README part 5) and a restore drill of the backup
+- [ ] Expiry warnings in `opsctl report`: the bots' Entra client secrets (two years), the Google OAuth token while the app is in testing (seven days)
+- [ ] Bridge: an abandoned envelope WITHOUT a rewrite still reaches the chat as raw text — close the open brackets and take what is there
+
+**Tasks and Secretary joined**
+- [ ] Time tracking on cards: "starte <tenant>-Task X" opens the timesheet row with the card's title, "fertig" closes row and card
+- [ ] Month-end run on the 1st: hour report and invoice draft per tenant from the timesheets, plus a card "invoice <tenant> to check" with a due date
+- [ ] Friday review per tenant: done, moved, overdue — the basis for customer updates
+- [ ] Cards from mail: the Secretary already reads the operator's mailboxes; mails that ask for something become proposed cards, confirmed with one word
+- [ ] Receipts booked on the spot: a photographed receipt also appends its row to the Receipts CSV, not only the file and its twin
+- [ ] A document index per world (`_index.md`: date, sender, amount, deadline per filed document) so "which invoices are open" needs no file opened
+
+**From the phone**
+- [ ] Voice notes: Teams mobile sends audio, the bridge's model understands audio — "a voice note becomes a card"; first verify that the Teams adapter passes audio attachments through
+- [ ] Business card photo → contact in Microsoft 365 (needs the Contacts scope)
+
+**Watching and costs**
+- [ ] Alarms via cron monitors: a unit restarted unexpectedly (Admin chat), a CI run on main failed (GitHub chat), the API balance below a threshold (Teams message, not only the footer)
+- [ ] Weekly `check-updates` and a nightly `tests/run.sh` by the Admin bot
+
+**Housekeeping already listed above, restated**
+- [ ] Retire a bot removed from BOTS (Azure bot, Entra app, DNS, unit, profile); replies as the alias; per-bot icons; dashboard over TLS; the second VM end to end
+
+**Not recommended, recorded anyway**
+- Adaptive Cards with buttons in Teams: the agent's adapter most likely cannot receive the actions; a half-working button is worse than none
+
+**Platform idea (the operator's, 2026-09-08)**
+- [ ] Run everything on Ubuntu with MicroK8s (Kubernetes) and deploy from the repository through Argo CD — bots, bridge, relay, tunnel as workloads, configuration as manifests. Would supersede ADR 0001 (native, not containerised) and needs answers for: the subscription CLIs (agy, claude) and their sign-ins inside pods, the per-bot systemd units and watchdogs, the device-code and paste-back sign-ins, Docker-in-cluster for the agent's terminal backend, secrets handling (the secrets file vs. Kubernetes secrets), and what the installer becomes (a chart or kustomization that Argo CD applies). Not analysed yet.
