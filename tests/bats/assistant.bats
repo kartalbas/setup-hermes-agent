@@ -186,3 +186,55 @@ assert m["env"]["M365_TENANT_ID"] == "tenant-1" and m["timeout"] == 120, m
     [[ $out == *"drive: Secretary/Private/Inbox/b.jpg"* ]]
     rm -rf "$tmp"
 }
+
+@test "the Tasks side adds the Planner scope once and only when switched on" {
+    unset ASSISTANT_M365_SCOPES ASSISTANT_TASKS_ENABLED
+    config_defaults
+    [[ $ASSISTANT_M365_SCOPES != *Tasks.ReadWrite* ]]
+    unset ASSISTANT_M365_SCOPES
+    ASSISTANT_TASKS_ENABLED=true
+    config_defaults; config_defaults
+    [ "$(grep -o 'Tasks.ReadWrite' <<<"$ASSISTANT_M365_SCOPES" | wc -l)" -eq 1 ]
+}
+
+@test "the Tasks configuration needs the M365 side, a group, the operator, and clean names" {
+    ASSISTANT_TASKS_ENABLED=true ASSISTANT_M365_ENABLED=true ASSISTANT_M365_ACCOUNT=agent@example.com
+    ASSISTANT_TASKS_GROUP="Acme Tasks" ASSISTANT_TASKS_PLAN=Tasks ASSISTANT_TASKS_ASSIGNEE=you@example.com ASSISTANT_TASKS_TENANTS="Secretary,Acme Corp,Globex" ASSISTANT_TASKS_TEAM=false
+    _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 0 ]
+    [ "$(assistant_tasks_nickname)" = acmetasks ]
+    ASSISTANT_TASKS_GROUP_NICK=tasks2026; [ "$(assistant_tasks_nickname)" = tasks2026 ]; unset ASSISTANT_TASKS_GROUP_NICK
+    ASSISTANT_M365_ENABLED=false; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *ASSISTANT_M365_ENABLED* ]]; ASSISTANT_M365_ENABLED=true
+    ASSISTANT_TASKS_ASSIGNEE=agent@example.com; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *"own account"* ]]
+    ASSISTANT_TASKS_ASSIGNEE=nobody; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; ASSISTANT_TASKS_ASSIGNEE=you@example.com
+    ASSISTANT_TASKS_TENANTS="A,,B"; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; ASSISTANT_TASKS_TENANTS=""
+    ASSISTANT_TASKS_TEAM=maybe; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; ASSISTANT_TASKS_TEAM=true
+    ASSISTANT_TASKS_GROUP="!!!"; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *nickname* ]]
+    ASSISTANT_TASKS_ENABLED=false ASSISTANT_TASKS_GROUP=""; _invalid=(); _check_tasks; [ "${#_invalid[@]}" -eq 0 ]
+}
+
+@test "the tasks registration runs its own server with the M365 env plus the plan's coordinates" {
+    secret_get() { case $1 in TASKS_GROUP_ID) printf 'gid-1' ;; TASKS_ASSIGNEE_ID) printf 'uid-1' ;; *) return 1 ;; esac; }
+    ASSISTANT_TASKS_PLAN=Tasks ASSISTANT_TASKS_ASSIGNEE=you@example.com
+    out=$(_assistant_tasks_fragment tenant-1 client-1 agent@example.com)
+    [[ $out == *'args: ["/usr/local/lib/hermes-assistant/tasks_assistant.py", "serve"]'* ]]
+    [[ $out == *'M365_ACCOUNT: "agent@example.com"'* && $out == *'M365_TOKEN_FILE: "/var/lib/hermes-assistant/m365.token"'* ]]
+    [[ $out == *'M365_TASKS_GROUP_ID: "gid-1"'* && $out == *'M365_TASKS_ASSIGNEE_ID: "uid-1"'* ]]
+    [[ $out == *'M365_TASKS_PLAN: "Tasks"'* && $out == *'M365_TASKS_ASSIGNEE: "you@example.com"'* ]]
+    [[ $out == *'mcp_servers:'*'  tasks:'*'enabled: true'* ]]
+    lines=$(_assistant_tasks_env_lines tenant-1 client-1 agent@example.com)
+    [[ $lines == *$'\nM365_SCOPES='* && $lines == *$'\nM365_TASKS_GROUP_ID=gid-1'* ]]
+}
+
+@test "a bot may list tasks only when the Tasks side is enabled, and the toolset check accepts it then" {
+    BOTS="secretary" BOT_PREFIX=X TUNNEL_ZONE=example.com BOT_SECRETARY_MCP="tasks"
+    ASSISTANT_TASKS_ENABLED=false; _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *ASSISTANT_TASKS_ENABLED* ]]
+    ASSISTANT_TASKS_ENABLED=true; _invalid=(); _bots_validate; [ "${#_invalid[@]}" -eq 0 ]
+    grep -q 'tasks)  is_true "${ASSISTANT_TASKS_ENABLED' "$REPO_ROOT/libs/80-channels.sh"
+}
+
+@test "the code stamp covers the tasks env file, and tasksctl is a wrapper like the others" {
+    grep -q 'assistant_tasks_env_file' "$REPO_ROOT/libs/62-assistant.sh"
+    grep -qE 'runuser -u "\$SERVICE_USER" -- "\$\(assistant_tasksctl\)" ensure-plan' "$REPO_ROOT/libs/62-assistant.sh"
+    [ "$(assistant_tasksctl)" = /usr/local/lib/hermes-assistant/tasksctl ]
+    [ "$(assistant_tasks_env_file)" = /var/lib/hermes-assistant/tasks.env ]
+}

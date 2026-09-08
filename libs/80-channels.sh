@@ -788,6 +788,7 @@ _teams_toolset_check() {          # _teams_toolset_check "NAME [NAME...]" — di
             m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   && continue ;;
             google) is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" && continue ;;
             github) is_true "${ASSISTANT_GITHUB_ENABLED:-false}" && continue ;;
+            tasks)  is_true "${ASSISTANT_TASKS_ENABLED:-false}"  && continue ;;
         esac
         grep -q "\"${name}\": {" "$reg" ||
             die "toolset '${name}' (CHANNEL_TEAMS_TOOLSET / BOT_<KEY>_TOOLSET) is not defined in ${reg}, and is no enabled MCP server"

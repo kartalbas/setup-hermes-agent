@@ -320,7 +320,14 @@ BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 
 # OPS_CLAUDE_MODEL="opus"               # the Claude Code model for `opsctl change`
 # OPS_CLAUDE_TIMEOUT=1500               # seconds one change may take
 # OPS_APPLY="ask"                       # auto: apply after a green change | ask: the bot asks first | never
-BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools
+# The Tasks bot (README 1.15): tasks per tenant in Microsoft Planner, cards
+# assigned to you. Add "tasks" to BOTS and switch on ASSISTANT_TASKS_ENABLED.
+# BOT_TASKS_NAME="Tasks"
+# BOT_TASKS_CHANNELS="teams email"
+# BOT_TASKS_MAIL_ALIAS="tasks@example.com"
+# BOT_TASKS_MCP="tasks"
+# BOT_TASKS_TOOLSET="memory session_search clarify cronjob"   # no terminal, no files: Planner only through its tools
+BOT_SECRETARY_MCP="m365"               # the Microsoft 365 assistant tools; "m365 google tasks" with the other sides on
 BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # A bot may run on its own model instead of the global LLM_ENDPOINT_1 — e.g. a
 # real API for the bot that needs precise tool calling and images:
@@ -356,6 +363,24 @@ BOT_SECRETARY_DASHBOARD=true           # the profile the dashboard shows
 # BOT_<KEY>_NAME, _HOSTNAME (<key>.<TUNNEL_ZONE>), _ROLE (bot/roles/<role>.md),
 # _TEAMS_CLIENT_ID_VAR / _TEAMS_CLIENT_SECRET_VAR (TEAMS_<KEY>_CLIENT_ID / _SECRET),
 # _TOOLSET, _DESCRIPTION all have derived defaults.
+
+# ---------------------------------------------------------------------------
+# The assistant, Tasks side (README 1.15) — Microsoft Planner as the task
+# store: one plan in a Microsoft 365 group the run creates (the operator as
+# owner, the agent's account as member), one bucket per tenant, every card
+# assigned to the operator. Same account and token as the M365 side; the run
+# adds Tasks.ReadWrite to the scopes and records the group's and the
+# operator's ids in the secrets file (TASKS_GROUP_ID, TASKS_ASSIGNEE_ID).
+# ---------------------------------------------------------------------------
+ASSISTANT_TASKS_ENABLED=false
+ASSISTANT_TASKS_GROUP="Acme Tasks"              # the Microsoft 365 group (display name)
+ASSISTANT_TASKS_TEAM=false                      # true: the group is also a Team in Teams
+ASSISTANT_TASKS_PLAN="Tasks"                    # the plan's title
+ASSISTANT_TASKS_ASSIGNEE="you@example.com"      # owner of the group, assignee of every card
+ASSISTANT_TASKS_TENANTS="Secretary,Acme,Globex" # initial buckets; the bot adds more when you confirm a new tenant
+# ASSISTANT_TASKS_GROUP_NICK=""                 # the group's mail nickname; default: the name reduced to letters and digits
+# ASSISTANT_TASKS_GROUP_ID_VAR="TASKS_GROUP_ID"         # where the run records the ids (secrets file)
+# ASSISTANT_TASKS_ASSIGNEE_ID_VAR="TASKS_ASSIGNEE_ID"
 
 # ---------------------------------------------------------------------------
 # The assistant, Google side (README 1.11) — the agent's private Gmail account,

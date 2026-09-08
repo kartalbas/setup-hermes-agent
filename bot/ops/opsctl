@@ -204,6 +204,8 @@ allowed_tools() {
         printf 'Bash(%s status:*)\nBash(%s inbox)\nBash(%s companions)\nBash(%s tools)\n' "$t" "$t" "$t" "$t"
         printf 'Bash(%s/%s status:*)\nBash(%s/%s inbox)\nBash(%s/%s companions)\nBash(%s/%s tools)\n' "$lib" "$t" "$lib" "$t" "$lib" "$t" "$lib" "$t"
     done
+    printf 'Bash(tasksctl status)\nBash(tasksctl tenants)\nBash(tasksctl due)\nBash(tasksctl tools)\n'
+    printf 'Bash(%s/tasksctl status)\nBash(%s/tasksctl tenants)\nBash(%s/tasksctl due)\nBash(%s/tasksctl tools)\n' "$lib" "$lib" "$lib" "$lib"
     printf 'Bash(inboxctl)\nBash(%s/inboxctl)\n' "$lib"
 }
 
@@ -232,7 +234,7 @@ diagnostic_bundle() {             # diagnostic_bundle FILE
             printf '```\n'
         done
         printf '\n## Assistants\n\n'
-        for u in m365ctl googlectl; do
+        for u in m365ctl googlectl tasksctl; do
             [[ -x /usr/local/lib/hermes-assistant/$u ]] || continue
             printf '### %s status\n%s\n' "$u" "$("/usr/local/lib/hermes-assistant/$u" status 2>&1 | cut -c1-600)"
         done
@@ -273,7 +275,7 @@ tracked files — config/*.conf are the operator's and gitignored); commit with 
 systemctl restart, sudo or anything that changes the host; do not edit files outside the repository. \
 A read-only snapshot of the live host (status, recent errors of every unit, the profiles' configuration blocks, the assistants' state) \
 is at ${snapshot} — read it first when the request concerns behaviour on the host, and quote what you base a diagnosis on. You may also \
-look yourself, read-only: opsctl status|report|check-updates, journalctl, systemctl status/is-active, m365ctl/googlectl status|inbox|companions, inboxctl. \
+look yourself, read-only: opsctl status|report|check-updates, journalctl, systemctl status/is-active, m365ctl/googlectl status|inbox|companions, tasksctl status|tenants|due, inboxctl. \
 Finish with a short summary in the operator's language: what changed, which tests ran, what you saw on the host if relevant, and which \
 installer modules must run. Request: ${request}"
 

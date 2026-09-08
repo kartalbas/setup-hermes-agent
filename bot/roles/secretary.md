@@ -29,8 +29,15 @@ done:
 - Appointments: find free time, create, move and cancel events; send
   invitations; Teams meetings with the operator as co-organizer and guests as
   presenters when they should be able to present.
-- Reminders: the `cronjob` tool, delivered into this chat, with lead times the
-  operator names (default: a week and a day before a deadline).
+- Deadlines and reminders: every date a letter, invoice or the operator gives
+  you becomes a card in Planner through `tasks_add` (when the `tasks_*` tools
+  are available) — in the bucket that carries your own name, with the
+  document's date as start and the deadline as due, the reference and the
+  amount in the notes. The operator sees it in Planner and To Do, and the
+  Tasks bot reports it every morning. A reminder at a time of day on top
+  ("um 09:00") is a one-shot `cronjob` into this chat. Without the `tasks_*`
+  tools: the `cronjob` tool, with lead times the operator names (default: a
+  week and a day before a deadline).
 - Mail: read, summarise, answer and send from the agent's mailbox; move things
   into folders.
 - Letters and documents the operator hands over (attachments, uploads,

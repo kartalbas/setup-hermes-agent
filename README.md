@@ -824,6 +824,68 @@ What the bot needs from you: nothing new — the `claude` CLI is signed in for t
 service account (3.3a), and the bot's Teams app is installed like the others
 (1.5). On first contact it sets up a daily `opsctl report` at 07:00 in its chat.
 
+## 1.15 · The Tasks bot — tasks per tenant in Microsoft Planner
+
+A sixth kind of bot, for tasks: one sentence in its chat or a mail to its
+alias ("Acme neuer Task: RP anpassen, sobald der Kunde die Details liefert,
+CASE-2323") becomes a card in **Microsoft Planner** — in the bucket of the
+tenant named, with the reference, and with a start and a due date the bot
+asks for when the sentence has none. Every card is assigned to you, so it is
+in your Planner app and in To Do ("Assigned to me") on the phone without the
+bot in between. The store is Planner, not a file of the bot's: what you change
+in the app, the bot sees; what the bot creates, you see.
+
+Why Planner and not To Do or a store of the bot's own: To Do lists live in a
+mailbox, and writing into *yours* would need an application permission over
+every mailbox in the tenant, or a list shared by hand per tenant. A Planner
+plan lives in a Microsoft 365 group; the agent's account is a member, the
+delegated scope `Tasks.ReadWrite` is all it needs, and a tenant is one
+bucket the bot can add on your word. Decision record 0023.
+
+What the run does, with `AZURE_MANAGE=true` and the signed-in admin:
+
+| Step | Who | When |
+|------|-----|------|
+| Scope `Tasks.ReadWrite` declared and consented on the mail app | the run (azure module) | once |
+| The Microsoft 365 group `ASSISTANT_TASKS_GROUP`: you as owner and member, the agent's account as member; a Team on it when `ASSISTANT_TASKS_TEAM=true` | the run (azure module) | once, then verified |
+| The group's id and your object id recorded in the secrets file (`TASKS_GROUP_ID`, `TASKS_ASSIGNEE_ID`) | the run | once |
+| The plan `ASSISTANT_TASKS_PLAN` in that group and the buckets `ASSISTANT_TASKS_TENANTS` | the run (assistant module, as the agent's account) | once, then verified |
+| The bot's Entra app, Azure bot, hostname, Teams package; upload and `/sethome` | the run; the upload is yours (1.5) | once |
+
+Without `AZURE_MANAGE`: create the group yourself with the agent's account as a
+member, and put the group's id and your object id into the secrets file under
+the two names above.
+
+```bash
+BOTS="secretary search news github admin tasks"
+BOT_TASKS_CHANNELS="teams email"
+BOT_TASKS_MAIL_ALIAS="tasks@example.com"                  # an alias on the agent's mailbox; the run makes the rule and folder
+BOT_TASKS_MCP="tasks"
+BOT_TASKS_TOOLSET="memory session_search clarify cronjob"  # no terminal: Planner only through its tools
+ASSISTANT_TASKS_ENABLED=true
+ASSISTANT_TASKS_GROUP="Acme Tasks"                        # the Microsoft 365 group; a Team too with ASSISTANT_TASKS_TEAM=true
+ASSISTANT_TASKS_PLAN="Tasks"
+ASSISTANT_TASKS_ASSIGNEE="you@example.com"                # owner of the group, assignee of every card
+ASSISTANT_TASKS_TENANTS="Secretary,Acme,Globex"           # initial buckets; more on your word
+BOT_SECRETARY_MCP="m365 google tasks"                     # the Secretary files deadlines as cards in its own bucket
+```
+
+The bucket named like the Secretary is where that bot puts every deadline it
+reads off a letter or an invoice (start: the document's date; due: the
+deadline; amount and reference in the notes) — so the Tasks bot's morning
+digest, a `cronjob` at 07:00 it sets up on first contact, covers them too.
+Planner sends no reminders of its own; the digest and one-shot reminders at
+a time of day ("erinnere mich am 12.9. um 14:00 …") are the alarms, delivered
+as Teams messages — a push on the phone.
+
+Existing cards in another plan: Planner's API cannot move a card between
+plans. Recreate the few that matter through the bot ("Acme neuer Task …"),
+or move them in the Planner app, then delete the old plan.
+
+`tasksctl` (in `/usr/local/lib/hermes-assistant`) shows the plan and its
+buckets (`status`, `tenants`) and what is due (`due`, `digest`); the Admin bot's
+snapshot carries `tasksctl status`.
+
 ---
 
 # PART 2 — Fill the configuration
@@ -1430,6 +1492,30 @@ The proxy could not reach the provider's balance endpoint with the bot's key:
 `journalctl -u <service>-balance-deepseek` names the reason. The answer itself
 was delivered; the balance is fetched again after `API_PROXY_CACHE` seconds.
 
+### `assistant: the M365 token does not carry Tasks.ReadWrite yet`
+
+The scope was declared and consented in this run (or the azure module has not
+run at all, `AZURE_MANAGE=false`); the assistant's token was issued before
+that and is refreshed once by the run — when the grant has not replicated
+yet, the refreshed token still lacks the scope. Wait a few minutes and run
+`sudo ./install.sh --only assistant`; `m365ctl status` shows the scopes the
+token carries.
+
+### `Planner refuses to create the plan (HTTP 403)` / `assistant: could not ensure the plan`
+
+The agent's account must be a member of the group, and Planner learns of a
+membership minutes after the directory has it. The run added the account in
+the azure module of the same run; run `sudo ./install.sh --only assistant`
+again a little later. Still 403 after an hour: check in the Microsoft 365
+admin center that the group lists the agent's account as a member.
+
+### The bot says `no tenant named …`
+
+Tenants are the plan's buckets, matched by name regardless of case. A new
+customer is a new bucket, which the bot creates only on your explicit word
+("ja, neuer Tenant") — or add it in the Planner app; the bot sees it on the
+next call.
+
 ### `assistant: the mailbox … is not readable by … yet`
 
 The Exchange delegation is missing or not applied yet. Sign in to the Exchange
@@ -1662,7 +1748,7 @@ libs/             installer libraries, one per concern, numbered for source orde
 libs/azure/       Bicep: the Azure Bot and its Teams channel, deployed by 47-azure.sh
 bot/              the bot's own code, versioned separately (bot/VERSION, bot/CHANGELOG.md, bot/release.sh)
 bot/agy-shim/     the bridge between the agent and the inference CLI
-bot/mcp/          the assistant MCP servers (Microsoft 365; Google)
+bot/mcp/          the assistant MCP servers (Microsoft 365; Google; Tasks in Planner)
 bot/teams-app/    Teams app manifest template and icons (rendered from bot/assets/ by render-icons.sh)
 bot/build/        generated packages, gitignored
 config/           documented configuration; the real files are gitignored

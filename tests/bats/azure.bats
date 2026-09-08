@@ -133,3 +133,32 @@ PY
     [[ $output == *"bump it"* ]]
     rm -rf "$tmp"
 }
+
+@test "the Tasks group is a private Microsoft 365 group with the operator as owner and both accounts as members" {
+    body=$(_az_tasks_group_body "Acme Tasks" acmetasks owner-1 agent-1)
+    jq -e '.groupTypes == ["Unified"] and .mailEnabled == true and .securityEnabled == false and .visibility == "Private"' <<<"$body" >/dev/null
+    jq -e '.displayName == "Acme Tasks" and .mailNickname == "acmetasks"' <<<"$body" >/dev/null
+    jq -e '.["owners@odata.bind"] == ["https://graph.microsoft.com/v1.0/users/owner-1"]' <<<"$body" >/dev/null   # agnostic-ok: OData binding
+    jq -e '.["members@odata.bind"] | length == 2' <<<"$body" >/dev/null                                            # agnostic-ok: OData binding
+    body=$(_az_tasks_group_body "T" t same-1 same-1)
+    jq -e '.["members@odata.bind"] | length == 1' <<<"$body" >/dev/null   # one person in both roles is listed once; agnostic-ok: OData binding
+}
+
+@test "the recorded ids are written once, replaced when they change, left alone when equal" {
+    SECRETS_FILE=$(make_secrets_file <<<'OTHER=x')
+    secrets_load
+    _secrets_set TASKS_GROUP_ID gid-1
+    grep -qx 'TASKS_GROUP_ID=gid-1' "$SECRETS_FILE"
+    _secrets_set TASKS_GROUP_ID gid-1
+    [ "$(grep -c '^TASKS_GROUP_ID=' "$SECRETS_FILE")" -eq 1 ]
+    _secrets_set TASKS_GROUP_ID gid-2
+    grep -qx 'TASKS_GROUP_ID=gid-2' "$SECRETS_FILE"; ! grep -q 'gid-1' "$SECRETS_FILE"
+    grep -qx 'OTHER=x' "$SECRETS_FILE"
+    [ "$(stat -c %a "$SECRETS_FILE")" = 600 ]
+}
+
+@test "the Tasks group step is skipped when the Tasks side is off, and never runs az then" {
+    ASSISTANT_TASKS_ENABLED=false
+    az() { echo "az must not be called" >&2; return 1; }
+    _az_tasks_group_ensure
+}

@@ -186,6 +186,22 @@ config_defaults() {
     if [[ -n ${ASSISTANT_M365_READ_MAILBOXES} && " ${ASSISTANT_M365_SCOPES} " != *" Mail.Read.Shared "* ]]; then
         ASSISTANT_M365_SCOPES+=" Mail.Read.Shared"
     fi
+    # --- assistant, Tasks side: Microsoft Planner as the task store (README 1.15)
+    # One plan in a Microsoft 365 group the azure module creates; its buckets
+    # are the tenants; every card is assigned to the operator. Same account
+    # and token as the M365 side; the scope it needs is added here.
+    : "${ASSISTANT_TASKS_ENABLED:=false}"
+    : "${ASSISTANT_TASKS_GROUP:=}"                    # display name of the Microsoft 365 group (created by the run)
+    : "${ASSISTANT_TASKS_GROUP_NICK:=}"               # its mail nickname; empty = the name reduced to letters and digits
+    : "${ASSISTANT_TASKS_TEAM:=false}"                # true: the group is also a Team
+    : "${ASSISTANT_TASKS_PLAN:=Tasks}"                # the plan's title
+    : "${ASSISTANT_TASKS_ASSIGNEE:=}"                 # the operator: owner of the group, assignee of every card
+    : "${ASSISTANT_TASKS_TENANTS:=}"                  # initial buckets, comma-separated; the bot adds more on request
+    : "${ASSISTANT_TASKS_GROUP_ID_VAR:=TASKS_GROUP_ID}"        # written to the secrets file by the azure module —
+    : "${ASSISTANT_TASKS_ASSIGNEE_ID_VAR:=TASKS_ASSIGNEE_ID}"  # the run's write-back store, like the bots' client ids
+    if is_true "${ASSISTANT_TASKS_ENABLED}" && [[ " ${ASSISTANT_M365_SCOPES} " != *" Tasks.ReadWrite "* ]]; then
+        ASSISTANT_M365_SCOPES+=" Tasks.ReadWrite"
+    fi
     : "${ASSISTANT_STATE_DIR:=/var/lib/hermes-assistant}"
     : "${ASSISTANT_LIB_DIR:=/usr/local/lib/hermes-assistant}"
     : "${ASSISTANT_VENV:=${ASSISTANT_STATE_DIR}/venv}"
@@ -483,6 +499,30 @@ _check_read_accounts() {          # _check_read_accounts NAME VALUE OWN_ACCOUNT
     done
 }
 
+# The group's mail nickname: the configured one, or the display name reduced
+# to what Exchange accepts (lower-case letters and digits, no spaces).
+assistant_tasks_nickname() {
+    if [[ -n ${ASSISTANT_TASKS_GROUP_NICK:-} ]]; then printf '%s' "$ASSISTANT_TASKS_GROUP_NICK"; return 0; fi
+    tr '[:upper:]' '[:lower:]' <<<"${ASSISTANT_TASKS_GROUP:-}" | tr -cd 'a-z0-9'
+}
+
+# The Tasks side: a group, a plan, the operator — only when switched on.
+_check_tasks() {
+    is_true "${ASSISTANT_TASKS_ENABLED:-false}" || return 0
+    is_true "${ASSISTANT_M365_ENABLED:-false}" || _bad "ASSISTANT_TASKS_ENABLED=true needs ASSISTANT_M365_ENABLED=true (same account, same token)"
+    _check_required ASSISTANT_TASKS_GROUP "${ASSISTANT_TASKS_GROUP:-}" "the Microsoft 365 group that owns the plan"
+    _check_required ASSISTANT_TASKS_PLAN "${ASSISTANT_TASKS_PLAN:-}" "the plan's title"
+    [[ ${ASSISTANT_TASKS_ASSIGNEE:-} == *@* ]] || _bad "ASSISTANT_TASKS_ASSIGNEE must be the operator's sign-in address (got '${ASSISTANT_TASKS_ASSIGNEE:-}')"
+    [[ ${ASSISTANT_TASKS_ASSIGNEE,,} != "${ASSISTANT_M365_ACCOUNT,,}" ]] ||
+        _bad "ASSISTANT_TASKS_ASSIGNEE is the agent's own account; the cards are for the operator"
+    local names_re='^[A-Za-z0-9][A-Za-z0-9 _.-]*(,[A-Za-z0-9][A-Za-z0-9 _.-]*)*$'   # names may carry spaces; a bare regex would not parse
+    [[ -z ${ASSISTANT_TASKS_TENANTS:-} || ${ASSISTANT_TASKS_TENANTS} =~ $names_re ]] ||
+        _bad "ASSISTANT_TASKS_TENANTS must be comma-separated names (got '${ASSISTANT_TASKS_TENANTS}')"
+    case ${ASSISTANT_TASKS_TEAM:-} in true|false) ;; *) _bad "ASSISTANT_TASKS_TEAM must be true or false (got '${ASSISTANT_TASKS_TEAM:-}')" ;; esac
+    [[ $(assistant_tasks_nickname) =~ ^[a-z0-9]{1,64}$ ]] ||
+        _bad "the group's mail nickname must be 1-64 lower-case letters or digits (ASSISTANT_TASKS_GROUP_NICK, or a name that leaves some)"
+}
+
 # The admin tooling's settings, only when it is switched on.
 _check_ops() {
     is_true "${OPS_ENABLED:-false}" || return 0
@@ -588,6 +628,7 @@ config_validate() {
         [[ ${ASSISTANT_GITHUB_MCP_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || _bad "ASSISTANT_GITHUB_MCP_VERSION must be X.Y.Z"
     fi
     _check_ops
+    _check_tasks
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then
         _check_required ASSISTANT_GOOGLE_ACCOUNT "${ASSISTANT_GOOGLE_ACCOUNT:-}" "the Google account the assistant acts as"
         [[ ${ASSISTANT_GOOGLE_ACCOUNT:-} == *@* ]] || _bad "ASSISTANT_GOOGLE_ACCOUNT must be a sign-in address"
@@ -1034,7 +1075,8 @@ _bots_validate() {
             case $m in m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   || _bad "bot ${k}: MCP m365 needs ASSISTANT_M365_ENABLED=true" ;;
                        google) is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" || _bad "bot ${k}: MCP google needs ASSISTANT_GOOGLE_ENABLED=true" ;;
                        github) is_true "${ASSISTANT_GITHUB_ENABLED:-false}" || _bad "bot ${k}: MCP github needs ASSISTANT_GITHUB_ENABLED=true" ;;
-                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365, google, github)" ;; esac
+                       tasks)  is_true "${ASSISTANT_TASKS_ENABLED:-false}"  || _bad "bot ${k}: MCP tasks needs ASSISTANT_TASKS_ENABLED=true" ;;
+                       *) _bad "bot ${k}: unknown MCP server '${m}' (m365, google, github, tasks)" ;; esac
         done
         is_true "$(bot_field "$k" DASHBOARD)" && dashboards=$(( ${dashboards:-0} + 1 ))
         _check_session_reset "BOT_$(bot_upper "$k")_SESSION_RESET" "$(bot_field "$k" SESSION_RESET)"

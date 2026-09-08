@@ -24,6 +24,7 @@ azure_apply() {
     _az_ensure_bicep
     _az_verify_apps
     _az_mail_app_scopes
+    _az_tasks_group_ensure
     _az_ensure_group
 
     local key
@@ -547,4 +548,133 @@ _az_delegated_scopes_ensure() {
     mark_changed
     _AZ_CONSENT_CHANGED=true
     log_ok "admin consent granted (${label})"
+}
+
+# ---------------------------------------------------------------------------
+# The Tasks bot's home: a Microsoft 365 group that owns the Planner plan.
+#
+# Planner keeps plans in groups, and only a member may create cards in them.
+# So the run creates the group — the operator as owner and member, the
+# agent's account as member —, records the two ids the assistant needs in the
+# secrets file (the run's write-back store, like the bots' client ids: the
+# assistant's own scopes cannot look up groups or users, and must not), and,
+# when asked, makes the group a Team. Idempotent: the group is found by its
+# recorded id, else by its display name, else created.
+# ---------------------------------------------------------------------------
+_az_graph() { printf 'https://graph.microsoft.com/v1.0%s' "$1"; }
+
+_az_user_id() {                    # _az_user_id ADDRESS -> object id, or dies
+    local id
+    id=$(az ad user show --id "$1" --query id -o tsv 2>/dev/null) && [[ -n $id ]] ||
+        die "no user '${1}' in this tenant (ASSISTANT_TASKS_ASSIGNEE / ASSISTANT_M365_ACCOUNT)"
+    printf '%s' "$id"
+}
+
+# The group as Graph wants it: a Microsoft 365 group, mail-enabled, the
+# operator its owner, operator and agent its members.
+_az_tasks_group_body() {           # _az_tasks_group_body NAME NICK OWNER_ID AGENT_ID -> json
+    jq -nc --arg n "$1" --arg nick "$2" --arg o "$(_az_graph "/users/$3")" --arg a "$(_az_graph "/users/$4")" '{
+        displayName: $n, mailNickname: $nick, description: "Tasks — one bucket per tenant, kept by the assistant",
+        groupTypes: ["Unified"], mailEnabled: true, securityEnabled: false, visibility: "Private",
+        "owners@odata.bind": [$o],                       # agnostic-ok: OData binding annotations, not addresses
+        "members@odata.bind": ([$o, $a] | unique)}'      # agnostic-ok: OData binding annotations, not addresses
+}
+
+# Write KEY=VALUE into the secrets file: appended when absent, replaced when
+# it differs, untouched when equal. The file keeps its mode.
+_secrets_set() {
+    local key=$1 value=$2
+    if secret_has "$key"; then
+        [[ $(secret_get "$key") == "$value" ]] && return 0
+        [[ -w $SECRETS_FILE ]] || die "cannot write ${SECRETS_FILE}"
+        sed -i "s|^${key}=.*|${key}=${value}|" "$SECRETS_FILE"
+        secrets_load
+    else
+        _secrets_append "$key" "$value"
+    fi
+}
+
+_az_tasks_group_find() {           # -> the group's id, or nothing
+    local gid
+    if secret_nonempty "$ASSISTANT_TASKS_GROUP_ID_VAR"; then
+        gid=$(secret_get "$ASSISTANT_TASKS_GROUP_ID_VAR")
+        az rest --method GET --url "$(_az_graph "/groups/${gid}")" -o none 2>/dev/null ||
+            die "the group ${gid:0:8}… recorded as ${ASSISTANT_TASKS_GROUP_ID_VAR} no longer exists; remove that line from ${SECRETS_FILE} to have one created"
+        printf '%s' "$gid"
+        return 0
+    fi
+    az rest --method GET --url "$(_az_graph "/groups")" \
+        --url-parameters "\$filter=displayName eq '${ASSISTANT_TASKS_GROUP//\'/\'\'}'" "\$select=id" \
+        --query 'value[0].id' -o tsv 2>/dev/null || true
+}
+
+_az_group_member_ensure() {        # _az_group_member_ensure GROUP_ID USER_ID LABEL
+    if [[ $(az ad group member check --group "$1" --member-id "$2" --query value -o tsv 2>/dev/null) == true ]]; then
+        log_skip "member of '${ASSISTANT_TASKS_GROUP}': ${3}"
+        return 0
+    fi
+    run az ad group member add --group "$1" --member-id "$2" -o none
+    mark_changed; log_ok "added to '${ASSISTANT_TASKS_GROUP}': ${3}"
+}
+
+_az_group_owner_ensure() {         # _az_group_owner_ensure GROUP_ID USER_ID LABEL
+    if az ad group owner list --group "$1" --query '[].id' -o tsv 2>/dev/null | grep -qx "$2"; then
+        log_skip "owner of '${ASSISTANT_TASKS_GROUP}': ${3}"
+        return 0
+    fi
+    run az ad group owner add --group "$1" --owner-object-id "$2" -o none
+    mark_changed; log_ok "owner of '${ASSISTANT_TASKS_GROUP}': ${3}"
+}
+
+# A Team on the group. A group created minutes ago answers 404 here until it
+# has replicated; Microsoft's own advice is three tries ten seconds apart.
+_az_tasks_team_ensure() {          # _az_tasks_team_ensure GROUP_ID
+    if az rest --method GET --url "$(_az_graph "/groups/${1}/team")" -o none 2>/dev/null; then
+        log_skip "team '${ASSISTANT_TASKS_GROUP}' exists"
+        return 0
+    fi
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] would create the team on the group '${ASSISTANT_TASKS_GROUP}'"
+        return 0
+    fi
+    if retry 3 10 -- az rest --method PUT --url "$(_az_graph "/groups/${1}/team")" \
+            --body '{"memberSettings": {"allowCreateUpdateChannels": true}}' -o none; then
+        mark_changed; log_ok "team '${ASSISTANT_TASKS_GROUP}' created"
+    else
+        defer_failure "azure: the team on '${ASSISTANT_TASKS_GROUP}' could not be created yet (a new group replicates for up to 15 minutes); run the installer again"
+    fi
+}
+
+_az_tasks_group_ensure() {
+    is_true "${ASSISTANT_TASKS_ENABLED:-false}" || return 0
+    if [[ $DRY_RUN == true ]] && ! az account show >/dev/null 2>&1; then
+        log_info "[dry-run] would ensure the Microsoft 365 group '${ASSISTANT_TASKS_GROUP}' (owner ${ASSISTANT_TASKS_ASSIGNEE}, members ${ASSISTANT_TASKS_ASSIGNEE} and ${ASSISTANT_M365_ACCOUNT})"
+        return 0
+    fi
+    local owner_id agent_id gid
+    owner_id=$(_az_user_id "$ASSISTANT_TASKS_ASSIGNEE")
+    agent_id=$(_az_user_id "$ASSISTANT_M365_ACCOUNT")
+    gid=$(_az_tasks_group_find)
+    if [[ -n $gid ]]; then
+        log_skip "Microsoft 365 group '${ASSISTANT_TASKS_GROUP}' (${gid:0:8}…)"
+    else
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would create the Microsoft 365 group '${ASSISTANT_TASKS_GROUP}' and write ${ASSISTANT_TASKS_GROUP_ID_VAR} to ${SECRETS_FILE}"
+            return 0
+        fi
+        log_info "  creating the Microsoft 365 group '${ASSISTANT_TASKS_GROUP}' (nickname $(assistant_tasks_nickname))"
+        gid=$(az rest --method POST --url "$(_az_graph /groups)" \
+                --body "$(_az_tasks_group_body "$ASSISTANT_TASKS_GROUP" "$(assistant_tasks_nickname)" "$owner_id" "$agent_id")" \
+                --query id -o tsv) && [[ -n $gid ]] ||
+            die "could not create the Microsoft 365 group '${ASSISTANT_TASKS_GROUP}'"
+        mark_changed; log_ok "Microsoft 365 group '${ASSISTANT_TASKS_GROUP}' created (${gid:0:8}…)"
+    fi
+    [[ $DRY_RUN == true ]] && return 0
+    _secrets_set "$ASSISTANT_TASKS_GROUP_ID_VAR" "$gid"
+    _secrets_set "$ASSISTANT_TASKS_ASSIGNEE_ID_VAR" "$owner_id"
+    _az_group_member_ensure "$gid" "$owner_id" "$ASSISTANT_TASKS_ASSIGNEE"
+    _az_group_member_ensure "$gid" "$agent_id" "$ASSISTANT_M365_ACCOUNT"
+    _az_group_owner_ensure "$gid" "$owner_id" "$ASSISTANT_TASKS_ASSIGNEE"
+    is_true "${ASSISTANT_TASKS_TEAM:-false}" && _az_tasks_team_ensure "$gid"
+    return 0
 }

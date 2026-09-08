@@ -25,3 +25,4 @@ Status is `accepted`, `superseded by NNNN`, or `proposed`.
 | [0015](0015-everything-in-the-repository.md) | Everything prepared in the repository | accepted |
 | [0016](0016-account-with-sudo.md) | Service account has sudo, and is where work happens | accepted |
 | [0022](0022-operator-mailboxes-read-only-through-sub-agents.md) | The operator's own mailboxes: read-only, analysed by sub-agents on the subscription | accepted |
+| [0023](0023-tasks-in-planner-not-to-do-or-own-store.md) | Tasks live in Microsoft Planner, not in To Do and not in a store of the bot's own | accepted |

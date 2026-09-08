@@ -5,6 +5,7 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Tasks bot (`bot/roles/tasks.md`, MCP server `bot/mcp/tasks_assistant.py`, module `assistant`): tasks per tenant in Microsoft Planner — one plan in a Microsoft 365 group the run creates (`ASSISTANT_TASKS_*`; owner the operator, member the agent's account, optionally a Team), one bucket per tenant, every card assigned to the operator; `tasks_add` demands start and due date; `tasksctl status|tenants|due|digest`; the Secretary files deadlines as cards in its own bucket; scope `Tasks.ReadWrite` added and consented by the run
 - Installer: `AGENT_CRON_DRIFT_GUARD` (default false) — reminders fire after a provider or model change instead of being skipped as "drift"
 
 - Installer: `CHANNELS_COMMAND_ALLOWLIST` / `BOT_<KEY>_COMMAND_ALLOWLIST` record "Always allowed" approval categories in configuration (union with what the chat added)

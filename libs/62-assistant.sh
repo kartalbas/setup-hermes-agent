@@ -33,17 +33,20 @@ assistant_apply() {
     is_true "${ASSISTANT_M365_ENABLED:-false}" && any=true
     is_true "${ASSISTANT_GOOGLE_ENABLED:-false}" && any=true
     is_true "${ASSISTANT_GITHUB_ENABLED:-false}" && any=true
+    is_true "${ASSISTANT_TASKS_ENABLED:-false}" && any=true
 
     if [[ $any != true ]]; then
         _assistant_disable_all m365
         _assistant_disable_all google
         _assistant_disable_all github
+        _assistant_disable_all tasks
         return 0
     fi
 
     _assistant_venv
     _assistant_install_code
     if is_true "${ASSISTANT_M365_ENABLED:-false}"; then _assistant_m365; else _assistant_disable_all m365; fi
+    if is_true "${ASSISTANT_TASKS_ENABLED:-false}"; then _assistant_tasks; else _assistant_disable_all tasks; fi
     if is_true "${ASSISTANT_GOOGLE_ENABLED:-false}"; then _assistant_google; else _assistant_disable_all google; fi
     if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then _assistant_github; else _assistant_disable_all github; fi
     (( $(bot_count) == 0 )) && converge_unit "${SERVICE_NAME}.service" "$before"
@@ -58,7 +61,7 @@ assistant_apply() {
 # with; a bot already restarted in this run only gets the stamp.
 _assistant_code_stamp() {         # -> short hash over the installed servers and their env files
     local f files=()
-    for f in "$ASSISTANT_LIB_DIR"/*.py "$(assistant_m365_env_file)" "$(assistant_google_env_file)" "$(assistant_github_env_file)"; do
+    for f in "$ASSISTANT_LIB_DIR"/*.py "$(assistant_m365_env_file)" "$(assistant_google_env_file)" "$(assistant_github_env_file)" "$(assistant_tasks_env_file)"; do
         [[ -f $f ]] && files+=("$f")
     done
     (( ${#files[@]} > 0 )) || { printf 'none'; return 0; }
@@ -703,6 +706,143 @@ _assistant_github_register_all() {
             else yaml_merge <<<"$(_assistant_github_fragment)"; fi
         else
             _assistant_disable github
+        fi
+        converge_unit "${BOT_SERVICE}.service" "$before"
+        bot_context_end
+    done < <(bots)
+}
+
+# ---------------------------------------------------------------------------
+# Tasks — Microsoft Planner through the same account and token as the
+# Microsoft 365 side (README 1.15). The azure module made the group and
+# recorded its id and the operator's id in the secrets file; this module
+# writes the server's env, makes sure the token carries the Planner scope,
+# creates the plan and the initial buckets, and registers the server in every
+# profile that lists "tasks".
+# ---------------------------------------------------------------------------
+assistant_tasks_env_file() { printf '%s/tasks.env' "$ASSISTANT_STATE_DIR"; }
+assistant_tasksctl()       { printf '%s/tasksctl' "$ASSISTANT_LIB_DIR"; }
+
+_assistant_tasks() {
+    local account=$ASSISTANT_M365_ACCOUNT tenant client
+    tenant=$(secret_require "$ASSISTANT_M365_TENANT_ID_VAR" "the assistant (M365 tenant)")
+    client=$(secret_require "$ASSISTANT_M365_CLIENT_ID_VAR" "the assistant (M365 client id)")
+    log_info "assistant      tasks in Planner: group '${ASSISTANT_TASKS_GROUP}', plan '${ASSISTANT_TASKS_PLAN}', cards for ${ASSISTANT_TASKS_ASSIGNEE}"
+    if ! secret_nonempty "$ASSISTANT_TASKS_GROUP_ID_VAR" || ! secret_nonempty "$ASSISTANT_TASKS_ASSIGNEE_ID_VAR"; then
+        if [[ $DRY_RUN == true ]] && is_true "${AZURE_MANAGE:-false}"; then
+            log_info "[dry-run] ${ASSISTANT_TASKS_GROUP_ID_VAR} / ${ASSISTANT_TASKS_ASSIGNEE_ID_VAR} are recorded by the azure module in a real run; the Tasks side is configured after that"
+            return 0
+        fi
+        log_error "the Tasks side needs ${ASSISTANT_TASKS_GROUP_ID_VAR} and ${ASSISTANT_TASKS_ASSIGNEE_ID_VAR} in the secrets file."
+        log_error "  The azure module writes them (AZURE_MANAGE=true, signed in as an admin). Without it: create the Microsoft 365 group"
+        log_error "  yourself with ${account} as a member, and put the group's id and ${ASSISTANT_TASKS_ASSIGNEE}'s object id there."
+        defer_failure "assistant: the Tasks group is not recorded yet"
+        _assistant_disable_all tasks
+        return 0
+    fi
+    _assistant_tasks_wrapper "$tenant" "$client" "$account"
+    _assistant_tasks_plan
+    _assistant_tasks_register_all "$tenant" "$client" "$account"
+}
+
+# The M365 env plus the plan's coordinates. Nothing secret: ids of a group and
+# of a user in the operator's own tenant.
+_assistant_tasks_env_lines() {     # _assistant_tasks_env_lines TENANT CLIENT ACCOUNT -> "K=V" lines
+    _assistant_m365_env_lines "$@"
+    printf 'M365_TASKS_GROUP_ID=%s\nM365_TASKS_PLAN=%s\nM365_TASKS_ASSIGNEE=%s\nM365_TASKS_ASSIGNEE_ID=%s\n' \
+        "$(secret_get "$ASSISTANT_TASKS_GROUP_ID_VAR" 2>/dev/null || true)" "$ASSISTANT_TASKS_PLAN" \
+        "$ASSISTANT_TASKS_ASSIGNEE" "$(secret_get "$ASSISTANT_TASKS_ASSIGNEE_ID_VAR" 2>/dev/null || true)"
+}
+
+_assistant_tasks_fragment() {      # _assistant_tasks_fragment TENANT CLIENT ACCOUNT -> yaml
+    local line
+    cat <<EOF2
+mcp_servers:
+  tasks:
+    enabled: true
+    command: "$(assistant_python)"
+    args: ["${ASSISTANT_LIB_DIR}/tasks_assistant.py", "serve"]
+    timeout: 120
+    connect_timeout: 30
+    env:
+EOF2
+    while IFS= read -r line; do
+        printf '      %s: "%s"\n' "${line%%=*}" "${line#*=}"
+    done < <(_assistant_tasks_env_lines "$@")
+}
+
+_assistant_tasks_wrapper() {
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] write $(assistant_tasks_env_file) and $(assistant_tasksctl)"
+        return 0
+    fi
+    write_file "$(assistant_tasks_env_file)" 0640 "${SERVICE_USER}:${SERVICE_GROUP}" \
+        <<<"$(_assistant_tasks_env_lines "$@" | sed "s/^\([A-Z_0-9]*\)=\(.*\)$/\1='\2'/")"
+    write_file "$(assistant_tasksctl)" 0755 <<EOF2
+#!/usr/bin/env bash
+# Runs the Tasks assistant's commands with its configured environment:
+#   tasksctl status | ensure-plan [BUCKET,BUCKET] | tenants | due | digest | tools | serve
+set -euo pipefail
+set -a; . "$(assistant_tasks_env_file)"; set +a
+exec "$(assistant_python)" "${ASSISTANT_LIB_DIR}/tasks_assistant.py" "\$@"
+EOF2
+}
+
+# The token must carry Tasks.ReadWrite before Planner answers. The scope is
+# declared and consented with the others; a token issued before that consent
+# lacks it until refreshed, so refresh once and say so when it is still
+# missing (the directory replicates a fresh consent for a few minutes).
+_assistant_tasks_scope_ready() {   # -> 0 when the token carries the Planner scope
+    local ctl status; ctl=$(assistant_m365ctl)
+    status=$(runuser -u "$SERVICE_USER" -- "$ctl" status 2>/dev/null) || return 1
+    [[ $(jq -r '.scopes // ""' <<<"$status") == *Tasks.ReadWrite* ]] && return 0
+    log_info "  the token lacks Tasks.ReadWrite; refreshing it"
+    runuser -u "$SERVICE_USER" -- "$ctl" refresh >/dev/null 2>&1 || return 1
+    status=$(runuser -u "$SERVICE_USER" -- "$ctl" status 2>/dev/null) || return 1
+    [[ $(jq -r '.scopes // ""' <<<"$status") == *Tasks.ReadWrite* ]]
+}
+
+_assistant_tasks_plan() {
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] ensure the plan '${ASSISTANT_TASKS_PLAN}' and the buckets ${ASSISTANT_TASKS_TENANTS:-<none>} in the group"
+        return 0
+    fi
+    [[ -s $(assistant_m365_token_file) ]] || { log_skip "no token yet; the plan is created after the sign-in"; return 0; }
+    if ! _assistant_tasks_scope_ready; then
+        defer_failure "assistant: the M365 token does not carry Tasks.ReadWrite yet — the consent is minutes old, or the azure module has not run; run the installer again"
+        return 0
+    fi
+    local out
+    if out=$(runuser -u "$SERVICE_USER" -- "$(assistant_tasksctl)" ensure-plan "${ASSISTANT_TASKS_TENANTS:-}" 2>&1); then
+        if [[ $(jq -r '.created' <<<"$out" 2>/dev/null) == true ]]; then
+            mark_changed; log_ok "plan '${ASSISTANT_TASKS_PLAN}' created in '${ASSISTANT_TASKS_GROUP}'"
+        else
+            log_skip "plan '${ASSISTANT_TASKS_PLAN}' present"
+        fi
+        local made; made=$(jq -r '.buckets_created // [] | join(", ")' <<<"$out" 2>/dev/null)
+        if [[ -n $made ]]; then mark_changed; log_ok "tenants created: ${made}"; fi
+        log_ok "tenants        $(jq -r '.tenants // [] | join(", ")' <<<"$out" 2>/dev/null)"
+    else
+        defer_failure "assistant: could not ensure the plan '${ASSISTANT_TASKS_PLAN}': ${out}"
+    fi
+}
+
+_assistant_tasks_register_all() {
+    if (( $(bot_count) == 0 )); then
+        [[ $DRY_RUN == true ]] && { log_info "[dry-run] register mcp_servers.tasks"; return 0; }
+        yaml_merge <<<"$(_assistant_tasks_fragment "$@")"
+        return 0
+    fi
+    local key before
+    while IFS= read -r key; do
+        [[ -n $key ]] || continue
+        bot_context "$key"
+        before=$CHANGE_COUNT
+        if bot_has_mcp "$key" tasks; then
+            if [[ $DRY_RUN == true ]]; then log_info "[dry-run] register mcp_servers.tasks in ${BOT_KEY}"
+            else yaml_merge <<<"$(_assistant_tasks_fragment "$@")"; fi
+        else
+            _assistant_disable tasks
         fi
         converge_unit "${BOT_SERVICE}.service" "$before"
         bot_context_end

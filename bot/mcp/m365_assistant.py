@@ -153,14 +153,17 @@ class Graph:
 
     def call(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
              json_body: Any = None, data: Optional[bytes] = None, prefer: Optional[str] = None,
-             content_type: Optional[str] = None, raw: bool = False) -> Any:
+             content_type: Optional[str] = None, raw: bool = False,
+             headers: Optional[Dict[str, str]] = None) -> Any:
         url = path if path.startswith("http") else f"{GRAPH}{path}"
-        headers = {"Authorization": f"Bearer {self.auth.access_token()}"}
+        hdrs = {"Authorization": f"Bearer {self.auth.access_token()}"}
         if prefer:
-            headers["Prefer"] = prefer
+            hdrs["Prefer"] = prefer
         if content_type:
-            headers["Content-Type"] = content_type
-        return http(method, url, headers=headers, params=params, json_body=json_body, data=data, raw=raw)
+            hdrs["Content-Type"] = content_type
+        if headers:                      # e.g. Planner's If-Match
+            hdrs.update(headers)
+        return http(method, url, headers=hdrs, params=params, json_body=json_body, data=data, raw=raw)
 
     def download(self, url: str) -> bytes:
         payload, _ = http("GET", url, raw=True, timeout=120)
