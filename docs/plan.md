@@ -99,7 +99,7 @@ Second MCP server (`src/mcp/google_assistant.py`), same module, same venv, own t
 - [ ] Reboot test of the four-bot host (units ordered after bridge/relay since 2026-09-07; never rebooted since the bots exist): reboot at a quiet hour, then the checklist in README part 5
 - [ ] Receipts end to end: Teams question → delegate_task on the bridge → CSV in `Secretary/Receipts/<YYYY>/` — first real run pending
 - [ ] Antigravity terms item 6 (third-party tools accessing the service): spawn-only wrapper is a grey zone Google has not answered; operator decision to record in an ADR
-- [ ] Bridge bug (reported 2026-09-08, not started): "warum fallen gerade die Märkte?" came back to the chat as raw text — two `tool_calls` envelopes glued together with a stray token (`…]幻assistant\n{…`), the second with `arguments` as a JSON *string* instead of an object. `parse_decision` must take the first complete envelope and accept string-encoded arguments; add both shapes to `tests/python/test_agy_shim.py`
+- [x] Bridge bug (2026-09-08): "warum fallen gerade die Märkte?" came back to the chat as raw text — two `tool_calls` envelopes glued together with a stray token (`…]幻assistant\n{…`), the second with `arguments` as a JSON *string*. `parse_decision` now tries every `{` and takes the first envelope that parses (the rewrite), and decodes string-encoded arguments, escaped or not; the reported answer verbatim is a test in `tests/python/test_agy_shim.py`. Mirror: `sudo ./install.sh --only agyshim`
 
 - [x] GitHub bot (2026-09-06): fourth bot on the bridge with the official GitHub MCP server 1.12.0, alias github@, Teams chat; live: lists the operator's repositories through the bridge
 - [x] Decision (2026-09-06): the GitHub bot runs with the operator's admin token on purpose — full rights over every repository; safety comes from the role (merge, close, delete, force-push only on explicit confirmation), not from the token
@@ -160,7 +160,8 @@ Planner has none. ADR 0023.
 - [x] MCP server `bot/mcp/tasks_assistant.py` (Planner over the M365 token, `Tasks.ReadWrite`), `tasksctl`, role, help page, tests
 - [x] Azure module: the Microsoft 365 group with owner and members, ids recorded in the secrets file, optional Team; assistant module: plan and initial buckets
 - [x] Configuration: `tasks` in BOTS with alias tasks@, `ASSISTANT_TASKS_*`; the Secretary gets the `tasks` server and files deadlines in its own bucket
-- [ ] Full installer run (consent for the new scope, group, plan, Entra app, Azure bot, Teams package), upload the package, `/sethome`, first sentence
+- [x] Full installer run (consent for the new scope, group, plan, Entra app, Azure bot, Teams package) — 2026-09-08, plan `Tasks` with the four buckets live, the bot unit active
+- [ ] Upload the package, `/sethome`, first sentence in the chat
 - [ ] The two tax cards from the old personal plan recreated through the bot (or moved in the app); the old plan deleted
 - [ ] Morning digest set up by the bot on first contact; Secretary's next letter with a deadline lands as a card
 - [ ] Later: a card's checklist and attachments; tenant-specific defaults (priority, lead time)

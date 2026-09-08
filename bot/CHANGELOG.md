@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Bridge: a decision the model abandoned and rewrote (two envelopes glued with a stray token) yields the rewrite; arguments encoded as a string — escaped or with unescaped quotes — are decoded (a Search answer reached the chat as raw JSON, 2026-09-08)
+
 ## 0.3.0 — 2026-09-08
 
 - Tasks bot (`bot/roles/tasks.md`, MCP server `bot/mcp/tasks_assistant.py`, module `assistant`): tasks per tenant in Microsoft Planner — one plan in a Microsoft 365 group the run creates (`ASSISTANT_TASKS_*`; owner the operator, member the agent's account, optionally a Team), one bucket per tenant, every card assigned to the operator; `tasks_add` demands start and due date; `tasksctl status|tenants|due|digest`; the Secretary files deadlines as cards in its own bucket; scope `Tasks.ReadWrite` added and consented by the run

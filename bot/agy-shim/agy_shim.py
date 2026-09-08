@@ -953,68 +953,104 @@ def parse_decision(text: str) -> tuple[str, list]:
     Tolerant on purpose: a model that wraps its JSON in a sentence is still
     telling us what it wants, and failing the whole turn over punctuation
     would be worse than the occasional passthrough.
+
+    Every "{" is tried in turn and the first envelope that parses wins: the
+    model has been seen to abandon an envelope before its closing brace,
+    emit a stray token, and write it again (2026-09-08) — the rewrite is the
+    decision. Arguments may arrive as a string, escaped or with the object's
+    own quotes unescaped; both are decoded back into the object.
     """
     raw = _FENCE.sub("", text or "").strip()
-    start = raw.find("{")
-    if start < 0:
-        return text, []
 
-    depth, end, in_str, esc = 0, -1, False, False
-    for i, ch in enumerate(raw[start:], start):
-        if in_str:
-            if esc:      esc = False
-            elif ch == "\\": esc = True
-            elif ch == '"':  in_str = False
-            continue
-        if ch == '"':   in_str = True
-        elif ch == "{": depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    if end < 0:
-        return text, []
+    def try_parse(start_idx: int) -> int:
+        depth, end, in_str, esc = 0, -1, False, False
+        for i, ch in enumerate(raw[start_idx:], start_idx):
+            if in_str:
+                if esc:      esc = False
+                elif ch == "\\": esc = True
+                elif ch == '"':  in_str = False
+                continue
+            if ch == '"':   in_str = True
+            elif ch == "{": depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        return end
 
-    try:
-        # strict=False: a model writes real newlines inside the string; JSON
-        # forbids them, the reader lived with them (a News briefing arrived as
-        # its raw envelope, 2026-09-07).
-        obj = json.loads(raw[start:end], strict=False)
-    except json.JSONDecodeError:
-        lenient = _lenient_message(raw[start:end])
-        if lenient is not None:
-            return lenient, []
-        return text, []
-    if not isinstance(obj, dict):
-        return text, []
+    def fix_unescaped_arguments(s: str) -> str:
+        def repl(m):
+            inner = m.group(1)
+            try:
+                json.loads(inner)
+                return '"arguments":' + inner
+            except json.JSONDecodeError:
+                try:
+                    unescaped = inner.replace('\\"', '"')
+                    json.loads(unescaped)
+                    return '"arguments":' + unescaped
+                except json.JSONDecodeError:
+                    return m.group(0)
+        return re.sub(r'"arguments"\s*:\s*"(\{.*?\})"(?=\s*[,}\]])', repl, s)
 
-    kind = obj.get("type")
-    if kind == "message":
-        return str(obj.get("content", "")), []
+    def extract(obj: dict) -> tuple[str, list]:
+        kind = obj.get("type")
+        if kind == "message":
+            return str(obj.get("content", "")), []
 
-    calls = []
-    if kind == "tool_call":
-        calls = [obj]
-    elif kind == "tool_calls":
-        calls = obj.get("calls") or []
-    if not calls:
-        return text, []
+        calls = []
+        if kind == "tool_call":
+            calls = [obj]
+        elif kind == "tool_calls":
+            calls = obj.get("calls") or []
+        if not calls:
+            return text, []
 
-    out = []
-    for c in calls:
-        name = (c or {}).get("name")
-        if not name:
-            continue
-        out.append({
-            "id": "call_" + uuid.uuid4().hex[:20],
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": json.dumps(c.get("arguments") or {}, separators=(",", ":")),
-            },
-        })
-    return ("", out) if out else (text, [])
+        out = []
+        for c in calls:
+            name = (c or {}).get("name")
+            if not name:
+                continue
+            args = c.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    pass
+            out.append({
+                "id": "call_" + uuid.uuid4().hex[:20],
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args or {}, separators=(",", ":")) if isinstance(args, dict) else (args if isinstance(args, str) else "{}"),
+                },
+            })
+        return ("", out) if out else (text, [])
+
+    search_start = 0
+    while True:
+        start = raw.find("{", search_start)
+        if start < 0:
+            break
+        end = try_parse(start)
+        if end > 0:
+            candidate = raw[start:end]
+            fixed = fix_unescaped_arguments(candidate)
+            try:
+                # strict=False: a model writes real newlines inside the string; JSON
+                # forbids them, the reader lived with them (a News briefing arrived as
+                # its raw envelope, 2026-09-07).
+                obj = json.loads(fixed, strict=False)
+                if isinstance(obj, dict) and "type" in obj:
+                    return extract(obj)
+            except json.JSONDecodeError:
+                lenient = _lenient_message(candidate)
+                if lenient is not None:
+                    return lenient, []
+        search_start = start + 1
+
+    return text, []
 
 
 def split_history(messages: list[dict]) -> tuple[str, list[str], str]:
