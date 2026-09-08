@@ -90,6 +90,10 @@ config_defaults() {
     : "${AGY_SHIM_MODELS:=}"
     : "${AGY_SHIM_MODEL_ALIASES:=}"
     : "${AGY_SHIM_UNKNOWN_MODEL:=reject}"
+    # The caller's functions as REAL tools of the CLI (ADR 0024): auto turns
+    # them on once the CLI's configuration names the bridge's tools server,
+    # which this run writes. "off" keeps the text protocol.
+    : "${AGY_SHIM_NATIVE_TOOLS:=auto}"
     : "${AGY_SHIM_MAX_CONCURRENT:=3}"
     : "${AGY_SHIM_MAX_PROCESSES:=6}"
     : "${AGY_SHIM_IDLE_TIMEOUT:=900}"
@@ -796,6 +800,7 @@ _validate_agyshim() {
     _validating agyshim || return 0
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
+    _check_enum AGY_SHIM_NATIVE_TOOLS "$AGY_SHIM_NATIVE_TOOLS" auto on off
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
     _check_abs_path AGY_SHIM_LIB_DIR "$AGY_SHIM_LIB_DIR"
     [[ $AGY_SHIM_HOST == 0.0.0.0 ]] &&

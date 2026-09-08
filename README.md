@@ -1662,14 +1662,25 @@ begins with the bot's display name — the name is read from its
 
 ### `The model provider failed after retries` — bridge log says `improperly formatted function call`
 
-The CLI keeps one built-in function declared whatever the agent definition
-says, so the model can emit native function calls — and does so for the
-caller's tool names. A parseable one fails as `unknown tool` and the bridge now
-takes it as the decision; an unparseable one the API rejects as malformed, the
-CLI retries three times and fails the turn. The bridge retries once with a
-plain-text reminder. If a bot still fails like this on every turn, its
-transcript is teaching the model the wrong channel: `/reset` the chat, and
-check `AGENT_TOOL_SEARCH=off` so the real tool names are in front of the model.
+This is the failure the native tool channel was built for (ADR 0024). The
+model wants to call functions natively; when none are declared, the API
+rejects every attempt, the CLI retries three times and the turn is lost. Since
+bot 0.4.x the run registers the bridge's tools server with the CLI, so the
+caller's functions ARE declared and the model calls them properly.
+
+If you still see it, the channel is not in place. Check, in this order:
+
+```bash
+curl -s http://127.0.0.1:8787/stats | grep -o '"mode":[^,]*'   # want: …+native-tools
+grep -o 'mcp(tools/[^)]*)' ~<account>/.gemini/antigravity-cli/settings.json
+python3 -c 'import json;print(json.load(open("<home>/.gemini/config/mcp_config.json"))["mcpServers"].keys())'
+sudo ./install.sh --only agyshim                                # writes both, then restarts the bridge
+```
+
+The bridge falls back to the text protocol when the CLI does not know the
+server, and salvages a denied call's arguments when the allow rule is missing —
+both keep answering, both cost turns. A bot whose transcript already taught it
+the wrong channel is cleared with `/reset` in its chat.
 
 ### `The model provider failed after retries` — and the agent never acts
 
@@ -1682,10 +1693,11 @@ RuntimeError: jetski: no output produced — a tool required the "command"
 permission that headless mode cannot prompt for, so it was auto-denied.
 ```
 
-The bridge handles this by telling the CLI it has no tools and giving it a
-contract instead: answer with a JSON decision, and the caller will execute. So
-if you see this, the contract did not reach it — check that the request
-actually carried tool definitions:
+The bridge handles this by giving the CLI the caller's functions as real tools
+(the `tools` MCP server, ADR 0024) and disabling its own; a completed call to
+that server is the decision the gateway executes. So if you see this, neither
+channel reached the model — check that the request actually carried tool
+definitions:
 
 ```bash
 journalctl -u <service>-bridge -f     # a served turn logs "N tool call(s)"
@@ -1747,7 +1759,7 @@ bootstrap.sh      optional: create the account, mirror the repository into it
 libs/             installer libraries, one per concern, numbered for source order
 libs/azure/       Bicep: the Azure Bot and its Teams channel, deployed by 47-azure.sh
 bot/              the bot's own code, versioned separately (bot/VERSION, bot/CHANGELOG.md, bot/release.sh)
-bot/agy-shim/     the bridge between the agent and the inference CLI
+bot/agy-shim/     the bridge between the agent and the inference CLI (agy_shim.py) and the caller's tools as an MCP server (tools_mcp.py)
 bot/mcp/          the assistant MCP servers (Microsoft 365; Google; Tasks in Planner)
 bot/teams-app/    Teams app manifest template and icons (rendered from bot/assets/ by render-icons.sh)
 bot/build/        generated packages, gitignored

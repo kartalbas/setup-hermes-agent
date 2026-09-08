@@ -24,6 +24,7 @@ agyshim_apply() {
     local before=$CHANGE_COUNT
     _agyshim_check_cli
     _agyshim_install_script
+    _agyshim_tools_server
     _agyshim_write_unit
     converge_unit "$(agyshim_unit_name).service" "$before"
     _agyshim_verify
@@ -36,6 +37,7 @@ AGY_SHIM_BINARY_RESOLVED=""
 
 agyshim_unit_name() { printf '%s-bridge' "$SERVICE_NAME"; }
 agyshim_script_path() { printf '%s/agy_shim.py' "${AGY_SHIM_LIB_DIR}"; }
+agyshim_tools_script_path() { printf '%s/tools_mcp.py' "${AGY_SHIM_LIB_DIR}"; }
 
 # ---------------------------------------------------------------------------
 # The CLI must exist and be signed in AS THE SERVICE ACCOUNT
@@ -111,8 +113,115 @@ _agyshim_install_script() {
     # write_file compares before writing, so an unchanged bridge is not
     # reinstalled and the service is not restarted for nothing.
     write_file "$(agyshim_script_path)" 0755 <<<"$(cat "$source")"
+    local tools_src="${SCRIPT_DIR}/bot/agy-shim/tools_mcp.py"
+    [[ -f $tools_src ]] || die "the tools server is missing at ${tools_src}"
+    write_file "$(agyshim_tools_script_path)" 0755 <<<"$(cat "$tools_src")"
     # The installed bot's version, so a host can say which bot it runs.
     write_file "${AGY_SHIM_LIB_DIR}/VERSION" 0644 <<<"$(bot_version)"
+}
+
+# ---------------------------------------------------------------------------
+# The caller's tools as REAL tools of the CLI (ADR 0024)
+#
+# Two files of the CLI's own, both written by the CLI as well, so both are
+# MERGED rather than rendered: its MCP registry gets our server, and its
+# settings get the allow rule without which headless mode auto-denies every
+# call (verified E8, 2026-09-09). They belong to the service account, so the
+# merge runs as that account.
+#
+# The server reads the tool list from ITS WORKING DIRECTORY — the CLI's
+# per-conversation directory, written by the bridge before the spawn — so this
+# one global entry serves every bot with that bot's own tools.
+# ---------------------------------------------------------------------------
+agyshim_cli_config_dir()   { printf '%s/.gemini/config' "$1"; }        # $1 = the account's home
+agyshim_cli_settings()     { printf '%s/.gemini/antigravity-cli/settings.json' "$1"; }
+agyshim_tools_server_name() { printf 'tools'; }
+
+# The merge itself, as a program: reads the file (or starts from {}), applies
+# the change, writes only when something differs, prints "changed" or "same".
+# Kept here rather than in a helper file so the module stays self-contained.
+_agyshim_merge_program() {
+    cat <<'PY'
+import json, os, sys
+path, kind, a, b = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f) or {}
+except (OSError, ValueError):
+    data = {}
+if not isinstance(data, dict):
+    sys.exit(f"{path} is not a JSON object; leaving it alone")
+before = json.dumps(data, sort_keys=True)
+if kind == "server":
+    servers = data.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        sys.exit(f"{path}: mcpServers is not an object")
+    servers[a] = {"command": b, "args": [sys.argv[5]]}
+else:
+    allow = data.setdefault("permissions", {}).setdefault("allow", [])
+    if not isinstance(allow, list):
+        sys.exit(f"{path}: permissions.allow is not a list")
+    if a not in allow:
+        allow.append(a)
+if json.dumps(data, sort_keys=True) == before:
+    print("same")
+    sys.exit(0)
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=1)
+os.replace(tmp, path)
+print("changed")
+PY
+}
+
+_agyshim_tools_server() {
+    local user=${SERVICE_USER:-$(id -un)} home name py out
+    name=$(agyshim_tools_server_name)
+    home=$(getent passwd "$user" | cut -d: -f6)
+    py=$(command -v python3 || printf /usr/bin/python3)
+    if [[ -z $home ]]; then
+        log_warn "no home directory for ${user}; the CLI cannot be told about the tools server"
+        return 0
+    fi
+    local mcp_config settings config_dir
+    config_dir=$(agyshim_cli_config_dir "$home")
+    mcp_config="${config_dir}/mcp_config.json"
+    settings=$(agyshim_cli_settings "$home")
+
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] register the MCP server '${name}' (${py} $(agyshim_tools_script_path)) in ${mcp_config}"
+        log_info "[dry-run] allow mcp(${name}/*) in ${settings}"
+        return 0
+    fi
+    ensure_dir "$config_dir" 0755 "${user}:${SERVICE_GROUP:-$user}"
+
+    if out=$(runuser -u "$user" -- "$py" -c "$(_agyshim_merge_program)" \
+                "$mcp_config" server "$name" "$py" "$(agyshim_tools_script_path)" 2>&1); then
+        case $out in
+            changed) mark_changed; log_ok "MCP server '${name}' registered with the CLI (${mcp_config})" ;;
+            *)       log_skip "MCP server '${name}' registered with the CLI" ;;
+        esac
+    else
+        defer_failure "bridge: could not register the tools server with the CLI: ${out}"
+        return 0
+    fi
+
+    # Without the allow rule the CLI auto-denies every call in headless mode:
+    # the bridge salvages the arguments, but the model pays a turn for it.
+    if [[ ! -f $settings ]]; then
+        log_warn "no ${settings} yet (the CLI writes it on first use); re-run this module after the first sign-in so mcp(${name}/*) is allowed"
+        return 0
+    fi
+    if out=$(runuser -u "$user" -- "$py" -c "$(_agyshim_merge_program)" \
+                "$settings" allow "mcp(${name}/*)" - 2>&1); then
+        case $out in
+            changed) mark_changed; log_ok "the CLI may call the tools server (allow mcp(${name}/*))" ;;
+            *)       log_skip "the CLI may call the tools server" ;;
+        esac
+    else
+        defer_failure "bridge: could not allow mcp(${name}/*) in ${settings}: ${out}"
+    fi
 }
 
 _agyshim_write_unit() {
@@ -154,7 +263,8 @@ ExecStart=${py} $(agyshim_script_path) \\
     --max-concurrent ${AGY_SHIM_MAX_CONCURRENT} \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
-    --compact-at ${AGY_SHIM_COMPACT_AT}${AGY_SHIM_MODEL_ALIASES:+ \\
+    --compact-at ${AGY_SHIM_COMPACT_AT} \\
+    --native-tools ${AGY_SHIM_NATIVE_TOOLS}${AGY_SHIM_MODEL_ALIASES:+ \\
     --model-aliases ${AGY_SHIM_MODEL_ALIASES}}
 Restart=always
 RestartSec=5
@@ -213,5 +323,6 @@ agyshim_uninstall() {
         mark_changed
     fi
     [[ -f $(agyshim_script_path) ]] && run rm -f "$(agyshim_script_path)"
+    [[ -f $(agyshim_tools_script_path) ]] && run rm -f "$(agyshim_tools_script_path)"
     return 0
 }

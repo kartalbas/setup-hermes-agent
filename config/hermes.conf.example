@@ -96,6 +96,7 @@ AGY_SHIM_PORT=8787
 AGY_SHIM_MODELS="gemini-3.8-flash-high,gemini-3.1-pro-high"
 AGY_SHIM_MODEL_ALIASES="fast=gemini-3.8-flash-high,smart=gemini-3.1-pro-high"
 AGY_SHIM_UNKNOWN_MODEL="reject"
+AGY_SHIM_NATIVE_TOOLS="auto"    # the caller's functions as real tools of the CLI (ADR 0024); auto: on once the run has registered the tools server | on | off (the text protocol)
 
 # Measured: ~239 MB per live conversation. Six is what 7 GB tolerates next to
 # everything else on this host.

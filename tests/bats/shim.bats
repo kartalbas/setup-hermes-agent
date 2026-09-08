@@ -270,3 +270,93 @@ content, calls = m.parse_decision('{"type":"tool_call","name":"web_search","argu
 assert calls and calls[0]["function"]["name"] == "web_search"
 PY
 }
+
+@test "the caller's tools reach the model as real tools: server, allow rule and the unit's switch" {
+    load helper
+    load_libs
+    silence_logs
+    SCRIPT_DIR=$REPO_ROOT DRY_RUN=true
+    config_defaults
+    [ "$AGY_SHIM_NATIVE_TOOLS" = auto ]
+    _invalid=(); AGY_SHIM_ENABLED=true AGY_SHIM_MODELS=m AGY_SHIM_NATIVE_TOOLS=sometimes; _validate_agyshim
+    [ "${#_invalid[@]}" -eq 1 ]
+    _invalid=(); AGY_SHIM_NATIVE_TOOLS=off; _validate_agyshim; [ "${#_invalid[@]}" -eq 0 ]
+
+    # the merge into the CLI's own two files: additive, idempotent, nothing else touched
+    tmp=$(mktemp -d)
+    prog=$(_agyshim_merge_program)
+    [ "$(python3 -c "$prog" "${tmp}/mcp.json" server tools /usr/bin/python3 /lib/tools_mcp.py)" = changed ]
+    [ "$(python3 -c "$prog" "${tmp}/mcp.json" server tools /usr/bin/python3 /lib/tools_mcp.py)" = same ]
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["mcpServers"]["tools"]; assert s["command"]=="/usr/bin/python3" and s["args"]==["/lib/tools_mcp.py"], d' "${tmp}/mcp.json"
+    printf '{"permissions":{"allow":["command(cat)"]},"model":"m"}' >"${tmp}/settings.json"
+    [ "$(python3 -c "$prog" "${tmp}/settings.json" allow 'mcp(tools/*)' -)" = changed ]
+    [ "$(python3 -c "$prog" "${tmp}/settings.json" allow 'mcp(tools/*)' -)" = same ]
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["model"]=="m" and d["permissions"]["allow"]==["command(cat)","mcp(tools/*)"], d' "${tmp}/settings.json"
+    rm -rf "$tmp"
+
+    [ "$(agyshim_tools_script_path)" = /usr/local/lib/hermes-provisioner/tools_mcp.py ]
+    grep -q 'agyshim_tools_script_path' "$REPO_ROOT/libs/35-agy-shim.sh"
+    grep -q -- '--native-tools ${AGY_SHIM_NATIVE_TOOLS}' "$REPO_ROOT/libs/35-agy-shim.sh"
+}
+
+@test "the tools server hands a call over instead of executing it, and the bridge takes it as the decision" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, json, os, sys, tempfile
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+import tools_mcp
+tools = [{"function": {"name": "web_search", "description": "Search.",
+                       "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}]
+d = tempfile.mkdtemp()
+m.write_tools_file(d, tools)
+srv = tools_mcp.Server(d)
+assert [t["name"] for t in srv.handle({"id": 1, "method": "tools/list"})["result"]["tools"]] == ["web_search"]
+bad = srv.handle({"id": 2, "method": "tools/call", "params": {"name": "web_search", "arguments": {}}})["result"]
+assert bad["isError"] and "missing required 'query'" in bad["content"][0]["text"]
+ok = srv.handle({"id": 3, "method": "tools/call", "params": {"name": "web_search", "arguments": {"query": "x"}}})["result"]
+assert not ok["isError"] and "caller executes" in ok["content"][0]["text"]
+step = {"step_type": "tool", "state": "DONE", "tool_info": {"name": "call_mcp_tool",
+        "parameters": {"ServerName": "tools", "ToolName": "web_search", "Arguments": {"query": "x"}}}}
+assert m.mcp_call_decision(step) == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}
+assert m.mcp_call_decision(dict(step, state="ACTIVE")) is None
+assert "`tools` server" in m.tool_contract(tools, native=True)
+assert '{"type":"tool_call"' not in m.tool_contract(tools, native=True)
+PY
+    grep -q 'tools_spec=spec' "$SHIM"
+    grep -q 'AGY_SHIM_NATIVE_TOOLS' "$SHIM"
+}
+
+@test "stateful mode with agent mode carries the system prompt once, in the agent definition" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys, types
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+system = "# Acme News\n\nYour name is **Acme News**."
+seeded = {}
+
+class FakeProc:
+    def __init__(self, *a, **kw):
+        self.kw = kw; self.lock = __import__("threading").Lock(); self.pending_prefix = ""
+    def alive(self): return True
+    def turn(self, content, timeout): seeded["text"] = content; return {}
+    def close(self): pass
+
+m.AgentProcess = FakeProc
+pool = types.SimpleNamespace(
+    args=types.SimpleNamespace(binary="agy", workdir="/tmp", extra_args=[], agent_mode=True,
+                               max_processes=4, timeout=1),
+    native_tools=False, procs={}, spares={}, lock=__import__("threading").Lock(),
+    _seed_message=m.Pool._seed_message)
+proc = m.Pool._get_or_start(pool, "k", ["user: hi"], system, "model-x", None)
+assert proc.kw["agent_def"].startswith("---"), "agent definition missing"
+assert "Acme News" in proc.kw["agent_def"]
+assert "Acme News" not in seeded["text"], "the system prompt was replayed a second time"
+assert "user: hi" in seeded["text"]
+assert proc.identity == "Acme News"
+assert proc.pending_prefix == ""
+
+pool.args.agent_mode = False; pool.procs = {}; seeded.clear()
+proc = m.Pool._get_or_start(pool, "k", [], system, "model-x", None)
+assert proc.kw["agent_def"] == ""
+assert "Acme News" in proc.pending_prefix, "without agent mode the prompt must ride along"
+PY
+}

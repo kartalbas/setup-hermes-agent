@@ -67,6 +67,14 @@ log = logging.getLogger("agy-shim")
 # slow turn is reported by us (with context), not cut by the CLI (without).
 PRINT_TIMEOUT_SECONDS = 900
 
+# The caller's tools, offered to the CLI as a real MCP server so the model calls
+# them natively (ADR 0024). The server is tools_mcp.py next to this file; it
+# reads TOOLS_FILE from the CLI's working directory — the per-conversation
+# directory this bridge creates — so one global server entry serves every bot.
+TOOLS_SERVER_NAME = "tools"
+TOOLS_FILE = "tools.json"
+TOOLS_SERVER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools_mcp.py")
+
 
 class TransientTurnError(RuntimeError):
     """A failure the CLI is known to produce spuriously — one fresh retry is due."""
@@ -85,7 +93,7 @@ class AgentProcess:
     """
 
     def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str], agents_md: str = "",
-                 agent_def: str = ""):
+                 agent_def: str = "", tools_spec: list | None = None):
         self.model = model
         # Its own directory, and destroyed with it.
         #
@@ -103,6 +111,14 @@ class AgentProcess:
         if agents_md:
             with open(os.path.join(self.workdir, "AGENTS.md"), "w", encoding="utf-8") as f:
                 f.write(agents_md)
+        # The caller's functions for the tools server the CLI spawns. The CLI
+        # asks that server for its list once, at start — so the file is there
+        # before the spawn, and a process's toolset is fixed for its life.
+        self.tools_spec = tools_spec
+        self.agents_md = agents_md
+        self.agent_def = agent_def
+        if tools_spec:
+            write_tools_file(self.workdir, tools_spec)
         # The agent definition: the caller's system prompt in the CLI's own
         # system-prompt slot, its built-in tools switched off (see agent_file_text).
         self.agent_mode = bool(agent_def)
@@ -254,6 +270,11 @@ class AgentProcess:
                 native = native_call_decision(su, getattr(self, "available_tools", set()))
                 if native is not None:
                     log.info("native call to the caller's %s taken as the decision", native["name"])
+                else:
+                    native = mcp_call_decision(su)
+                    if native is not None:
+                        log.info("call through the tools server to %s taken as the decision", native["name"])
+                if native is not None and self.native_decision is None:
                     self.native_decision = native
                     if getattr(self, "one_shot", False):
                         # This process serves one request and is closed after it:
@@ -273,9 +294,10 @@ class AgentProcess:
             self.last_used = time.time()
             self.input_tokens = usage.get("input_tokens", 0) or 0
 
-            if result.get("status") != "SUCCESS" and self.native_decision is not None:
-                # The turn died after a complete native call to a caller function
-                # (the usual sequence: unknown tool, then a malformed retry).
+            if self.native_decision is not None:
+                # A complete native call to a caller function decided the turn:
+                # whatever followed — a malformed retry that killed the turn, or
+                # the "pending" line the tools server asked for — is not the answer.
                 result = dict(result, status="SUCCESS", response=json.dumps(self.native_decision, separators=(",", ":")))
             if result.get("status") != "SUCCESS":
                 # CANCELED/WAITING without a client cancel are the CLI's own
@@ -376,6 +398,13 @@ class Pool:
         if swept:
             log.info("removed %d stale working directories of earlier bridge processes", swept)
         self.args = args
+        # Whether the CLI will inject the caller's functions as real tools: it
+        # does when its own configuration names our tools server (the installer
+        # writes that). Checked once, here, so a turn never has to guess.
+        self.native_tools = tools_server_configured() if getattr(args, "native_tools", "auto") == "auto" \
+            else bool(getattr(args, "native_tools", "auto") == "on")
+        log.info("caller tools reach the model %s", "as native MCP tools" if self.native_tools
+                 else "as the text TOOL PROTOCOL (no tools server in the CLI's configuration)")
         self.procs: dict[str, AgentProcess] = {}
         self.spares: dict[str, AgentProcess] = {}   # pre-warmed, stateless mode
         self.lock = threading.Lock()
@@ -396,7 +425,7 @@ class Pool:
                     self.procs.pop(key).close()
 
     def _get_or_start(self, key: str, seed: list[str], system: str,
-                      model: str) -> AgentProcess:
+                      model: str, tools: list | None = None) -> AgentProcess:
         with self.lock:
             proc = self.procs.get(key)
             if proc and proc.alive():
@@ -413,26 +442,33 @@ class Pool:
 
             proc = AgentProcess(self.args.binary, model,
                                 self.args.workdir, self.args.extra_args,
-                                agents_md=agents_md_text(system))
+                                agents_md=agents_md_text(system),
+                                agent_def=agent_file_text(system) if self.args.agent_mode else "",
+                                tools_spec=tools if self.native_tools else None)
             self.procs[key] = proc
 
+        # In agent mode the system prompt is already in the CLI's own system
+        # slot (the agent definition), so the conversation must not carry it a
+        # second time: seeding replays the transcript alone, and there is no
+        # prefix to prepend to the first message.
+        carried = "" if self.args.agent_mode else system
         # Seeding costs a model round-trip, so it happens only when there is
         # genuine prior conversation to replay — and outside the pool lock,
         # which would otherwise block every other conversation meanwhile.
+        proc.identity = identity_name(system)
         if seed:
             with proc.lock:
-                proc.turn(self._seed_message(seed, system), self.args.timeout)
+                proc.turn(self._seed_message(seed, carried), self.args.timeout)
             log.info("seeded conversation %s with %d prior messages", key[:8], len(seed))
-        else:
+        elif carried:
             # Nothing to replay: the system prompt rides along with the first
             # real message instead of burning a turn of its own.
             # The CLI has an identity of its own and answers "who are you" with
             # it unless told, in the conversation, that here it acts as someone
             # else. The frame makes the agent's system prompt (which carries the
             # bot's name from SOUL.md) the authority on that.
-            proc.pending_prefix = IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL
+            proc.pending_prefix = IDENTITY_FRAME_HEAD + carried + IDENTITY_FRAME_TAIL
             proc.full_prefix = proc.pending_prefix       # kept for the reminder
-            proc.identity = identity_name(system)
         return proc
 
     @staticmethod
@@ -458,7 +494,9 @@ class Pool:
         with self.lock:
             self.procs.pop(key, None)
             fresh = AgentProcess(self.args.binary, proc.model,
-                                 self.args.workdir, self.args.extra_args)
+                                 self.args.workdir, self.args.extra_args,
+                                 agents_md=proc.agents_md, agent_def=proc.agent_def,
+                                 tools_spec=proc.tools_spec)
             self.procs[key] = fresh
 
         if summary.strip():
@@ -500,12 +538,17 @@ class Pool:
     def _complete_stateless(self, history: list[str], message: str,
                             system: str, model: str,
                             images: list[tuple[bytes, str]],
-                            tool_names: set[str]) -> tuple[str, dict, dict]:
-        if self.args.agent_mode:
-            # The system prompt travels in the agent definition, so the process
-            # is spawned for this request (no pre-warmed spare can know it).
+                            tool_names: set[str],
+                            tools: list | None = None) -> tuple[str, dict, dict]:
+        spec = tools if self.native_tools else None
+        # A pre-warmed spare cannot serve a request whose system prompt or
+        # toolset it does not carry: both are read at spawn (the agent
+        # definition, and the tools file the CLI's tools server lists once).
+        if self.args.agent_mode or spec:
             proc = AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
-                                agents_md="", agent_def=agent_file_text(system))
+                                agents_md="" if self.args.agent_mode else agents_md_text(system),
+                                agent_def=agent_file_text(system) if self.args.agent_mode else "",
+                                tools_spec=spec)
         else:
             proc = self._take_spare(model)
         proc.available_tools = tool_names
@@ -527,14 +570,17 @@ class Pool:
                 log.warning("transient CLI failure (%s); retrying once on a fresh process", str(exc)[:160])
                 threading.Thread(target=proc.close, daemon=True).start()
                 proc = (AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
-                                     agents_md="", agent_def=agent_file_text(system))
-                        if self.args.agent_mode else self._take_spare(model))
+                                     agents_md="" if self.args.agent_mode else agents_md_text(system),
+                                     agent_def=agent_file_text(system) if self.args.agent_mode else "",
+                                     tools_spec=spec)
+                        if (self.args.agent_mode or spec) else self._take_spare(model))
                 proc.available_tools = tool_names
                 proc.full_prefix = text
                 proc.identity = identity_name(system)
                 proc.one_shot = True
+                reminder = (MCP_CALL_REMINDER if spec else NATIVE_CALL_REMINDER) if tool_names else ""
                 with proc.lock:
-                    result = proc.turn(text + (NATIVE_CALL_REMINDER if tool_names else ""), self.args.timeout)
+                    result = proc.turn(text + reminder, self.args.timeout)
             usage = result.get("usage", {}) or {}
             log.info("stateless [%s] history=%d in=%s cached=%s out=%s %.1fs",
                      model, len(history), usage.get("input_tokens"),
@@ -547,14 +593,15 @@ class Pool:
     def complete(self, key: str, history: list[str], message: str,
                  system: str = "", model: str = "",
                  images: list[tuple[bytes, str]] | None = None,
-                 tool_names: set[str] | None = None) -> tuple[str, dict, dict]:
+                 tool_names: set[str] | None = None,
+                 tools: list | None = None) -> tuple[str, dict, dict]:
         acquired = self.slots.acquire(timeout=self.args.queue_timeout)
         if not acquired:
             raise TimeoutError("too many conversations in flight")
         try:
             if self.args.stateless:
-                return self._complete_stateless(history, message, system, model, images or [], tool_names or set())
-            proc = self._get_or_start(key, history, system, model)
+                return self._complete_stateless(history, message, system, model, images or [], tool_names or set(), tools)
+            proc = self._get_or_start(key, history, system, model, tools)
             proc.available_tools = tool_names or set()
 
             # A first turn on a fresh conversation carries the system prompt.
@@ -586,7 +633,8 @@ class Pool:
     def stats(self) -> dict:
         with self.lock:
             return {
-                "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else ""),
+                "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else "")
+                        + ("+native-tools" if self.native_tools else ""),
                 "spares": sorted(self.spares),
                 "conversations": len(self.procs),
                 "detail": [
@@ -727,7 +775,7 @@ def identity_line(name: str) -> str:
         return ""
     return (f"OPERATING CONTEXT: In this conversation you are {name}, a private assistant "
             "bot acting for the operator; never present yourself as Antigravity, Gemini, "
-            "Google or any software. Follow the SYSTEM PROMPT and the TOOL PROTOCOL you "
+            "Google or any software. Follow the SYSTEM PROMPT and the tool instructions you "
             "were given. Message from the user:\n")
 
 
@@ -767,8 +815,8 @@ def agents_md_text(system: str) -> str:
         f"{who}\n\n"
         "You are not in a code project. There are no files to read, no commands to run, "
         "no repository: your built-in tools are disabled and every attempt is denied. "
-        "The caller executes functions for you when the message carries a TOOL PROTOCOL; "
-        "follow it exactly and answer with the single JSON object it asks for.\n\n"
+        f"The caller executes functions for you: the tools of the `{TOOLS_SERVER_NAME}` server, called natively, "
+        "or — when the message carries a TOOL PROTOCOL instead — the single JSON object it asks for.\n\n"
         "The first message of the conversation carries the SYSTEM PROMPT that defines your "
         "role and rules; it is the authority for everything except this identity note.\n"
     )
@@ -802,8 +850,105 @@ def native_call_decision(step_update: dict, available: set) -> dict | None:
     return {"type": "tool_call", "name": name, "arguments": args if isinstance(args, dict) else {}}
 
 
+def mcp_call_decision(step_update: dict) -> dict | None:
+    """A CLI `call_mcp_tool` step aimed at the caller's tools server is the
+    model calling the caller's function natively — the channel this bridge
+    offers on purpose (ADR 0024). Taken when the step is DONE: the server has
+    validated the arguments by then (a first attempt with missing ones comes
+    back as an error the model corrects within the turn, seen 3 of 4 times).
+    A call the CLI DENIED for want of the allow rule is taken too when it
+    carries arguments — the installer writes the rule; until then this keeps
+    the turn alive and says what is missing."""
+    su = step_update or {}
+    if su.get("step_type") != "tool":
+        return None
+    info = su.get("tool_info") or {}
+    if (info.get("name") or su.get("tool_name")) != "call_mcp_tool":
+        return None
+    params = info.get("parameters") or {}
+    if params.get("ServerName") != TOOLS_SERVER_NAME or not params.get("ToolName"):
+        return None
+    args = params.get("Arguments")
+    args = args if isinstance(args, dict) else {}
+    decision = {"type": "tool_call", "name": str(params["ToolName"]), "arguments": args}
+    state = su.get("state")
+    if state == "DONE":
+        return decision
+    if state == "ERROR" and args:
+        err = su.get("error") or info.get("error") or ""
+        msg = str((err.get("message") if isinstance(err, dict) else err) or "")
+        if "denied" in msg.lower():
+            log.warning("the CLI denied the call to the tools server: permissions.allow lacks mcp(%s/*) — the installer writes it", TOOLS_SERVER_NAME)
+            return decision
+    return None
+
+
+def cli_config_paths() -> tuple[str, str]:
+    """Where the CLI keeps the two files this bridge depends on: the MCP
+    server registry, and the settings that permit calling those servers."""
+    home = os.path.expanduser("~")
+    return (os.path.join(home, ".gemini", "config", "mcp_config.json"),
+            os.path.join(home, ".gemini", "antigravity-cli", "settings.json"))
+
+
+def tools_server_configured() -> bool:
+    """Does the CLI know our tools server, and may it call it?
+
+    Both are the installer's doing (libs/35-agy-shim.sh). Without the server
+    entry the model has no functions and the text protocol is the only
+    channel; without the allow rule every call is auto-denied in headless mode
+    (the bridge still salvages the arguments, but the model pays a turn for
+    it), so that case is a warning, not a refusal."""
+    mcp_path, settings_path = cli_config_paths()
+    try:
+        with open(mcp_path, encoding="utf-8") as f:
+            servers = (json.load(f) or {}).get("mcpServers") or {}
+    except (OSError, ValueError):
+        return False
+    entry = servers.get(TOOLS_SERVER_NAME)
+    if not isinstance(entry, dict) or entry.get("disabled") is True:
+        return False
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            allow = ((json.load(f) or {}).get("permissions") or {}).get("allow") or []
+    except (OSError, ValueError):
+        allow = []
+    if not any(str(r).startswith(f"mcp({TOOLS_SERVER_NAME}") for r in allow):
+        log.warning("the CLI knows the tools server but %s has no mcp(%s/*) allow rule: "
+                    "every call will be auto-denied and cost a turn — run the installer's agyshim module",
+                    settings_path, TOOLS_SERVER_NAME)
+    return True
+
+
+def tool_functions(tools: list) -> list[dict]:
+    """The function specs (name, description, parameters) out of OpenAI tool
+    definitions, in the caller's order; entries without a name are dropped."""
+    out = []
+    for t in tools or []:
+        fn = (t or {}).get("function") or {}
+        if fn.get("name"):
+            out.append({"name": fn["name"], "description": fn.get("description") or "", "parameters": fn.get("parameters") or {}})
+    return out
+
+
+def tools_signature(tools: list) -> str:
+    """What identifies a toolset for a process: the sorted names."""
+    names = sorted(fn["name"] for fn in tool_functions(tools))
+    return hashlib.sha256(" ".join(names).encode()).hexdigest()[:8] if names else "notools"
+
+
+def write_tools_file(workdir: str, tools: list) -> str:
+    """tools.json in the CLI's working directory, for the tools server."""
+    path = os.path.join(workdir, TOOLS_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(tool_functions(tools), f, ensure_ascii=False)
+    return path
+
+
 NATIVE_CALL_REMINDER = ("\n\nREMINDER: you have no functions to call natively — a native call fails the turn. "
                         "Write the ONE JSON object of the TOOL PROTOCOL as plain text.")
+MCP_CALL_REMINDER = (f"\n\nREMINDER: the caller's functions are the tools of the `{TOOLS_SERVER_NAME}` server and nothing else. "
+                     "Call ONE of them, with every required argument, or answer in plain prose. Any other function call fails the turn.")
 
 
 def unwrap_nested_call(call: dict) -> dict:
@@ -890,15 +1035,34 @@ def stateless_message(system: str, history: list[str], message: str) -> str:
     return "\n\n".join(parts)
 
 
-def tool_contract(tools: list) -> str:
-    """Render OpenAI tool definitions as instructions the CLI can follow."""
-    fns = []
-    for t in tools or []:
-        fn = (t or {}).get("function") or {}
-        if fn.get("name"):
-            fns.append(fn)
+def tool_contract(tools: list, native: bool = False) -> str:
+    """Render OpenAI tool definitions as instructions the CLI can follow.
+
+    NATIVE (the tools server is in place): the CLI has injected the functions
+    as real tools, so the text only says whose they are and how they are
+    used — call natively, one at a time, complete arguments, the result comes
+    back as the next message — and names them once for routing; no schemas,
+    no JSON envelope. Otherwise the TOOL PROTOCOL: decisions as JSON text."""
+    fns = tool_functions(tools)
     if not fns:
         return ""
+
+    if native:
+        lines = [
+            "TOOLS — read this before answering.",
+            "",
+            f"The functions of the `{TOOLS_SERVER_NAME}` server are the caller's tools, and the ONLY",
+            "tools you have. Call them natively, one at a time, with every required argument",
+            "filled in; the caller executes the call and its result arrives as the next message.",
+            "Never write a tool call as JSON text. Never try commands, files, the browser or the",
+            "web yourself — those are disabled. When no tool is needed, answer in plain prose.",
+            "",
+            "The caller's functions:",
+        ]
+        for fn in fns:
+            desc = " ".join((fn.get("description") or "").split())
+            lines.append(f"- {fn['name']}: {desc}"[:300])
+        return "\n".join(lines)
 
     lines = [
         "TOOL PROTOCOL — read this before answering.",
@@ -1169,7 +1333,7 @@ class Handler(BaseHTTPRequestHandler):
         # process starts and then cached — not re-sent every turn. That is the
         # whole reason this bridge is affordable.
         tools = body.get("tools") or []
-        contract = tool_contract(tools)
+        contract = tool_contract(tools, native=self.pool.native_tools)
         if contract:
             system = f"{contract}\n\n{system}" if system else contract
 
@@ -1184,15 +1348,10 @@ class Handler(BaseHTTPRequestHandler):
         # The toolset is part of the process's identity: it lives in the cached
         # system block, so a conversation that arrives with different tools must
         # not be answered by a process still holding the old contract.
-        tool_sig = hashlib.sha256(
-            "\u0000".join(sorted(
-                ((t or {}).get("function") or {}).get("name", "") for t in tools
-            )).encode()
-        ).hexdigest()[:8] if tools else "notools"
-        key = conversation_key(messages) + ":" + model + ":" + tool_sig
+        key = conversation_key(messages) + ":" + model + ":" + tools_signature(tools)
         try:
-            tool_names = {((t or {}).get("function") or {}).get("name", "") for t in tools} - {""}
-            text, usage, meta = self.pool.complete(key, history, message, system, model, images, tool_names)
+            tool_names = {fn["name"] for fn in tool_functions(tools)}
+            text, usage, meta = self.pool.complete(key, history, message, system, model, images, tool_names, tools)
         except TimeoutError as exc:
             return self._error(504, str(exc))
         except Exception as exc:
@@ -1339,6 +1498,10 @@ def main() -> int:
                    default=os.environ.get("AGY_SHIM_AGENT_MODE", "true").lower() not in ("0", "false", "no"),
                    help="do not load the system prompt through a CLI agent definition (--agent); "
                         "default on: the prompt goes into the CLI's system slot and its tools are off")
+    p.add_argument("--native-tools", choices=("auto", "on", "off"),
+                   default=os.environ.get("AGY_SHIM_NATIVE_TOOLS", "auto"),
+                   help="offer the caller's functions to the CLI as real MCP tools (ADR 0024); "
+                        "auto: on when the CLI's configuration names the tools server")
     p.add_argument("--stateful", dest="stateless", action="store_false",
                    default=os.environ.get("AGY_SHIM_STATELESS", "true").lower() not in ("0", "false", "no"),
                    help="keep one CLI conversation per chat (legacy); default is stateless: "
