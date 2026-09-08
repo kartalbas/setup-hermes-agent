@@ -86,7 +86,7 @@ class Calls(unittest.TestCase):
     def test_a_valid_call_is_recorded_and_handed_over_not_executed(self):
         out = self.call("web_search", {"query": "Bundesrat"})
         self.assertFalse(out["isError"])
-        self.assertIn("caller executes", out["content"][0]["text"])
+        self.assertIn("caller runs this call", out["content"][0]["text"])
         rec = self.recorded()
         self.assertEqual(len(rec), 1)
         self.assertEqual((rec[0]["name"], rec[0]["arguments"]), ("web_search", {"query": "Bundesrat"}))

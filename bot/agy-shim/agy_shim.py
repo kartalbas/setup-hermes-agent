@@ -250,6 +250,11 @@ class AgentProcess:
 
         self.tool_intents = []
         self.native_decision = None
+        # Every call the model makes to the tools server in this turn, in
+        # order: independent ones belong together in a single answer, the way
+        # the caller's own protocol expects them (parallel tool calls).
+        self.mcp_decisions: list[dict] = []
+        seen: set = set()
         msg = {"event": "user", "message": {"role": "user", "content": content}}
         try:
             self.proc.stdin.write(json.dumps(msg) + "\n")
@@ -261,13 +266,14 @@ class AgentProcess:
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
-                if self.native_decision is not None:
+                decided = self._decision_payload()
+                if decided is not None:
                     # The decision is complete; only the model's closing line is
                     # missing, and it is discarded anyway.
                     log.info("decision taken, closing line not written within %.0fs; going with it", DECISION_GRACE_SECONDS)
                     self.turns += 1
                     self.last_used = time.time()
-                    return {"status": "SUCCESS", "response": json.dumps(self.native_decision, separators=(",", ":")),
+                    return {"status": "SUCCESS", "response": json.dumps(decided, separators=(",", ":")),
                             "usage": {}, "native_call": True}
                 raise TimeoutError(f"no result within {timeout}s")
             try:
@@ -297,14 +303,19 @@ class AgentProcess:
                     continue
                 offered = mcp_call_decision(su)
                 if offered is not None and self.native_decision is None:
-                    # The channel this bridge offers: the model called a tool of
-                    # ours and was told to end its turn. Its closing line is
-                    # discarded, but the turn is allowed to finish — that is
-                    # where the token counts live, and they are the whole
-                    # measure of whether this arrangement is affordable.
-                    log.info("call through the tools server to %s taken as the decision", offered["name"])
-                    self.native_decision = offered
-                    deadline = min(deadline, time.time() + DECISION_GRACE_SECONDS)
+                    # The channel this bridge offers. The turn is allowed to
+                    # finish rather than cut short: that is where the token
+                    # counts live, and the model may add further independent
+                    # calls, which travel together instead of costing a whole
+                    # round trip each (a GitHub report spent twelve turns of
+                    # 75k tokens on one call apiece, 2026-09-09).
+                    fingerprint = (offered["name"], json.dumps(offered["arguments"], sort_keys=True, default=str))
+                    if fingerprint not in seen:
+                        seen.add(fingerprint)
+                        self.mcp_decisions.append(offered)
+                        log.info("call through the tools server to %s taken as the decision", offered["name"])
+                        if len(self.mcp_decisions) == 1:
+                            deadline = min(deadline, time.time() + DECISION_GRACE_SECONDS)
                 continue
             if ev.get("event") != "result":
                 continue
@@ -315,11 +326,12 @@ class AgentProcess:
             self.last_used = time.time()
             self.input_tokens = usage.get("input_tokens", 0) or 0
 
-            if self.native_decision is not None:
+            decided = self._decision_payload()
+            if decided is not None:
                 # A complete native call to a caller function decided the turn:
                 # whatever followed — a malformed retry that killed the turn, or
                 # the "pending" line the tools server asked for — is not the answer.
-                result = dict(result, status="SUCCESS", response=json.dumps(self.native_decision, separators=(",", ":")))
+                result = dict(result, status="SUCCESS", response=json.dumps(decided, separators=(",", ":")))
             if result.get("status") != "SUCCESS":
                 # CANCELED/WAITING without a client cancel are the CLI's own
                 # hiccups (its issues #902/#944): worth exactly one fresh try.
@@ -358,6 +370,18 @@ class AgentProcess:
                     raise TransientTurnError("CLI authentication timed out. " + detail)
                 raise TransientTurnError("the model returned an empty response. " + detail)
             return result
+
+    def _decision_payload(self) -> dict | None:
+        """What this turn decided: the calls the model made through the tools
+        server (one, or several independent ones together), or the single
+        native call the CLI rejected on its way out."""
+        calls = getattr(self, "mcp_decisions", None) or []
+        if len(calls) == 1:
+            return calls[0]
+        if calls:
+            return {"type": "tool_calls",
+                    "calls": [{"name": c["name"], "arguments": c["arguments"]} for c in calls]}
+        return self.native_decision
 
     def close(self):
         self._closed = True

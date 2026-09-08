@@ -24,8 +24,9 @@ A call is NOT executed here. The framework executes tools, under its own
 approval rules. This server validates the arguments against the schema — a
 missing one comes back as an error the model corrects within the same turn —
 records the valid call in `calls.jsonl` next to the tools file, and answers
-with a handoff note. The bridge watches the CLI's step events, takes the first
-valid call as the decision and hands it to the framework.
+with a handoff note. The bridge watches the CLI's step events and hands the
+turn's valid calls to the framework — several of them together when the model
+made several that do not depend on each other.
 
 Standard library only, one file, like the bridge.
 """
@@ -42,8 +43,9 @@ SERVER_NAME = "tools"
 VERSION = "0.1.0"
 TOOLS_FILE = "tools.json"
 CALLS_FILE = "calls.jsonl"
-HANDOFF = ("Accepted: the caller executes this call and sends its result as the next message. "
-           "Do not call another tool and do not answer the question yet — end your turn now with the single word: pending")
+HANDOFF = ("Accepted: the caller runs this call and sends its result as the next message. "
+           "You may add further calls now, but ONLY ones that do not need this result — they travel together and save a round trip. "
+           "Do not answer the question yet; when you have nothing more to call, end your turn with the single word: pending")
 
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
 

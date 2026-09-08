@@ -314,7 +314,7 @@ assert [t["name"] for t in srv.handle({"id": 1, "method": "tools/list"})["result
 bad = srv.handle({"id": 2, "method": "tools/call", "params": {"name": "web_search", "arguments": {}}})["result"]
 assert bad["isError"] and "missing required 'query'" in bad["content"][0]["text"]
 ok = srv.handle({"id": 3, "method": "tools/call", "params": {"name": "web_search", "arguments": {"query": "x"}}})["result"]
-assert not ok["isError"] and "caller executes" in ok["content"][0]["text"]
+assert not ok["isError"] and "caller runs this call" in ok["content"][0]["text"]
 step = {"step_type": "tool", "state": "DONE", "tool_info": {"name": "call_mcp_tool",
         "parameters": {"ServerName": "tools", "ToolName": "web_search", "Arguments": {"query": "x"}}}}
 assert m.mcp_call_decision(step) == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}
@@ -377,6 +377,7 @@ def fake(events):
     p.stderr_tail = lambda: ""
     p.alive = lambda: True
     p.turn = types.MethodType(m.AgentProcess.turn, p)
+    p._decision_payload = types.MethodType(m.AgentProcess._decision_payload, p)
     return p
 
 def mcp_step(state, args):
@@ -406,4 +407,44 @@ out = res.turn("hi", 5)
 assert out["native_call"] is True and json.loads(out["response"])["name"] == "terminal"
 PY
     grep -q 'DECISION_GRACE_SECONDS' "$SHIM"
+}
+
+@test "several independent calls in one turn travel together instead of costing a round trip each" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, json, queue, sys, types
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+def mcp_step(tool, args, state="DONE"):
+    return {"event": "step_update", "step_update": {"step_type": "tool", "state": state, "tool_info": {
+        "name": "call_mcp_tool", "parameters": {"ServerName": "tools", "ToolName": tool, "Arguments": args}}}}
+
+def fake(events):
+    p = types.SimpleNamespace()
+    p._events = queue.Queue()
+    for e in events:
+        p._events.put(e)
+    p.proc = types.SimpleNamespace(stdin=types.SimpleNamespace(write=lambda s: None, flush=lambda: None, closed=False), poll=lambda: None)
+    p._closed = False; p.turns = 0; p.last_used = 0; p.input_tokens = 0
+    p.tool_intents = []; p.native_decision = None; p.available_tools = set(); p.one_shot = True
+    p.stderr_tail = lambda: ""; p.alive = lambda: True
+    p.turn = types.MethodType(m.AgentProcess.turn, p)
+    p._decision_payload = types.MethodType(m.AgentProcess._decision_payload, p)
+    return p
+
+done = {"event": "result", "result": {"status": "SUCCESS", "response": "pending", "usage": {"input_tokens": 7000}}}
+res = fake([mcp_step("get_me", {}), mcp_step("search_repos", {"query": "acme"}),
+            mcp_step("get_me", {}),                                   # the same call twice is one call
+            done]).turn("hi", 5)
+payload = json.loads(res["response"])
+assert payload["type"] == "tool_calls", payload
+assert [c["name"] for c in payload["calls"]] == ["get_me", "search_repos"], payload
+assert res["usage"]["input_tokens"] == 7000
+
+single = json.loads(fake([mcp_step("get_me", {}), done]).turn("hi", 5)["response"])
+assert single == {"type": "tool_call", "name": "get_me", "arguments": {}}, single
+
+content, calls = m.parse_decision(json.dumps(payload))
+assert [c["function"]["name"] for c in calls] == ["get_me", "search_repos"], calls
+PY
+    grep -q 'they travel together' "$(dirname "$SHIM")/tools_mcp.py"
 }
