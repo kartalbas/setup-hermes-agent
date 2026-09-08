@@ -671,3 +671,10 @@ PY
 import yaml,sys; c=yaml.safe_load(open(sys.argv[1])); assert c['command_allowlist']==['execute_code','script execution via -e/-c flag'], c; assert c['other']==1" "${tmp}/config.yaml"
     rm -rf "$tmp"
 }
+
+@test "the cron drift guard is off by default and only true/false pass" {
+    unset AGENT_CRON_DRIFT_GUARD; config_defaults
+    [ "$AGENT_CRON_DRIFT_GUARD" = false ]
+    _invalid=(); _check_cron_drift_guard X maybe; [ "${#_invalid[@]}" -eq 1 ]
+    _invalid=(); _check_cron_drift_guard X false; [ "${#_invalid[@]}" -eq 0 ]
+}

@@ -274,6 +274,11 @@ config_defaults() {
     # with the full list too, so "off" is the default here. Per bot:
     # BOT_<KEY>_TOOL_SEARCH.
     : "${AGENT_TOOL_SEARCH:=off}"
+    # The agent skips an unpinned cron job when the bot's provider or model
+    # changed since the job was made ("drift", a spend guard). Here providers
+    # change on purpose — a model switch, the balance proxy — and a reminder
+    # that stays silent because of it is the worse outcome: off by default.
+    : "${AGENT_CRON_DRIFT_GUARD:=false}"
     : "${TUNNEL_PROTOCOL:=}"
     : "${TUNNEL_START_TIMEOUT:=90}"
     : "${TUNNEL_TOKEN_FILE:=/etc/cloudflared/token}"
@@ -489,6 +494,10 @@ _check_ops() {
     _check_abs_path OPS_BIN "$OPS_BIN"; _check_abs_path OPS_CONF "$OPS_CONF"; _check_abs_path OPS_STATE_DIR "$OPS_STATE_DIR"
 }
 
+_check_cron_drift_guard() {       # _check_cron_drift_guard NAME VALUE — the literal booleans the agent honours
+    case $2 in true|false) ;; *) _bad "${1} must be true or false (got '${2}')" ;; esac
+}
+
 _check_tool_search() {            # _check_tool_search NAME VALUE — the agent's tools.tool_search.enabled values
     case $2 in auto|on|off) ;; *) _bad "${1} must be auto, on or off (got '${2}')" ;; esac
 }
@@ -574,6 +583,7 @@ config_validate() {
     fi
     _check_session_reset AGENT_SESSION_RESET "$AGENT_SESSION_RESET"
     _check_tool_search AGENT_TOOL_SEARCH "$AGENT_TOOL_SEARCH"
+    _check_cron_drift_guard AGENT_CRON_DRIFT_GUARD "${AGENT_CRON_DRIFT_GUARD:-}"
     if is_true "${ASSISTANT_GITHUB_ENABLED:-false}"; then
         [[ ${ASSISTANT_GITHUB_MCP_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || _bad "ASSISTANT_GITHUB_MCP_VERSION must be X.Y.Z"
     fi

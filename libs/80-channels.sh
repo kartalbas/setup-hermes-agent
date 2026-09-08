@@ -389,6 +389,7 @@ _policy_configure() {
     _tool_search_configure
     _workdir_configure
     _command_allowlist_configure
+    _config_set cron.model_drift_guard "$AGENT_CRON_DRIFT_GUARD"
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
         # Kept as a denylist rather than a habit: the agent can otherwise be

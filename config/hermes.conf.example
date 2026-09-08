@@ -294,6 +294,7 @@ TEAMS_APP_DEVELOPER="Acme"             # shown under the app name in the Teams a
 BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
 BOT_PORT_BASE=3978
 AGENT_SESSION_RESET="daily@4"          # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
+AGENT_CRON_DRIFT_GUARD=false        # true: the agent skips unpinned reminders after a provider/model change (spend guard); false: they fire
 AGENT_TOOL_SEARCH="off"             # off: MCP tools inline (the bridge needs the real names) | auto/on: behind tool_search; per bot: BOT_<KEY>_TOOL_SEARCH
 
 BOT_SECRETARY_CHANNELS="teams email"   # reads INBOX — everything not routed to another bot

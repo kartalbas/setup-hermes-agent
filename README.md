@@ -370,6 +370,13 @@ agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
 saves context on huge catalogues but made the bridge model reach for `gh` in the
 terminal instead of the GitHub tools. Per bot: `BOT_<KEY>_TOOL_SEARCH`.
 
+**Reminders survive a model switch.** The agent refuses to run a cron job whose
+bot has changed provider or model since the job was made, unless the job is
+pinned — a spend guard that would silence every reminder after a switch to a
+cheaper model or to the balance proxy. `AGENT_CRON_DRIFT_GUARD=false` (the
+default here) turns it off; a one-shot reminder the guard has already consumed
+is gone and has to be set again.
+
 **When a chat starts over.** `AGENT_SESSION_RESET` — `none`, `daily@HOUR` (host
 time) or `idle@MINUTES` — with `BOT_<KEY>_SESSION_RESET` per bot. A reset empties
 the transcript only: memory, files, calendar and cron jobs live outside it. With
