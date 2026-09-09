@@ -125,7 +125,7 @@ gate, or Argo will report Synced over a bot running last week's settings.
 | host | timezone, service-account assertion, directories, ufw, journal cap, tmpfiles | dropped — `TZ`/`HERMES_TIMEZONE` in the pod spec, `tzdata` asserted at build (a slim base resolves silently to UTC), NetworkPolicy for ufw, kubelet rotation for the journal cap; `work/` becomes an emptyDir so nothing needs ageing | medium |
 | credentials | deploys `ssh/id_ed25519` from the repository at 0600, comparing before writing | Vault, projected at 0400 — losing the compare-then-write means a rotation lands asynchronously and restarts nothing without a checksum annotation | low |
 | git | `.gitconfig`, `known_hosts` via `ssh-keyscan`, `~/.ssh/config`, all through `runuser` | image — a baked `/etc/gitconfig` and pinned host keys replace ~250 lines of convergence and a trust-on-first-use with a reviewable file; only `user.name`/`user.email` are site data | low |
-| tunnel | creates the tunnel, upserts seven CNAMEs, PUTs the ingress list, enables Universal SSL; installs cloudflared | split — the API half is a manual script (only the service targets change, from `127.0.0.1:<port>` to the ClusterIP Services); cloudflared becomes a stateless Deployment, token from Vault, `--protocol http2` as an argv flag | medium |
+| tunnel | creates the tunnel, upserts seven CNAMEs, PUTs the ingress list, enables Universal SSL; installs cloudflared | dropped — the cluster has a public FQDN, so an Ingress with cert-manager replaces it end to end (§10); what survives is one DNS record and, if the operator wants the edge back, Cloudflare proxying in front of the Ingress | medium |
 | azure | six Entra apps, service principals, two-year secrets, `bot.bicep`, admin consent, the Planner group, six Teams zips — and writes twelve values back into `secrets.conf` | manual script on the operator's machine; the write-back pushes to Vault (see §5) | high |
 | google | console steps it refuses to invent, `gcloud` sign-in, API enablement | manual script, entirely on the operator's machine — no pod needs a `gcloud` session, because the assistant authenticates with its own token file | low |
 | docker | already dead here: `TERMINAL_BACKEND="local"`, `DOCKER_MANAGE=false` | deleted, not ported — it would need exactly the privileges this move removes | low |
@@ -141,7 +141,7 @@ gate, or Argo will report Synced over a bot running last week's settings.
 | assistant | four MCP servers, three `ctl` wrappers, a 33 MB venv, `github-mcp-server`, four env files, three token files, three sign-ins | split four ways: code, wrappers, venv and binary to the image (`ASSISTANT_VENV` must stop defaulting to `${ASSISTANT_STATE_DIR}/venv` or the venv lands on shared storage); `m365.env`/`tasks.env` to a ConfigMap (they hold no credential); `google.env`/`github.env` to Vault; `*.token` to a volume | high |
 | ops | `opsctl`, `/etc/hermes-ops.conf`, the `systemd-journal` group, and a root-side path unit that runs the installer | rewritten against `kubectl` and `argocd`; the applier becomes a separate ops-runner Deployment (see §7) | high |
 | dashboard | a second process for the Secretary, nginx, htpasswd, a ufw hole | sidecar in the Secretary pod — it reads and writes the same profile directory, and that volume is single-writer by rule; nginx, htpasswd and the firewall hole are dropped, but `_dashboard_verify`'s refusal to finish when *neither* gate answers must be reimplemented or [0012](0012-dashboard-behind-a-proxy.md)'s safety property is silently gone | medium |
-| site | three rendered pages on loopback nginx, behind a whole-host tunnel rule | ConfigMap plus a ~20-line static-server Deployment behind the same tunnel rule — no state, no secret, the cheapest thing here to move, and it must exist before Google's consent screen is published or refresh tokens die after seven days | low |
+| site | three rendered pages on loopback nginx, behind a whole-host tunnel rule | ConfigMap plus a ~20-line static-server Deployment behind the same Ingress — no state, no secret, the cheapest thing here to move, and it must exist before Google's consent screen is published or refresh tokens die after seven days | low |
 | backup | a generated script plus a systemd timer, `hermes backup` to a local directory, retention by name-sort | CronJob with `pods/exec` on the six gateway pods, restic to Hetzner, plus a weekly restore drill in its own namespace (see §6) | high |
 
 `bootstrap.sh` is dropped with the host, but its property must be replaced
@@ -191,7 +191,8 @@ and one test, and it repairs a real bug regardless of this record's fate.
 ### 5. The secret split
 
 **Vault — static, nobody rewrites them, projected read-only into the pod that
-needs them.** `CF_API_TOKEN`, `CF_ACCOUNT_ID`, the cloudflared tunnel token,
+needs them.** `CF_API_TOKEN` and `CF_ACCOUNT_ID` only while DNS stays at
+Cloudflare (the tunnel token is gone with the tunnel, §10),
 `AZURE_TENANT_ID`, `MAIL_CLIENT_ID`, `TEAMS_<KEY>_CLIENT_ID` and
 `_CLIENT_SECRET` ×6, `TASKS_GROUP_ID`, `TASKS_ASSIGNEE_ID`,
 `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET`, `GITHUB_TOKEN`, `DEEPSEEK_API_KEY`,
@@ -326,9 +327,10 @@ cannot be lifted out as it stands — preflight always runs and refuses anything
 that is not a systemd host — so the scripts need a thin entrypoint that sources
 `00-log`, `10-util` and `20-config` and calls the module functions directly.
 
-1. **As the operator, at dash.cloudflare.com:** create the API token (Cloudflare
-   One Connector: cloudflared → Write; Zone → Read; DNS → Edit; SSL and
-   Certificates → Edit) and copy the account id. → Vault.
+1. **As the operator, at the DNS provider:** one record for the public FQDN
+   pointing at the Ingress controller's address, and, if ACME solves the
+   challenge over DNS, a token scoped to that zone. → Vault. Nothing
+   tunnel-shaped is needed any more (§10).
 2. **As a tenant admin, at portal.azure.com:** register `hermes-mail-relay`,
    single tenant, public client, *Allow public client flows = Yes*.
 3. **As a tenant Global or Privileged Role admin:**
@@ -341,10 +343,11 @@ that is not a systemd host — so the scripts need a thin entrypoint that source
    to the agent's mailbox, and grant Full Access on `you@example.com` to
    `agent@example.com`. Exchange takes about an hour; the scripts must tolerate
    the lag rather than fail.
-6. Run `scripts/tunnel.sh` — the tunnel, seven proxied CNAMEs, the ingress list
-   pointing at the ClusterIP Services, Universal SSL, and the edge-certificate
-   wait. Do not drop that wait: a missing edge cert reads exactly like egress
-   filtering and cost a day.
+6. Let Argo sync the Ingress and wait for cert-manager to issue. The wait that
+   the tunnel script performed on the edge certificate keeps its reason here: a
+   certificate that has not been issued yet reads exactly like egress filtering,
+   and once cost a day. `kubectl get certificate -w` until Ready, then fetch the
+   chain from outside the cluster before telling Azure the endpoint exists.
 7. Let Argo sync the site. `https://assistant.example.com/`, `/privacy` and
    `/terms` must answer 200 **before** step 8. The installer runs `assistant`
    (18th) before `site` (21st) today, which is this dependency backwards.
@@ -391,6 +394,43 @@ comes from at exactly the moment images become the deployment unit; cluster CIDR
 need a rule that still fails on the operator's own subnet; and `kind: Secret` in
 a tracked file should be an outright failure, because gitleaks does not reliably
 catch base64 `data:`.
+
+### 10. Inbound is an Ingress; everything else is closed by policy
+
+The cluster has a public FQDN, so the tunnel has nothing left to do. It existed
+because the VM had no inbound route at all. An Ingress with cert-manager and an
+ACME issuer replaces it: publicly trusted TLS, which the Bot Framework requires,
+without a second network component to run and pin.
+
+The six bots collapse onto **one hostname with six paths**. `az_bot_endpoint`
+already builds the messaging endpoint as hostname plus `TUNNEL_INGRESS_PATH`,
+and the Azure Bot resource stores whatever URL it is given, so
+`bots.<fqdn>/secretary/api/messages` is as valid as six hostnames were. Seven
+proxied CNAMEs become one record, and `BOT_<KEY>_HOSTNAME` stops being a
+per-bot setting.
+
+What that costs, and it is the reason this is a decision rather than a
+simplification: **the loopback boundary disappears at the same moment the
+cluster becomes publicly reachable.** Today four services are safe because they
+bind `127.0.0.1` and the kernel enforces it, and `libs/20-config.sh` refuses
+`AGY_SHIM_HOST=0.0.0.0` and `DASHBOARD_PROXY_BIND=0.0.0.0` outright for exactly
+that reason. In a pod every listener is reachable from the pod network by
+default. The bridge in particular authenticates nothing at all on
+`/v1/chat/completions`, so an accidental Ingress rule or a missing policy
+publishes an unauthenticated model endpoint that spends the operator's
+subscription.
+
+So the Ingress and the policy are one change, never two:
+
+- **Published:** the six bot paths, and the three public pages the Google
+  consent screen needs.
+- **Never published, and denied by a default-deny NetworkPolicy that admits
+  only the bot pods:** the bridge, the mail relay, the balance proxy, the
+  dashboard. The dashboard gets an Ingress only behind an authenticating proxy,
+  and that closes the plan's long-standing "dashboard over TLS" item on the way.
+- **The validator changes with it.** Refusing `0.0.0.0` has to become "a
+  NetworkPolicy naming this service must be declared", checked in the same run.
+  Deleting the refusal without replacing it is how this ends badly.
 
 ## Consequences
 
@@ -468,7 +508,12 @@ catch base64 `data:`.
   fill unless something measures it from inside the pod.
 - **The kernel-enforced loopback boundary** in front of an endpoint that checks
   no token on `/v1/chat/completions`. A NetworkPolicy is a policy, not a
-  namespace.
+  namespace — and with a public FQDN in the same cluster the blast radius of
+  getting it wrong is the open internet, not the LAN (§10).
+- **Cloudflare's edge**, if the tunnel goes and nothing replaces it: the origin
+  address is no longer hidden and there is no filtering in front of the Ingress.
+  Recoverable by proxying the FQDN through Cloudflare, which is a DNS setting
+  rather than a component.
 - **`kubectl exec` as a standing procedure.** Five sign-ins, the backup, and every
   live diagnosis now need it, and one of those grants is on the same six pods the
   Admin bot is deliberately kept away from.
@@ -532,6 +577,17 @@ Each of these blocks code, and each has a cheap way to be answered.
     first, which is known to work, then one Ingress; read for
     `400 Invalid Host header`. The only tested shape is nginx passing `$host`
     through unchanged.
+13a. **Which Ingress controller and issuer does the cluster have, and does the
+    public FQDN's DNS allow the ACME challenge the issuer needs?** →
+    `kubectl get ingressclass`, `kubectl get clusterissuer`, then one throwaway
+    Ingress with a certificate. This decides §10 outright: without a working
+    issuer the tunnel stays, and the eleven components that assumed it come
+    back. Answer it before question 12.
+13b. **Does the Bot Framework accept six paths under one hostname?** → point one
+    bot's messaging endpoint at `bots.<fqdn>/<bot>/api/messages` and send a
+    message. The endpoint is stored per bot resource and the adapter reads the
+    path from its own configuration, so this should hold; it has never been
+    tried here, and six DNS records is the fallback.
 14. **Does the cluster's 16 GB fit this?** → model it before committing. Six
     gateways at 217–283 MB RSS measured idle, the bridge at ~239 MB per live
     conversation plus a `python3` MCP child per turn, the relay, the balance
@@ -557,7 +613,9 @@ Roughly: the image with the patches and the baked extras, 3; manifests, probes
 and volumes for six bots, 3; the profile-seeding and configuration rewrite, 4;
 the mail relay — certificate reissue, trust-store injection into the images, a
 pinned `emailproxy`, splitting `emailproxy.config`, repeating the device-code
-sign-in on a volume — 3–4; the bridge, its NetworkPolicy and the validator
+sign-in on a volume — 3–4; the Ingress, cert-manager, the six paths and the
+default-deny policies that must land with them — 2, and the tunnel work it
+replaces comes back off the cloud-side line; the bridge, its NetworkPolicy and the validator
 changes, 3; the assistant split plus the `TokenStore` fix, 4; the ops rewrite
 with the runner and the ported tests, 10–12; backup, restic and the drill, 8;
 the cloud-side scripts and the Vault write-back path, 4–5; CI and the agnostic
