@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Skeleton: dashboard. Fill in from the installer module that does this on the VM.
+set -Eeuo pipefail
+echo "dashboard is not implemented yet" >&2
+exit 1

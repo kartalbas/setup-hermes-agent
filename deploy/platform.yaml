@@ -1,0 +1,82 @@
+# The unit's declaration to the onboarding platform (hostyour-manager). Read by the
+# gate-runner's structure gate G1, which validates it against ConsumerManifestSchema
+# and enforces the identity law: this `name` must equal the chart's name and the
+# repository's basename, and the namespace becomes <name>-<stage>.
+#
+# What this file may NOT say is how big the unit is. The platform assigns a size and
+# renders the namespace's ResourceQuota from it; the chart's own requests and limits
+# have to fit inside that. See deploy/README.md for the figures this unit needs.
+apiVersion: hostyour.cloud/v1
+kind: ConsumerManifest
+name: setup-hermes-agent
+owner: you@example.com
+envs: [prod]
+
+# Self-contained: the deploy lives here, not in a central catalogue.
+chart:
+  path: deploy/chart
+
+# From the platform's vocabulary. `forwardauth` is what puts an authenticating proxy in
+# front of the dashboard, which on the VM answered plain HTTP on the LAN.
+# `registry-pull` is the pull credential for the images built below.
+# No database of any kind: the agent keeps its state in SQLite on its own volume.
+services:
+  - forwardauth
+  - registry-pull
+databases: []
+mongodb: shared
+
+# The public name the bots' webhooks are reachable under, in addition to the
+# <name>-<stage>.<apex> the platform grants anyway. Declaring is not granting: the
+# onboarding attests this value into the registration and admission admits only that.
+# The DNS record is the operator's to create.
+fqdn: bots.example.com
+
+# Flat image names; each one IS its repository in the central registry.
+builds:
+  - name: hermes-agent
+    containerfile: deploy/images/agent.Containerfile
+  - name: hermes-bridge
+    containerfile: deploy/images/bridge.Containerfile
+
+# Delivered from Vault at <stage>/consumer/setup-hermes-agent/app through the
+# ExternalSecret the chart renders. Gate G7 admits only keys declared here, so this
+# list and templates/externalsecret.yaml are two ends of one contract.
+#
+# What is deliberately NOT here: the OAuth tokens of agy, claude, Microsoft 365 and
+# Google. Those binaries rewrite their own token files in place, so they live on the
+# CLI and assistant volumes, not in Vault — a secret store cannot hold a value its
+# owner refreshes behind its back.
+secrets:
+  - key: AZURE_TENANT_ID
+    description: the Entra tenant every app registration below belongs to
+  - key: MAIL_CLIENT_ID
+    description: public client the mail relay and the Microsoft 365 assistant sign in with
+  - key: TEAMS_SECRETARY_CLIENT_ID
+  - key: TEAMS_SECRETARY_CLIENT_SECRET
+  - key: TEAMS_SEARCH_CLIENT_ID
+  - key: TEAMS_SEARCH_CLIENT_SECRET
+  - key: TEAMS_NEWS_CLIENT_ID
+  - key: TEAMS_NEWS_CLIENT_SECRET
+  - key: TEAMS_GITHUB_CLIENT_ID
+  - key: TEAMS_GITHUB_CLIENT_SECRET
+  - key: TEAMS_ADMIN_CLIENT_ID
+  - key: TEAMS_ADMIN_CLIENT_SECRET
+  - key: TEAMS_TASKS_CLIENT_ID
+  - key: TEAMS_TASKS_CLIENT_SECRET
+  - key: TEAMS_ALLOWED_OBJECT_IDS
+    description: Entra object ids of the people the bots answer; not a credential, but site data
+  - key: DEEPSEEK_API_KEY
+    description: the Secretary's model API
+  - key: GITHUB_TOKEN
+    description: the GitHub assistant's access
+  - key: GOOGLE_OAUTH_CLIENT_ID
+  - key: GOOGLE_OAUTH_CLIENT_SECRET
+  - key: TASKS_GROUP_ID
+    description: the Microsoft 365 group that owns the Planner plan
+  - key: TASKS_ASSIGNEE_ID
+    description: the operator's directory object id; every task card is assigned to it
+  - key: EMAIL_PASSWORD
+    description: the local password the bots authenticate to the mail relay with
+  - key: DASHBOARD_PASSWORD
+    generate: hex32

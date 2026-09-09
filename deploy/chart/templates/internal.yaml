@@ -1,0 +1,73 @@
+# The four services that bound to 127.0.0.1 on the VM. In a pod there is no loopback
+# boundary left, so each is a ClusterIP the NetworkPolicy beside this file closes.
+{{- $img := include "unit.image" (dict "root" . "spec" .Values.image.bridge) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "unit.name" . }}-bridge
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+    hostyour.cloud/component: bridge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "unit.name" . }}
+      hostyour.cloud/component: bridge
+  template:
+    metadata:
+      labels:
+        {{- include "unit.labels" . | nindent 8 }}
+        hostyour.cloud/component: bridge
+    spec:
+      serviceAccountName: {{ include "unit.name" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10000
+      containers:
+        - name: bridge
+          image: {{ $img }}
+          # The subscription CLI is not in this image: it was installed once onto the
+          # volume below by the maintenance job and signed in there, which is also
+          # where it keeps and refreshes its own token.
+          env:
+            {{- include "unit.commonEnv" . | nindent 12 }}
+            - name: HOME
+              value: /opt/cli
+            - name: AGY_SHIM_NATIVE_TOOLS
+              value: auto
+            - name: AGY_CLI_DISABLE_AUTO_UPDATE
+              value: "true"
+          ports:
+            - { name: http, containerPort: {{ .Values.internal.bridgePort }} }
+          volumeMounts:
+            - { name: cli, mountPath: /opt/cli }
+          resources:
+            {{- toYaml .Values.resources.bridge | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /v1/models, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: cli
+          persistentVolumeClaim:
+            claimName: {{ include "unit.name" . }}-bridge-cli
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "unit.name" . }}-bridge
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "unit.name" . }}
+    hostyour.cloud/component: bridge
+  ports:
+    - { name: http, port: {{ .Values.internal.bridgePort }}, targetPort: http }

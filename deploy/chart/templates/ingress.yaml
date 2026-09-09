@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+# The only thing published. Six paths under one host, told apart by the first segment,
+# because the Azure Bot resource stores whatever endpoint URL it is given and the
+# adapter reads the path from its own configuration.
+#
+# What is NOT here, deliberately: the bridge, the mail relay, the balance proxy and the
+# dashboard. The dashboard gets its own rule only once the platform's forwardauth sits
+# in front of it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "unit.name" . }}
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+    {{- if $.Values.ingress.tls.issuer }}
+    cert-manager.io/cluster-issuer: {{ $.Values.ingress.tls.issuer }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ required "ingress.host must be set per stage" .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host must be set per stage" .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- range .Values.bots }}
+          - path: /{{ .key }}(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "unit.name" $ }}-{{ .key }}
+                port:
+                  name: webhook
+          {{- end }}
+{{- end }}

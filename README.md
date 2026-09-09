@@ -1776,6 +1776,7 @@ libs/             installer libraries, one per concern, numbered for source orde
 libs/azure/       Bicep: the Azure Bot and its Teams channel, deployed by 47-azure.sh
 bot/              the bot's own code, versioned separately (bot/VERSION, bot/CHANGELOG.md, bot/release.sh)
 bot/agy-shim/     the bridge between the agent and the inference CLI (agy_shim.py) and the caller's tools as an MCP server (tools_mcp.py)
+deploy/           this repository as a unit of the onboarding platform: the consumer manifest, the Helm chart, the images (skeleton — see docs/decisions/0025)
 bot/mcp/          the assistant MCP servers (Microsoft 365; Google; Tasks in Planner)
 bot/teams-app/    Teams app manifest template and icons (rendered from bot/assets/ by render-icons.sh)
 bot/build/        generated packages, gitignored

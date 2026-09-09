@@ -1,0 +1,31 @@
+# The declared configuration, one ConfigMap per bot, projected read-only at
+# $HERMES_MANAGED_DIR. The agent merges it over its own config.yaml per leaf key and
+# refuses to overwrite what is pinned here, which is how the installer's key-by-key
+# convergence is replaced without rendering a file the agent also owns.
+#
+# What is NOT pinned, on purpose: the command allowlist, which the agent extends when
+# the operator clicks "Always allowed" in a chat, and the home channel /sethome writes.
+# Pinning either would turn an operator's action into a silent no-op.
+{{- range .Values.bots }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "unit.name" $ }}-managed-{{ .key }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+    hostyour.cloud/bot: {{ .key }}
+data:
+  config.yaml: |
+    timezone: {{ $.Values.timezone }}
+    model:
+      provider: custom
+      name: bridge
+      base_url: http://{{ include "unit.name" $ }}-bridge:{{ $.Values.internal.bridgePort }}/v1
+    platforms:
+      teams:
+        enabled: {{ has "teams" .channels }}
+        port: {{ .port }}
+      email:
+        enabled: {{ has "email" .channels }}
+{{- end }}

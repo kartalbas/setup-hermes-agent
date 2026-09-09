@@ -1,0 +1,45 @@
+# What replaces the loopback boundary.
+#
+# On the VM the bridge was safe because it bound 127.0.0.1 and the kernel enforced it;
+# the installer refuses AGY_SHIM_HOST=0.0.0.0 outright for that reason. In a namespace
+# every listener is reachable by default, and the bridge authenticates nothing on
+# /v1/chat/completions — an unauthenticated model endpoint that spends the operator's
+# subscription. So the refusal does not disappear, it becomes this file.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "unit.name" . }}-internal
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: hostyour.cloud/component
+        operator: In
+        values: [bridge, mailproxy, balance-proxy, dashboard]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: hostyour.cloud/bot
+                operator: Exists
+---
+# The bots take webhooks from the ingress controller and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "unit.name" . }}-bots
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: hostyour.cloud/bot
+        operator: Exists
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx

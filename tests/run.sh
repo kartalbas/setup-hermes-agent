@@ -20,7 +20,7 @@ amber() { [[ -t 1 ]] && printf '\033[0;33m%s\033[0m\n' "$*" || printf '%s\n' "$*
 step()  { printf '\n== %s\n' "$*"; }
 
 step "syntax"
-for f in install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh bot/mcp/inboxctl bot/release.sh; do
+for f in install.sh libs/*.sh tests/*.sh bot/ops/opsctl bot/ops/apply.sh bot/mcp/inboxctl bot/release.sh deploy/gate-check.sh deploy/images/apply-patches.sh; do
     bash -n "$f" || { red "  parse error: $f"; FAILED=1; }
 done
 green "  every script parses"
@@ -49,6 +49,20 @@ if python3 -m unittest discover -s tests/python -t . -q 2>&1 | tail -3; then
     :
 else
     FAILED=1
+fi
+
+step "the deploy directory (the onboarding platform's gates)"
+if [[ -d deploy/chart ]]; then
+    if command -v helm >/dev/null 2>&1; then
+        if deploy/gate-check.sh >/dev/null 2>&1; then
+            green "  gate-check passes"
+        else
+            red "  gate-check fails — run deploy/gate-check.sh"
+            FAILED=1
+        fi
+    else
+        amber "  helm not installed — the render gates were skipped"
+    fi
 fi
 
 step "site-agnosticism"

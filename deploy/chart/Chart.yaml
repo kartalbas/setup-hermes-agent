@@ -1,0 +1,11 @@
+# The name is not free: gate G1 holds it against the manifest's name and the
+# repository's basename, and rejects the run when they differ.
+apiVersion: v2
+name: setup-hermes-agent
+description: Private assistant bots on the Nous Hermes Agent, reachable through Microsoft Teams and mail
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+# No dependencies on purpose. Gate G3 demands a committed Chart.lock or a fully
+# vendored charts/ for any chart that has them, and this one has nothing to gain
+# from a subchart it would then have to pin.

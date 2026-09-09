@@ -1,0 +1,76 @@
+# The three remaining loopback services of the VM, each a single replica behind the
+# NetworkPolicy. They are stubs in this skeleton: the images and their arguments are
+# the same ones the installer runs today, and what is missing is the value plumbing,
+# not the shape.
+{{- $components := list
+  (dict "name" "mailproxy"     "port" .Values.internal.mailproxyImapPort  "res" .Values.resources.mailproxy    "claim" "mailproxy")
+  (dict "name" "balance-proxy" "port" .Values.internal.balanceProxyPort   "res" .Values.resources.balanceProxy "claim" "")
+  (dict "name" "dashboard"     "port" .Values.internal.dashboardPort      "res" .Values.resources.dashboard    "claim" "")
+}}
+{{- range $c := $components }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "unit.name" $ }}-{{ $c.name }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+    hostyour.cloud/component: {{ $c.name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "unit.name" $ }}
+      hostyour.cloud/component: {{ $c.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "unit.labels" $ | nindent 8 }}
+        hostyour.cloud/component: {{ $c.name }}
+    spec:
+      serviceAccountName: {{ include "unit.name" $ }}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10000
+      containers:
+        - name: {{ $c.name }}
+          image: {{ include "unit.image" (dict "root" $ "spec" $.Values.image.agent) }}
+          command: ["/usr/local/bin/{{ $c.name }}"]
+          env:
+            {{- include "unit.commonEnv" $ | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "unit.name" $ }}
+          ports:
+            - { name: svc, containerPort: {{ $c.port }} }
+          {{- if $c.claim }}
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/{{ $c.name }} }
+          {{- end }}
+          resources:
+            {{- toYaml $c.res | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      {{- if $c.claim }}
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "unit.name" $ }}-{{ $c.claim }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "unit.name" $ }}-{{ $c.name }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "unit.name" $ }}
+    hostyour.cloud/component: {{ $c.name }}
+  ports:
+    - { name: svc, port: {{ $c.port }}, targetPort: svc }
+{{- end }}

@@ -1,0 +1,130 @@
+# Defaults for every stage. values-<stage>.yaml overlays these; gate G1 requires one
+# such file per env declared in deploy/platform.yaml.
+
+# Set by the platform's value chain, never here. The secret gate reads the same key to
+# hold the rendered SecretStore against the cluster's own Vault.
+global:
+  endpoints:
+    vault:
+      url: ""
+
+# The stage this render is for. The platform passes it; the default keeps a bare
+# `helm template` honest rather than silently rendering production paths.
+stage: prod
+
+image:
+  registry: ""            # the platform's registry, injected by the value chain
+  agent:
+    repository: hermes-agent
+    tag: "0.4.0"          # never "latest": gate G8 rejects a mutable tag
+  bridge:
+    repository: hermes-bridge
+    tag: "0.4.0"
+
+# One entry per bot. `key` is the profile name, the volume name and the Ingress path
+# segment; `port` is the webhook port its Teams adapter listens on.
+bots:
+  - key: secretary
+    displayName: Secretary
+    port: 3978
+    channels: [teams, email]
+    mcp: [m365, google, tasks]
+  - key: search
+    displayName: Search
+    port: 3979
+    channels: [teams, email]
+    mcp: []
+  - key: news
+    displayName: News
+    port: 3980
+    channels: [teams, email]
+    mcp: []
+  - key: github
+    displayName: GitHub
+    port: 3981
+    channels: [teams, email]
+    mcp: [github]
+  - key: admin
+    displayName: Admin
+    port: 3982
+    channels: [teams]
+    mcp: []
+  - key: tasks
+    displayName: Tasks
+    port: 3983
+    channels: [teams, email]
+    mcp: [tasks]
+
+# Measured on the reference host over six days: a gateway sits at 189 to 311 MiB and
+# 0.004 cores, the bridge peaks at 456 MiB with one live conversation and may hold
+# three. Requests sum to 4Gi, limits to 9Gi; the namespace quota has to cover both.
+# CPU limits are deliberately absent — the work is waiting on model APIs, and
+# throttling a turn that already takes seconds buys nothing.
+resources:
+  bot:
+    requests: { cpu: 50m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  bridge:
+    requests: { cpu: 100m, memory: 512Mi }
+    limits: { memory: 2Gi }
+  mailproxy:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  balanceProxy:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+  dashboard:
+    requests: { cpu: 20m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  site:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+  init:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+storage:
+  className: ""           # the platform's default when empty
+  # One volume per bot: a profile holds config.yaml, SOUL.md, memory, sessions, cron
+  # and the agent's SQLite state, and separate volumes let one bot be restored or
+  # restarted without touching the other five.
+  profileSize: 5Gi
+  # ~/.gemini of the subscription CLI, mounted only by the bridge. 699 MiB today and
+  # growing: the conversation store has no retention of its own.
+  bridgeCliSize: 20Gi
+  # ~/.claude, mounted only by the ops runner.
+  opsCliSize: 5Gi
+  # The assistant servers' OAuth tokens. Several bot pods refresh these, so this is
+  # the one volume that genuinely needs ReadWriteMany.
+  assistantSize: 1Gi
+  assistantAccessMode: ReadWriteMany
+  # The mail relay's certificate, its configuration and its own token.
+  mailproxySize: 1Gi
+
+# A turn runs up to 300 seconds over one blocking request. The default 30 second grace
+# period would cut a live turn in half on every rollout.
+terminationGracePeriodSeconds: 120
+
+timezone: Europe/Zurich
+
+ingress:
+  enabled: true
+  className: ""
+  host: ""                # values-<stage>.yaml sets it
+  # The bots share one host and are told apart by the first path segment. The adapter
+  # itself listens on /api/messages, so the controller has to strip the segment;
+  # the annotation that does it is controller-specific and set per stage.
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: setup-hermes-agent-tls
+    issuer: ""
+
+# The four services that were loopback-only on the VM. Nothing here is published; the
+# NetworkPolicy admits the bot pods and nobody else.
+internal:
+  bridgePort: 8787
+  balanceProxyPort: 8790
+  dashboardPort: 9119
+  mailproxyImapPort: 1993
+  mailproxySmtpPort: 1587

@@ -1,0 +1,67 @@
+# Every volume this unit owns. The annotation is what gate G6 looks for: without both
+# Prune=false and Delete=false an Argo resync may remove the claim, and with it six
+# bots' memories, the CLI sign-ins and the assistants' tokens.
+#
+# Eleven claims against a namespace quota that sells four at the largest size — the
+# quota row for this unit is adjusted before onboarding, not after, because changing
+# it later rewrites every registration that names the size.
+{{- $ann := dict "argocd.argoproj.io/sync-options" "Prune=false,Delete=false" }}
+{{- range .Values.bots }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "unit.name" $ }}-profile-{{ .key }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+    hostyour.cloud/bot: {{ .key }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ $.Values.storage.profileSize }}
+  {{- if $.Values.storage.className }}
+  storageClassName: {{ $.Values.storage.className }}
+  {{- end }}
+{{- end }}
+{{- range $name, $size := dict "bridge-cli" .Values.storage.bridgeCliSize "ops-cli" .Values.storage.opsCliSize "mailproxy" .Values.storage.mailproxySize }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "unit.name" $ }}-{{ $name }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ $size }}
+  {{- if $.Values.storage.className }}
+  storageClassName: {{ $.Values.storage.className }}
+  {{- end }}
+{{- end }}
+---
+# The only claim several pods write to at once: each bot's MCP servers refresh the
+# same Microsoft 365 and Google tokens. Without ReadWriteMany the bots that share
+# them have to share a pod instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "unit.name" . }}-assistant
+  labels:
+    {{- include "unit.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.storage.assistantAccessMode }}]
+  resources:
+    requests:
+      storage: {{ .Values.storage.assistantSize }}
+  {{- if .Values.storage.className }}
+  storageClassName: {{ .Values.storage.className }}
+  {{- end }}

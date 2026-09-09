@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Skeleton: balance-proxy. Fill in from the installer module that does this on the VM.
+set -Eeuo pipefail
+echo "balance-proxy is not implemented yet" >&2
+exit 1

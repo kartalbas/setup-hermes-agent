@@ -1,0 +1,127 @@
+# One Deployment and one Service per bot.
+#
+# Recreate, never RollingUpdate: the profile holds SQLite in WAL mode and the
+# gateway's own cross-instance guard is an flock on a file inside it. A surge pod
+# would either be refused by that lock or, on a filesystem that ignores flock,
+# corrupt the write-ahead log. One replica for the same reason, plus a second one
+# would fire every cron reminder twice.
+{{- range .Values.bots }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "unit.name" $ }}-{{ .key }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+    hostyour.cloud/bot: {{ .key }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "unit.name" $ }}
+      hostyour.cloud/bot: {{ .key }}
+  template:
+    metadata:
+      labels:
+        {{- include "unit.labels" $ | nindent 8 }}
+        hostyour.cloud/bot: {{ .key }}
+    spec:
+      serviceAccountName: {{ include "unit.name" $ }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10000
+      initContainers:
+        # Renders SOUL.md and HELP.md from the role files baked into the image and
+        # performs the one merge the managed layer cannot: the command allowlist is a
+        # union the agent extends at runtime, so it is read, merged and written back
+        # rather than projected over.
+        - name: seed
+          image: {{ include "unit.image" (dict "root" $ "spec" $.Values.image.agent) }}
+          command: ["/usr/local/bin/seed-profile"]
+          args: ["--bot", {{ .key | quote }}, "--display-name", {{ .displayName | quote }}]
+          env:
+            {{- include "unit.commonEnv" $ | nindent 12 }}
+            - name: HERMES_HOME
+              value: /opt/data
+          volumeMounts:
+            - { name: profile, mountPath: /opt/data }
+          resources:
+            {{- toYaml $.Values.resources.init | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      containers:
+        - name: gateway
+          image: {{ include "unit.image" (dict "root" $ "spec" $.Values.image.agent) }}
+          env:
+            {{- include "unit.commonEnv" $ | nindent 12 }}
+            - name: HERMES_HOME
+              value: /opt/data
+            # The declared configuration: a read-only projection the agent merges over
+            # its own config.yaml and .env, and refuses to overwrite. This is what
+            # replaces the installer's key-by-key convergence.
+            - name: HERMES_MANAGED_DIR
+              value: /opt/managed
+            - name: HERMES_BOT_KEY
+              value: {{ .key | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "unit.name" $ }}
+          ports:
+            - { name: webhook, containerPort: {{ .port }} }
+          volumeMounts:
+            - { name: profile, mountPath: /opt/data }
+            - { name: managed, mountPath: /opt/managed, readOnly: true }
+            - { name: work, mountPath: /opt/data/work }
+            {{- if .mcp }}
+            - { name: assistant, mountPath: /var/lib/hermes-assistant }
+            {{- end }}
+          resources:
+            {{- toYaml $.Values.resources.bot | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            tcpSocket: { port: webhook }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: webhook }
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - name: profile
+          persistentVolumeClaim:
+            claimName: {{ include "unit.name" $ }}-profile-{{ .key }}
+        - name: managed
+          projected:
+            sources:
+              - configMap: { name: {{ include "unit.name" $ }}-managed-{{ .key }} }
+              - secret: { name: {{ include "unit.name" $ }}-managed-{{ .key }}, optional: true }
+        # Scratch the bot writes on the way to a result. An emptyDir so nothing has to
+        # be aged out of a backup that should not have carried it.
+        - name: work
+          emptyDir: { sizeLimit: 2Gi }
+        {{- if .mcp }}
+        - name: assistant
+          persistentVolumeClaim:
+            claimName: {{ include "unit.name" $ }}-assistant
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "unit.name" $ }}-{{ .key }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "unit.name" $ }}
+    hostyour.cloud/bot: {{ .key }}
+  ports:
+    - { name: webhook, port: {{ .port }}, targetPort: webhook }
+{{- end }}

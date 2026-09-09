@@ -1,0 +1,102 @@
+# deploy/ — this repository as a unit of the onboarding platform
+
+A skeleton, not a finished deployment. It renders, and `deploy/gate-check.sh` asks the
+same questions the platform's sandbox asks, but four things in it are stubs and the
+decision to move at all is still open (`docs/decisions/0025-kubernetes-deployment.md`,
+status *proposed*).
+
+## What the platform reads
+
+| File | Read by | Rule it must satisfy |
+|---|---|---|
+| `platform.yaml` | gate G1 | schema-valid `ConsumerManifest`; `name` equals the chart's name **and** the repository's basename |
+| `chart/Chart.yaml` | gate G1 | same name again |
+| `chart/values.yaml`, `chart/values-<env>.yaml` | gate G1 | one overlay per env declared in the manifest |
+| `chart/templates/**` | gates G2, G3, G6, G7, G8 | no cluster lookups, renders, PVCs fenced, the Vault contract, no mutable image tags |
+| `images/*.Containerfile` | the build plane | one image per `builds[]` entry |
+
+The namespace is `setup-hermes-agent-<stage>`. The unit's name is not a preference:
+G1 rejects the run when the three names disagree, and a rename after onboarding
+blocks every release until the registration is rewritten too.
+
+## The quota this unit needs
+
+A consumer may not declare its own size — the platform assigns one and renders the
+namespace's `ResourceQuota` from it, and the chart's own requests and limits have to
+fit inside. Measured on the reference host over six days, with the workloads rounded
+to clean figures:
+
+| | this unit | `large` today |
+|---|---|---|
+| requests, cpu | 540m | 1600m |
+| requests, memory | 4Gi | 4Gi |
+| limits, memory | 9Gi | 8Gi |
+| pods | 11 | 32 |
+| persistent volume claims | 10 | 4 |
+
+Two rows do not fit. The size row wants **`limitsMemory: 12Gi`** and
+**`persistentVolumeClaims: 12`** before onboarding, not after: the seed table is
+`shared/unit-size.ts` in the platform repository, the table a running installation
+uses is its database, and changing it later rewrites every registration that names
+that size.
+
+Ten claims rather than one is a deliberate choice bought with that row. Each bot's
+profile is its own volume, so one bot can be restored or restarted without touching
+the other five.
+
+## Resources, and why the CPU has no limit
+
+Each gateway sits at 189 to 311 MiB and 0.004 cores; the bridge peaks at 456 MiB with
+one live conversation and may hold three. The work is waiting on model APIs, so CPU
+requests reserve and no CPU limit is set: throttling a turn that already takes seconds
+buys nothing. Memory limits are generous because exceeding one is not throttling but a
+kill, and a kill mid-turn loses the turn.
+
+`terminationGracePeriodSeconds` is 120. A turn runs up to 300 seconds over a single
+blocking request, and the default 30 would cut live turns on every rollout.
+
+## What the chart does that the installer used to do
+
+**The declared configuration is a read-only projection**, not a rendered file. The
+agent owns `config.yaml` and rewrites it, which is why the installer merges key by key
+(ADR 0010). The vendor ships a managed scope: a `config.yaml` under
+`$HERMES_MANAGED_DIR` is merged over the profile's per leaf key, its `.env` is loaded
+last with override, and pinned keys cannot be written back. So Argo owns those keys
+and the agent structurally cannot overwrite them. Two things stay writable and must
+never be projected over: the command allowlist, which the agent extends when the
+operator clicks "Always allowed", and the home channel `/sethome` writes.
+
+**The loopback boundary becomes a NetworkPolicy.** Four services bound `127.0.0.1` on
+the VM and the kernel enforced it; the installer refuses `AGY_SHIM_HOST=0.0.0.0` for
+that reason, because the bridge authenticates nothing. In a pod there is no loopback
+left, so `templates/networkpolicy.yaml` admits only the bot pods, and the ingress
+publishes the six bot paths and nothing else.
+
+**Recreate, one replica, block storage.** The profile holds SQLite in write-ahead-log
+mode and the gateway guards itself with an `flock` inside the profile. A surge pod is
+refused by that lock, or — on a filesystem that ignores `flock` — corrupts the log. A
+second replica would also fire every cron reminder twice.
+
+## What is still a stub
+
+- `images/bin/*` — `seed-profile`, `mailproxy`, `balance-proxy`, `dashboard` exit 1.
+  Each has an installer module on the VM that does the work; porting them is the bulk
+  of the remaining effort.
+- `templates/managed.yaml` renders a minimal `config.yaml` per bot. The real one
+  carries the model, delegation, toolset, tool-search, session-reset and MCP blocks
+  that `libs/80-channels.sh` and `libs/62-assistant.sh` write today.
+- The Admin bot has no ops runner here. In a cluster `opsctl` cannot mean journals,
+  systemd and `install.sh`; ADR 0025 §7 says what it becomes.
+- The maintenance job that installs `agy` and `claude` onto the CLI volume and signs
+  them in is not written. It is a Job with a shell and the two volumes mounted.
+
+## Checking it before dispatching a run
+
+```bash
+deploy/gate-check.sh            # G1, G2, G3, G6, G7, G8 against the local render
+deploy/gate-check.sh prod
+```
+
+The sandbox has the last word: it renders against the cluster's real value chain, runs
+`kubeconform` against the target Kubernetes minor, and attests its own egress fence.
+This script only spares you a round trip.
