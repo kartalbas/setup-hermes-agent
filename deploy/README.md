@@ -45,6 +45,32 @@ Ten claims rather than one is a deliberate choice bought with that row. Each bot
 profile is its own volume, so one bot can be restored or restarted without touching
 the other five.
 
+## What the cluster answered, and what it decides
+
+Measured on the target cluster, 2026-09-09:
+
+| Question | Answer | What it decides |
+|---|---|---|
+| storage classes | one, node-local (hostpath), `Delete`, **no volume expansion** | every size below is final; the backup is the only copy |
+| ingress | three classes, all served by Traefik — including the one named `nginx` | the path is stripped by a Traefik `Middleware`, never by an nginx annotation |
+| certificates | `ClusterIssuer` `platform-acme`, ready | the Ingress takes the issuer from `global.clusterIssuer` |
+| metrics | metrics-server running | pod CPU and memory can be reported against limits |
+| logs | Loki in `observability` | the Admin bot keeps an errors-of-the-last-day view |
+
+Node-local storage is the one that shapes the chart rather than merely informing it:
+
+- **No expansion.** A claim cannot grow later. The bridge's CLI home is the volume
+  that grows without bound — the CLI keeps every conversation, 463 MiB of them
+  already — so the job that prunes it is required, not optional.
+- **No replication, no snapshot, `Delete` reclaim.** A volume is one node's disk.
+  The nightly backup is not a second copy, it is the only one.
+- **Claims bind where their first consumer is scheduled.** On a cluster with more
+  than one node, two claims of this unit can land on different machines, and the
+  volume two bots share then cannot be shared at all. `nodeSelector` in
+  `values.yaml` is how that is made deliberate; on a single node it stays empty and
+  the ReadWriteMany claim works because both pods are on the same machine anyway —
+  which is a fact about where they landed, not about the storage class.
+
 ## Resources, and why the CPU has no limit
 
 Each gateway sits at 189 to 311 MiB and 0.004 cores; the bridge peaks at 456 MiB with

@@ -29,6 +29,10 @@ spec:
         hostyour.cloud/bot: {{ .key }}
     spec:
       serviceAccountName: {{ include "unit.name" $ }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
       securityContext:
         runAsNonRoot: true

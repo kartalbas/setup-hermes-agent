@@ -31,6 +31,10 @@ spec:
         hostyour.cloud/component: {{ $c.name }}
     spec:
       serviceAccountName: {{ include "unit.name" $ }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         fsGroup: 10000

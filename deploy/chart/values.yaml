@@ -110,16 +110,17 @@ timezone: Europe/Zurich
 
 ingress:
   enabled: true
-  className: ""
+  # The platform's public class. All three of the cluster's classes are served by
+  # Traefik, including the one named "nginx" — so an nginx-specific annotation would
+  # be accepted and silently ignored. The bots share one host and are told apart by
+  # the first path segment, and the adapter listens on /api/messages, so the segment
+  # is stripped by a Traefik Middleware the chart renders per bot.
+  className: public
   host: ""                # values-<stage>.yaml sets it
-  # The bots share one host and are told apart by the first path segment. The adapter
-  # itself listens on /api/messages, so the controller has to strip the segment;
-  # the annotation that does it is controller-specific and set per stage.
   annotations: {}
   tls:
     enabled: true
     secretName: setup-hermes-agent-tls
-    issuer: ""
 
 # The four services that were loopback-only on the VM. Nothing here is published; the
 # NetworkPolicy admits the bot pods and nobody else.

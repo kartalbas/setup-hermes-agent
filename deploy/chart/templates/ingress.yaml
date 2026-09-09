@@ -1,7 +1,27 @@
 {{- if .Values.ingress.enabled }}
-# The only thing published. Six paths under one host, told apart by the first segment,
-# because the Azure Bot resource stores whatever endpoint URL it is given and the
-# adapter reads the path from its own configuration.
+{{- $host := required "ingress.host must be set per stage" .Values.ingress.host -}}
+{{- $ns := .Release.Namespace -}}
+# One Middleware per bot: the path segment that tells the six apart is stripped
+# before the request reaches the adapter, which serves /api/messages and nothing
+# else. A Middleware rather than an annotation because every ingress class of this
+# cluster is served by Traefik — an nginx rewrite annotation would be accepted and
+# quietly do nothing, which is the worst of the three possible outcomes.
+{{- range .Values.bots }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "unit.name" $ }}-strip-{{ .key }}
+  labels:
+    {{- include "unit.labels" $ | nindent 4 }}
+spec:
+  stripPrefix:
+    prefixes:
+      - /{{ .key }}
+---
+{{- end }}
+# The only thing published. Six paths under one host: the Azure Bot resource stores
+# whatever endpoint URL it is given, so <host>/<bot>/api/messages is as good an
+# endpoint as six hostnames were, and it is one DNS record instead of seven.
 #
 # What is NOT here, deliberately: the bridge, the mail relay, the balance proxy and the
 # dashboard. The dashboard gets its own rule only once the platform's forwardauth sits
@@ -12,29 +32,31 @@ metadata:
   name: {{ include "unit.name" . }}
   labels:
     {{- include "unit.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- if $.Values.ingress.tls.issuer }}
-    cert-manager.io/cluster-issuer: {{ $.Values.ingress.tls.issuer }}
     {{- end }}
-  {{- end }}
+    {{- with .Values.global.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ . | quote }}
+    {{- end }}
+    # Traefik resolves a middleware reference as <namespace>-<name>@kubernetescrd.
+    traefik.ingress.kubernetes.io/router.middlewares: {{ range $i, $b := .Values.bots }}{{ if $i }},{{ end }}{{ $ns }}-{{ include "unit.name" $ }}-strip-{{ $b.key }}@kubernetescrd{{ end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
-    - hosts: [{{ required "ingress.host must be set per stage" .Values.ingress.host | quote }}]
+    - hosts: [{{ $host | quote }}]
       secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
-    - host: {{ required "ingress.host must be set per stage" .Values.ingress.host | quote }}
+    - host: {{ $host | quote }}
       http:
         paths:
           {{- range .Values.bots }}
-          - path: /{{ .key }}(/|$)(.*)
-            pathType: ImplementationSpecific
+          - path: /{{ .key }}
+            pathType: Prefix
             backend:
               service:
                 name: {{ include "unit.name" $ }}-{{ .key }}

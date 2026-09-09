@@ -20,13 +20,6 @@ builds:
 
 ingress:
   host: bots.example.com
-  className: nginx
-  annotations:
-    # Strips the bot's path segment so the adapter sees /api/messages, which is what
-    # the Azure Bot endpoint and the adapter agree on.
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-  tls:
-    issuer: letsencrypt-prod
 
 storage:
   className: ""

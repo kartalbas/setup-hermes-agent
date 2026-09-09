@@ -524,7 +524,22 @@ So the Ingress and the policy are one change, never two:
 
 ## Open questions
 
-Each of these blocks code, and each has a cheap way to be answered.
+Each of these blocks code, and each has a cheap way to be answered. Five were
+answered on the target cluster on 2026-09-09 and are struck through below; the
+storage answer is the one that changes the design rather than confirming it.
+
+**Answered.** (1) One storage class, node-local hostpath, `Delete`, and
+`allowVolumeExpansion: false` — so no claim can ever grow, a volume is one node's
+disk with no snapshot behind it, and claims bind where their first consumer is
+scheduled. ReadWriteMany is therefore a property of co-location, not of the class:
+it holds on one node and fails silently on two, which is why every workload of the
+unit takes a `nodeSelector`. The backup stops being prudence and becomes the only
+copy. (2) Loki runs in `observability`, so `errors_24h` survives as a LogQL query.
+(3) metrics-server runs, so pod usage can be reported. (13a) Three ingress classes,
+all served by Traefik — including the one *named* `nginx`, which is the trap: an
+nginx rewrite annotation would be accepted and quietly ignored, so the bots' path
+segment is stripped by a Traefik `Middleware`. `ClusterIssuer platform-acme` is
+ready, so §10 stands and the tunnel goes.
 
 1. **Which storage classes exist, and is any of them RWX?** →
    `kubectl get storageclass -o yaml`, then bind a 1 Gi PVC of each access mode.
