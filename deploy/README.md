@@ -13,7 +13,8 @@ status *proposed*).
 | `chart/Chart.yaml` | gate G1 | same name again |
 | `chart/values.yaml`, `chart/values-<env>.yaml` | gate G1 | one overlay per env declared in the manifest |
 | `chart/templates/**` | gates G2, G3, G6, G7, G8 | no cluster lookups, renders, PVCs fenced, the Vault contract, no mutable image tags |
-| `images/*.Containerfile` | the build plane | one image per `builds[]` entry |
+| `images/*.Containerfile` | the build plane | one image per `builds[]` entry in the manifest |
+| `chart/values-<env>.yaml` `builds[]` | the release pipeline's bump | one `{name,image,tag}` pin per declared build, all at one tag |
 
 The namespace is `setup-hermes-agent-<stage>`. The unit's name is not a preference:
 G1 rejects the run when the three names disagree, and a rename after onboarding
@@ -90,10 +91,41 @@ second replica would also fire every cron reminder twice.
 - The maintenance job that installs `agy` and `claude` onto the CLI volume and signs
   them in is not written. It is a Job with a shell and the two volumes mounted.
 
+## How a version reaches the cluster
+
+Nothing here is built locally and no image is pushed by hand. The build plane
+does both, on the cluster, and the chart never names a tag of its own.
+
+1. A release is a pushed ref, `deploy/<stage>/<release-tag>`, on this repository.
+   The onboarding installs the webhook and pushes the first one itself; afterwards
+   the release script the platform leaves in the repository does it.
+2. The webhook reaches an EventListener, which starts this unit's own Tekton
+   pipeline in its build namespace. The pipeline clones at the tag, resolves it to a
+   commit, and for each build declared in `platform.yaml` asks the registry whether
+   that commit's image already exists — and asks the image itself, through its
+   `org.opencontainers.image.revision` and `.source` labels, whether it is really
+   ours. What is missing is built and pushed; what is present is reused, which is
+   what makes promoting a release to a further stage one probe and one commit.
+3. The **bump** then searches for every carrier of the pin grammar
+   `builds[]{name,image,tag}` and writes the minted tag into each. This chart's
+   `values-<stage>.yaml` is one such carrier, and it is found rather than looked up
+   in a list: an image that nothing pins fails the run loudly, because a release
+   nothing pins deploys nowhere.
+4. The bump writes on the **delivery branch** `deploy/<stage>`, not on `master`, and
+   Argo CD syncs that branch. So `master` holds the chart and the placeholder pin;
+   the branch holds the chart and the real one.
+
+Two consequences worth stating plainly. The chart resolves every image through
+`builds[]` (see `_helpers.tpl`) and refuses to render without a pin — reading a tag
+from anywhere else would mean the bump writes a value nothing reads, and the
+deployed image would drift from the released one silently. And all declared builds
+carry the same tag: one release is one image set, and the onboarding rejects a
+values file that pins two.
+
 ## Checking it before dispatching a run
 
 ```bash
-deploy/gate-check.sh            # G1, G2, G3, G6, G7, G8 against the local render
+deploy/gate-check.sh            # the build pins, then G1, G2, G3, G6, G7, G8
 deploy/gate-check.sh prod
 ```
 

@@ -69,6 +69,34 @@ sys.exit(1 if problems else 0)
 PY
 then ok "manifest, chart name and per-env values files agree"; else FAILED=1; fi
 
+gate "the build pins"
+# Not one of the platform's gates — the release pipeline's own rule, checked here
+# because it fails late otherwise. The bump writes one tag per declared build into
+# values-<stage>.yaml, and one release is one image set: an image nothing pins fails
+# the run loudly, and two different tags mean a corrupt delivery branch.
+if python3 - "$MANIFEST" "$CHART" "$STAGE" <<'PY'
+import sys, yaml
+manifest_path, chart, stage = sys.argv[1], sys.argv[2], sys.argv[3]
+m = yaml.safe_load(open(manifest_path))
+declared = [b["name"] for b in (m.get("builds") or [])]
+values = yaml.safe_load(open(f"{chart}/values-{stage}.yaml")) or {}
+pins = {p.get("image"): p.get("tag") for p in (values.get("builds") or [])}
+problems = []
+for name in declared:
+    if name not in pins:
+        problems.append(f'the build "{name}" is declared but values-{stage}.yaml pins no tag for it')
+extra = [i for i in pins if i not in declared]
+if extra:
+    problems.append(f'values-{stage}.yaml pins {", ".join(extra)}, which platform.yaml does not declare')
+tags = {t for i, t in pins.items() if i in declared}
+if len(tags) > 1:
+    problems.append(f'the declared builds are pinned at different tags ({", ".join(sorted(tags))}) — one release is one image set')
+for problem in problems:
+    print("  FAIL  " + problem)
+sys.exit(1 if problems else 0)
+PY
+then ok "every declared build is pinned, all at one tag"; else FAILED=1; fi
+
 gate "G2 determinism"
 if grep -rnE '\{\{[^}]*(\blookup\b|\.Capabilities|\.Release\.IsInstall|\.Release\.IsUpgrade)' \
       "$CHART/templates" "$CHART"/values*.yaml 2>/dev/null | grep -v '{{/\*'; then

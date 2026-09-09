@@ -14,12 +14,13 @@ stage: prod
 
 image:
   registry: ""            # the platform's registry, injected by the value chain
-  agent:
-    repository: hermes-agent
-    tag: "0.4.0"          # never "latest": gate G8 rejects a mutable tag
-  bridge:
-    repository: hermes-bridge
-    tag: "0.4.0"
+
+# THE PIN. Empty here on purpose: the authoritative list lives in
+# values-<stage>.yaml, because that is the file the release pipeline's bump
+# writes — it searches every carrier of the grammar builds[]{name,image,tag} for
+# each image it built, and an image with no hit anywhere fails the run loudly.
+# A chart rendered without a pin therefore refuses rather than inventing a tag.
+builds: []
 
 # One entry per bot. `key` is the profile name, the volume name and the Ingress path
 # segment; `port` is the webhook port its Teams adapter listens on.

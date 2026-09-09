@@ -1,6 +1,6 @@
 # The four services that bound to 127.0.0.1 on the VM. In a pod there is no loopback
 # boundary left, so each is a ClusterIP the NetworkPolicy beside this file closes.
-{{- $img := include "unit.image" (dict "root" . "spec" .Values.image.bridge) }}
+{{- $img := include "unit.image" (dict "root" . "image" "hermes-bridge") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

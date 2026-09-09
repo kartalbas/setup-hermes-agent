@@ -36,7 +36,7 @@ spec:
         fsGroup: 10000
       containers:
         - name: {{ $c.name }}
-          image: {{ include "unit.image" (dict "root" $ "spec" $.Values.image.agent) }}
+          image: {{ include "unit.image" (dict "root" $ "image" "hermes-agent") }}
           command: ["/usr/local/bin/{{ $c.name }}"]
           env:
             {{- include "unit.commonEnv" $ | nindent 12 }}

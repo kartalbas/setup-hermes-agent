@@ -1,6 +1,23 @@
 # Production overlay. Gate G1 requires one file per env declared in the manifest.
 stage: prod
 
+# WRITTEN BY THE BUILD PLANE, not by hand. The release pipeline builds each image
+# declared in deploy/platform.yaml, then bumps every carrier of this grammar to the
+# tag it minted — this file is one such carrier, found by the reach search rather
+# than named in a list. All declared builds are pinned at the same tag: one release
+# is one image set, and the onboarding refuses a file that pins two.
+#
+# The placeholder below is deliberately a tag no registry can hold, so a chart
+# deployed before its first release fails to pull instead of running something
+# arbitrary. Gate G8 accepts it because it is a tag and it is not "latest".
+builds:
+  - name: hermes-agent
+    image: hermes-agent
+    tag: "0.0.0-stable-00000000000000-0000000"
+  - name: hermes-bridge
+    image: hermes-bridge
+    tag: "0.0.0-stable-00000000000000-0000000"
+
 ingress:
   host: bots.example.com
   className: nginx
