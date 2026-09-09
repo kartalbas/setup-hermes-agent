@@ -1651,6 +1651,22 @@ Setting a non-loopback public URL also engages the dashboard's own
 authentication, which is right: once it answers on a routable address it should
 not depend on the proxy in front of it for its security.
 
+### A question with options arrives as one run of prose
+
+Teams joins lines that are separated by a single newline, and the agent's
+fallback for a multiple-choice question is an indented numbered list — so
+question, options and instruction arrive as one paragraph, unreadable on a
+phone. The run carries a patch that writes the options as a `- ` list with the
+numbers kept; it is applied by the `hermes` module and needs the bots
+restarted, which the run does. Check it is in place:
+
+```bash
+grep -c 'setup-hermes-agent: readable choices' <install dir>/gateway/platforms/base.py
+```
+
+Answer such a question with the number, the option's text, or your own words —
+that works on every channel, with or without the patch.
+
 ### The bot answers as the vendor's coding assistant, or "forgets" its role
 
 The bridge is stateless since bot 0.2.x (ADR 0021): every request is a fresh

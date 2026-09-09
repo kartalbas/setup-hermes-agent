@@ -32,6 +32,7 @@ hermes_apply() {
         _hermes_patch_email_folder
         _hermes_patch_teams_links
         _hermes_patch_help
+        _hermes_patch_clarify_choices
         return 0
     fi
 
@@ -39,6 +40,7 @@ hermes_apply() {
     _hermes_patch_email_folder
     _hermes_patch_teams_links
     _hermes_patch_help
+    _hermes_patch_clarify_choices
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -438,6 +440,67 @@ _hermes_patch_teams_links() {
 # still reach the original. Idempotent by marker; re-applied after updates.
 # ---------------------------------------------------------------------------
 hermes_slash_commands_path() { printf '%s/gateway/slash_commands.py' "$(hermes_install_dir)"; }
+
+# ---------------------------------------------------------------------------
+# Carried patch 4: a question with choices, readable on Teams.
+#
+# Adapters without a button UI fall back to a numbered list built with single
+# newlines and two leading spaces. Teams joins single-newline lines into one
+# paragraph, so the question, every option and the instruction arrive as one
+# run of prose — the operator could see the options on the phone but not tell
+# them apart, let alone pick one (2026-09-09). Written as a "- " list with the
+# number kept, every platform renders it as a list and "reply with 2" still
+# works. Idempotent by marker; re-applied after updates.
+# ---------------------------------------------------------------------------
+hermes_adapter_base_path() { printf '%s/gateway/platforms/base.py' "$(hermes_install_dir)"; }
+
+hermes_patch_clarify_choices_file() {   # FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+MARK = "setup-hermes-agent: readable choices"
+if MARK in s:
+    sys.exit(3)
+old = ('            lines = [f"❓ {question}", ""]\n'
+       '            for i, choice in enumerate(choices, start=1):\n'
+       '                lines.append(f"  {i}. {choice}")\n')
+if s.count(old) != 1:
+    sys.exit("the clarify text fallback was not found exactly once; the adapter changed — review the patch")
+new = ('            # ' + MARK + ': a "- " list survives every renderer.\n'
+       '            # Teams joins single-newline lines into one paragraph, which\n'
+       '            # turned question, options and instruction into one run of prose.\n'
+       '            lines = [f"❓ {question}", ""]\n'
+       '            for i, choice in enumerate(choices, start=1):\n'
+       '                lines.append(f"- **{i}.** {choice}")\n')
+s = s.replace(old, new)
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_clarify_choices() {
+    local f; f=$(hermes_adapter_base_path)
+    [[ -f $f ]] || { log_warn "adapter base not found at ${f}; choice patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q "setup-hermes-agent: readable choices" "$f"; then log_skip "readable choices patch present"
+        else log_info "[dry-run] would patch ${f} so a question's options arrive as a list"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_clarify_choices_file "$f" || rc=$?
+    case $rc in
+        0)
+            mark_changed; log_ok "adapter patched: a question's options arrive as a list, not as prose"
+            local key
+            while IFS= read -r key; do
+                [[ -n $key ]] && restart_later "$(bot_field "$key" SERVICE).service"
+            done < <(bots)
+            ;;
+        3) log_skip "readable choices patch present" ;;
+        *) die "could not patch the adapter for readable choices" ;;
+    esac
+}
 
 hermes_patch_help_file() {         # hermes_patch_help_file FILE -> 0 patched, 3 already, 1 failed
     python3 - "$1" <<'PY'

@@ -5,6 +5,7 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Teams: carried adapter patch — a question with options arrives as a list, not as one run of prose (the options were visible on the phone but not distinguishable, let alone answerable, 2026-09-09); the numbers stay, so "reply with 2" still works
 - Bridge: independent calls the model makes in one turn travel together as parallel tool calls instead of costing a full round trip each (a GitHub report spent twelve turns of 75k tokens on one call apiece, 2026-09-09)
 - Bridge: a turn decided through the tools server is allowed to end (grace 45 s) instead of being cut short, so its token counts reach the log and the caller — the first live turn reported none (2026-09-09); a turn decided through the *rejected* native channel still ends at once, there being nothing to wait for
 

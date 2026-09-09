@@ -72,3 +72,39 @@ assert asyncio.run(h._handle_help_command(Ev("skills"))) == "DEVELOPER LIST"
 PY
     rm -rf "$tmp"
 }
+
+@test "the choice patch turns the numbered fallback into a list, once, and keeps the numbers" {
+    local f; f=$(mktemp --suffix=.py)
+    cat >"$f" <<'PY'
+class Adapter:
+    async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
+        if choices:
+            _is_multi = False
+            lines = [f"❓ {question}", ""]
+            for i, choice in enumerate(choices, start=1):
+                lines.append(f"  {i}. {choice}")
+            lines.append("")
+            lines.append("Reply with the number, the option text, or your own answer.")
+            text = "\n".join(lines)
+        else:
+            text = f"❓ {question}"
+        return text
+PY
+    hermes_patch_clarify_choices_file "$f"
+    grep -q 'lines.append(f"- \*\*{i}\.\*\* {choice}")' "$f"
+    ! grep -q 'lines.append(f"  {i}. {choice}")' "$f"
+    python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f"
+    # every option on its own line, the number still answerable
+    out=$(python3 - "$f" <<'PY'
+import asyncio, importlib.util, sys
+spec = importlib.util.spec_from_file_location("m", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(asyncio.run(m.Adapter().send_clarify("c", "Welcher Tenant?", ["Acme", "Globex"], "id", "s")))
+PY
+)
+    [[ "$out" == *'- **1.** Acme'* && "$out" == *'- **2.** Globex'* ]]
+    [[ "$out" == *'Reply with the number'* ]]
+    bats_run hermes_patch_clarify_choices_file "$f"
+    [ "$status" -eq 3 ]
+    [ "$(hermes_adapter_base_path)" = "$(hermes_install_dir)/gateway/platforms/base.py" ]
+    rm -f "$f"
+}
