@@ -98,6 +98,11 @@ AGY_SHIM_MODEL_ALIASES="fast=gemini-3.8-flash-high,smart=gemini-3.1-pro-high"
 AGY_SHIM_UNKNOWN_MODEL="reject"
 AGY_SHIM_NATIVE_TOOLS="auto"    # the caller's functions as real tools of the CLI (ADR 0024); auto: on once the run has registered the tools server | on | off (the text protocol)
 AGY_SHIM_MAX_SPARES=3           # CLI processes kept warm, one per bot; starting one is ~20% of a request, holding one ~200 MB. 0 = off
+# A bearer token on /v1. Off is right while the bridge is on loopback — the kernel is the
+# boundary there. Required as soon as AGY_SHIM_HOST reaches further, because the endpoint
+# spends the subscription for whoever reaches it. The run mints the value into the secrets
+# file; every caller must then name it: LLM_ENDPOINT_n_TOKEN_VAR="AGY_SHIM_TOKEN".
+AGY_SHIM_AUTH=false
 
 # Measured: ~239 MB per live conversation. Six is what 7 GB tolerates next to
 # everything else on this host.

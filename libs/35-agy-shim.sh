@@ -25,6 +25,7 @@ agyshim_apply() {
     _agyshim_check_cli
     _agyshim_install_script
     _agyshim_tools_server
+    _agyshim_auth_token
     _agyshim_write_unit
     converge_unit "$(agyshim_unit_name).service" "$before"
     _agyshim_verify
@@ -224,6 +225,37 @@ _agyshim_tools_server() {
     fi
 }
 
+# The bearer token every /v1 request must carry, when AGY_SHIM_AUTH is on.
+#
+# It is minted here rather than asked of the operator: it is a shared secret
+# between two things this run owns, and nobody has to see it. It goes into the
+# secrets file, so it survives a re-run and can be read back when a bot's .env
+# is written; and into a 0600 file the unit names, so it never appears in the
+# unit (0644) nor in the process list.
+_agyshim_auth_token() {
+    local file=$AGY_SHIM_TOKEN_FILE
+    if ! is_true "${AGY_SHIM_AUTH:-false}"; then
+        [[ -f $file ]] && { run rm -f "$file"; log_ok "bridge token removed; /v1 is open again on loopback"; }
+        return 0
+    fi
+    if ! secret_nonempty "$AGY_SHIM_TOKEN_VAR"; then
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would mint ${AGY_SHIM_TOKEN_VAR} and write it to ${SECRETS_FILE}"
+            return 0
+        fi
+        local minted; minted=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)
+        [[ ${#minted} -ge 32 ]] || die "could not mint a bridge token"
+        log_redact_register "$minted"
+        _secrets_append "$AGY_SHIM_TOKEN_VAR" "$minted"
+        mark_changed; log_ok "${AGY_SHIM_TOKEN_VAR} minted and written to the secrets file"
+    fi
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] write ${file} (0600) with the bridge token"
+        return 0
+    fi
+    write_file "$file" 0600 "${SERVICE_USER}:${SERVICE_GROUP}" <<<"$(secret_get "$AGY_SHIM_TOKEN_VAR")"
+}
+
 _agyshim_write_unit() {
     local unit; unit=$(agyshim_unit_name)
     local py; py=$(command -v python3 || printf /usr/bin/python3)
@@ -261,7 +293,7 @@ ExecStart=${py} $(agyshim_script_path) \\
     --models ${AGY_SHIM_MODELS} \\
     --unknown-model ${AGY_SHIM_UNKNOWN_MODEL} \\
     --max-concurrent ${AGY_SHIM_MAX_CONCURRENT} \\
-    --max-spares ${AGY_SHIM_MAX_SPARES} \\
+    --max-spares ${AGY_SHIM_MAX_SPARES}$(is_true "${AGY_SHIM_AUTH:-false}" && printf ' \\\n    --auth-token-file %s' "$AGY_SHIM_TOKEN_FILE") \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
     --compact-at ${AGY_SHIM_COMPACT_AT} \\
@@ -296,13 +328,16 @@ _agyshim_verify() {
 
     local unit url waited=0
     unit=$(agyshim_unit_name)
-    url="http://${AGY_SHIM_HOST}:${AGY_SHIM_PORT}/v1/models"
+    # /healthz rather than /v1/models: the model list needs the bearer token
+    # once one is configured, and a verification that asks for a credential is
+    # a verification that fails for the wrong reason.
+    url="http://${AGY_SHIM_HOST}:${AGY_SHIM_PORT}/healthz"
 
     while (( waited < 30 )); do
         if [[ $(http_status "$url") == 200 ]]; then
-            log_ok "bridge answering on ${AGY_SHIM_HOST}:${AGY_SHIM_PORT}"
+            log_ok "bridge answering on ${AGY_SHIM_HOST}:${AGY_SHIM_PORT}$(is_true "${AGY_SHIM_AUTH:-false}" && printf ' (bearer token required on /v1)')"
             local models
-            models=$(fetch "$url" 2>/dev/null | grep -oP '"id":\s*"\K[^"]+' | paste -sd', ')
+            models=$(fetch "http://${AGY_SHIM_HOST}:${AGY_SHIM_PORT}/v1/models" 2>/dev/null | grep -oP '"id":\s*"\K[^"]+' | paste -sd', ')
             log_info "models         ${models}"
             return 0
         fi

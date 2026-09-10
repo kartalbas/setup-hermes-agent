@@ -100,6 +100,13 @@ config_defaults() {
     # (2.3 s of 11 s, measured 2026-09-11), and a warm one holds roughly 200 MB
     # open, so the ceiling is memory rather than taste. 0 switches it off.
     : "${AGY_SHIM_MAX_SPARES:=3}"
+    # A bearer token on /v1. Off by default, because on loopback the kernel is
+    # already the boundary and a token there buys nothing; required as soon as
+    # the endpoint binds anywhere else. The value itself is minted by the run
+    # into the secrets file and handed to the bots as their provider key.
+    : "${AGY_SHIM_AUTH:=false}"
+    : "${AGY_SHIM_TOKEN_VAR:=AGY_SHIM_TOKEN}"
+    : "${AGY_SHIM_TOKEN_FILE:=${AGY_SHIM_LIB_DIR}/bridge.token}"
     : "${AGY_SHIM_MAX_PROCESSES:=6}"
     : "${AGY_SHIM_IDLE_TIMEOUT:=900}"
     : "${AGY_SHIM_COMPACT_AT:=120000}"
@@ -809,18 +816,50 @@ _validate_mailproxy() {
     return 0
 }
 
+# With a token on the bridge, everything that calls it has to present one — and
+# the callers are declared here, as endpoints and as per-bot models. Finding a
+# caller without the token at validation is a sentence; finding it afterwards is
+# five bots answering "the model provider failed".
+_check_agyshim_callers_carry_the_token() {
+    is_true "${AGY_SHIM_AUTH:-false}" || return 0
+    local want=${AGY_SHIM_TOKEN_VAR:-AGY_SHIM_TOKEN} here="${AGY_SHIM_HOST}:${AGY_SHIM_PORT}"
+    local n
+    for (( n = 1; n <= ${LLM_ENDPOINT_COUNT:-0}; n++ )); do
+        [[ $(endpoint_field "$n" BASE_URL) == *"${here}"* ]] || continue
+        [[ $(endpoint_field "$n" TOKEN_VAR) == "$want" ]] ||
+            _bad "LLM_ENDPOINT_${n} points at the bridge, which now requires a bearer token: set LLM_ENDPOINT_${n}_TOKEN_VAR=\"${want}\""
+    done
+    local k
+    while IFS= read -r k; do
+        [[ -n $k ]] || continue
+        [[ $(bot_field "$k" LLM_BASE_URL) == *"${here}"* ]] || continue
+        [[ $(bot_field "$k" LLM_TOKEN_VAR) == "$want" ]] ||
+            _bad "bot ${k} calls the bridge directly: set BOT_$(bot_upper "$k")_LLM_TOKEN_VAR=\"${want}\""
+    done < <(bots)
+    secret_nonempty "$want" || [[ $DRY_RUN == true ]] ||
+        log_info "${want} is not in the secrets file yet; the run mints it"
+}
+
 _validate_agyshim() {
     _validating agyshim || return 0
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
     _check_enum AGY_SHIM_NATIVE_TOOLS "$AGY_SHIM_NATIVE_TOOLS" auto on off
     [[ ${AGY_SHIM_MAX_SPARES:-} =~ ^[0-9]+$ ]] || _bad "AGY_SHIM_MAX_SPARES must be a number of processes (0 switches the warm pool off)"
+    _check_agyshim_callers_carry_the_token
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
     _check_abs_path AGY_SHIM_LIB_DIR "$AGY_SHIM_LIB_DIR"
     [[ $AGY_SHIM_HISTORY_BUDGET =~ ^[0-9]+$ ]] ||
         _bad "AGY_SHIM_HISTORY_BUDGET='${AGY_SHIM_HISTORY_BUDGET}' must be a number of characters (0 = no limit)"
-    [[ $AGY_SHIM_HOST == 0.0.0.0 ]] &&
-        _bad "AGY_SHIM_HOST=0.0.0.0 publishes an unauthenticated model endpoint on every interface"
+    # The refusal used to be flat: never bind anything but loopback, because
+    # the endpoint checked nothing and the kernel was the whole boundary. Now
+    # it checks a bearer token when one is configured, so the rule is about the
+    # token rather than the address — a bridge reachable from elsewhere is a
+    # decision, not an accident, and it must carry a credential.
+    if [[ $AGY_SHIM_HOST != 127.0.0.1 && $AGY_SHIM_HOST != ::1 && $AGY_SHIM_HOST != localhost ]]; then
+        is_true "${AGY_SHIM_AUTH:-false}" ||
+            _bad "AGY_SHIM_HOST=${AGY_SHIM_HOST} reaches beyond loopback; set AGY_SHIM_AUTH=true so every request must carry a bearer token"
+    fi
     return 0
 }
 

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import base64
 import binascii
 import json
@@ -70,6 +71,10 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger("agy-shim")
+
+# What /healthz reports, so an installer or a chart can insist on a minimum
+# rather than discovering an old bridge at the first request.
+BRIDGE_VERSION = "2"
 
 # The CLI's own wait ceiling; kept above the bridge's per-turn timeout so a
 # slow turn is reported by us (with context), not cut by the CLI (without).
@@ -1453,6 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
     models: list[str] = []          # allowed, in the intended order of escalation
     aliases: dict = {}
     unknown_model: str = "reject"
+    auth_token: str = ""            # empty = no check, which only loopback makes safe
 
     @classmethod
     def resolve_model(cls, requested: str) -> str:
@@ -1496,18 +1502,57 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routes -------------------------------------------------------------
 
+    def _authorized(self) -> bool:
+        """Whether this request may be served.
+
+        With no token configured everything is served, which is only safe
+        because the socket is on loopback and the kernel enforces the rest —
+        the arrangement this endpoint has always relied on. With a token it
+        stops relying on the address: the bridge can then be reached across a
+        pod network or from another machine, and the caller must say who it is.
+
+        Compared in constant time, because the alternative leaks the token one
+        byte at a time to anyone who can measure a reply."""
+        if not self.auth_token:
+            return True
+        header = self.headers.get("Authorization") or ""
+        scheme, _, offered = header.partition(" ")
+        if scheme.lower() != "bearer" or not offered:
+            return False
+        return hmac.compare_digest(offered.strip(), self.auth_token)
+
+    def _unauthorized(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Bearer realm="agy-shim"')
+        body = json.dumps({"error": {"message": "a bearer token is required on this endpoint",
+                                     "type": "invalid_request_error"}}).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/")
+        # /healthz stays open: it is what a probe asks, it says nothing a
+        # stranger can use, and a health check that needs a credential is a
+        # health check that fails for the wrong reason.
+        if path.endswith("/healthz"):
+            return self._send(200, {"status": "ok", "mode": self.pool.stats().get("mode"),
+                                    "version": BRIDGE_VERSION})
+        if not self._authorized():
+            return self._unauthorized()
         if path.endswith("/models"):
             self._send(200, {"object": "list", "data": [
                 {"id": m, "object": "model", "created": int(time.time()),
                  "owned_by": "agy-shim"} for m in self.models]})
-        elif path.endswith("/healthz") or path.endswith("/stats"):
+        elif path.endswith("/stats"):
             self._send(200, {"status": "ok", **self.pool.stats()})
         else:
             self._error(404, f"no such route: {self.path}", "invalid_request_error")
 
     def do_POST(self):
+        if not self._authorized():
+            return self._unauthorized()
         if not self.path.split("?")[0].rstrip("/").endswith("/chat/completions"):
             return self._error(404, f"no such route: {self.path}", "invalid_request_error")
 
@@ -1687,6 +1732,9 @@ def main() -> int:
                    help="turns running at once; each is a live process")
     p.add_argument("--max-processes", type=int, default=12,
                    help="conversations held open at once")
+    p.add_argument("--auth-token-file", default=os.environ.get("AGY_SHIM_TOKEN_FILE", ""),
+                   help="file holding the bearer token every /v1 request must present; "
+                        "without one the endpoint trusts whoever reaches it, and only loopback makes that safe")
     p.add_argument("--max-spares", type=int,
                    default=int(os.environ.get("AGY_SHIM_MAX_SPARES", "3")),
                    help="CLI processes kept warm, one per (model, system prompt, toolset) — "
@@ -1733,11 +1781,28 @@ def main() -> int:
         log.error("cannot find %r on PATH — is the CLI installed for this user?", args.binary)
         return 1
 
+    token = ""
+    if args.auth_token_file:
+        try:
+            with open(args.auth_token_file, encoding="utf-8") as f:
+                token = f.read().strip()
+        except OSError as exc:
+            log.error("cannot read the token file %s: %s", args.auth_token_file, exc)
+            return 1
+        if not token:
+            log.error("the token file %s is empty; refusing to start unauthenticated", args.auth_token_file)
+            return 1
+    if not token and args.host not in ("127.0.0.1", "::1", "localhost"):
+        log.error("listening on %s without a token would publish an endpoint that spends the "
+                  "subscription for anyone who reaches it; pass --auth-token-file", args.host)
+        return 1
+
     startup_checks(args)
     Handler.pool = Pool(args)
     Handler.models = args.models
     Handler.aliases = args.aliases
     Handler.unknown_model = args.unknown_model
+    Handler.auth_token = token
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
@@ -1747,6 +1812,8 @@ def main() -> int:
         log.info("aliases: %s", ", ".join(f"{k}->{v}" for k, v in args.aliases.items()))
     log.info("unknown models: %s | max %d concurrent | compact at %d tokens | transcript budget %d chars",
              args.unknown_model, args.max_concurrent, args.compact_at, args.history_budget)
+    log.info("bridge %s | /v1 %s | up to %d warm process(es)", BRIDGE_VERSION,
+             "requires a bearer token" if token else "open (loopback only)", args.max_spares)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

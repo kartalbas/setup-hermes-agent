@@ -536,3 +536,56 @@ assert stale.closed
 PY
     grep -q -- '--max-spares ${AGY_SHIM_MAX_SPARES}' "$REPO_ROOT/libs/35-agy-shim.sh" 2>/dev/null || grep -q -- '--max-spares' "$(dirname "$SHIM")/../../libs/35-agy-shim.sh"
 }
+
+@test "a bearer token closes /v1 while /healthz stays open, and the callers are checked" {
+    load helper
+    load_libs
+    silence_logs
+    SCRIPT_DIR=$REPO_ROOT DRY_RUN=true
+    config_defaults
+    [ "$AGY_SHIM_AUTH" = false ]                       # off by default: loopback is the boundary
+
+    # Off loopback without a token is refused; with one it is a decision.
+    _invalid=(); AGY_SHIM_ENABLED=true AGY_SHIM_MODELS=m AGY_SHIM_HOST=0.0.0.0; _validate_agyshim
+    [ "${#_invalid[@]}" -ge 1 ]; [[ "${_invalid[*]}" == *AGY_SHIM_AUTH* ]]
+    _invalid=(); AGY_SHIM_AUTH=true; _validate_agyshim
+    [[ "${_invalid[*]}" != *"reaches beyond loopback"* ]]
+
+    # A caller that would not present the token is named before it fails live.
+    AGY_SHIM_HOST=127.0.0.1 AGY_SHIM_PORT=8787
+    LLM_ENDPOINT_COUNT=1 LLM_ENDPOINT_1_BASE_URL="http://127.0.0.1:8787/v1" LLM_ENDPOINT_1_TOKEN_VAR=""
+    _invalid=(); _check_agyshim_callers_carry_the_token
+    [ "${#_invalid[@]}" -eq 1 ]; [[ ${_invalid[0]} == *LLM_ENDPOINT_1_TOKEN_VAR* ]]
+    LLM_ENDPOINT_1_TOKEN_VAR="AGY_SHIM_TOKEN"
+    _invalid=(); _check_agyshim_callers_carry_the_token; [ "${#_invalid[@]}" -eq 0 ]
+
+    # The token reaches the unit as a FILE, never as an argument or an Environment line.
+    grep -q -- '--auth-token-file' "$REPO_ROOT/libs/35-agy-shim.sh"
+    ! grep -qE 'Environment=.*TOKEN=' "$REPO_ROOT/libs/35-agy-shim.sh"
+    grep -q 'write_file "$file" 0600' "$REPO_ROOT/libs/35-agy-shim.sh"
+
+    # And the endpoint itself: /healthz open, /v1 closed, constant-time compare.
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys, types
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+h = types.SimpleNamespace(auth_token="", headers={})
+ok = types.MethodType(m.Handler._authorized, h)
+assert ok() is True                                   # no token configured: everything served
+h.auth_token = "sekret"
+h.headers = {}
+assert ok() is False
+h.headers = {"Authorization": "Bearer wrong"}
+assert ok() is False
+h.headers = {"Authorization": "Basic sekret"}
+assert ok() is False
+h.headers = {"Authorization": "Bearer sekret"}
+assert ok() is True
+h.headers = {"Authorization": "bearer  sekret "}       # scheme case and padding
+assert ok() is True
+src = open(sys.argv[1]).read()
+assert "hmac.compare_digest" in src, "the token must not be compared byte by byte"
+get = src.split("    def do_GET(self):", 1)[1].split("    def do_POST(self):", 1)[0]
+assert get.index('/healthz') < get.index("self._authorized()"), "healthz must be answered before the check"
+assert "self._authorized()" in src.split("    def do_POST(self):", 1)[1][:200], "do_POST must check first"
+PY
+}

@@ -1220,6 +1220,16 @@ systemctl is-active '<service-prefix>-*'      # the bots
 and one message per bot in Teams. A relay that answers its first IMAP poll with
 `EOF` is the known hiccup and self-heals.
 
+**Letting something other than this host reach the bridge.** It answers on
+loopback and checks nothing, which is safe only because the kernel refuses
+everyone else — the endpoint spends your subscription for whoever reaches it.
+Set `AGY_SHIM_AUTH=true` and the run mints a token into the secrets file, drops
+it into a 0600 file the service reads, and requires it on `/v1`; `/healthz`
+stays open so a probe still works. Every caller must then name the secret
+(`LLM_ENDPOINT_1_TOKEN_VAR="AGY_SHIM_TOKEN"`), and the run refuses to start
+before that rather than after. Only with a token will the bridge bind an
+address other than `127.0.0.1`.
+
 **Why the first message to a bot after a run is slower.** The bridge keeps one
 CLI process warm per bot, because starting one costs about 2.3 seconds of a
 turn (measured: a short question answered in 3.5 s cold and 1.2 s warm). A
