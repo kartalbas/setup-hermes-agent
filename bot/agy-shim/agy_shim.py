@@ -10,6 +10,14 @@ the two so an agent framework can use it as an ordinary provider.
 
 WHY A PERSISTENT PROCESS PER CONVERSATION
 -----------------------------------------
+SUPERSEDED — the figures below were measured before the transcript was trimmed to
+a budget and before agent mode, and they no longer describe this program. A
+controlled A/B on 2026-09-10 (docs/research/agy-cli.md) found the living process
+2.5x MORE expensive per turn, because the CLI accumulates the conversation in its
+own context and re-sends it while the stateless path sends a bounded transcript.
+It is 44% faster, which is why --stateful survives as the latency option. The
+original note is kept because it is what the design was built on:
+
 Measured on the target CLI, same three-turn exchange:
 
     separate process per turn      one process, stream-json

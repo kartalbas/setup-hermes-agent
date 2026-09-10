@@ -94,3 +94,46 @@ Setup: an isolated HOME (token copied, removed afterwards), `~/.gemini/config/mc
 - **Zero "improperly formatted function call" in 9 turns with tools** (the live bridge: 140 in the two days before) [V, small sample].
 
 Design that follows (proposed, ADR pending): the bridge exposes the request's tools to the CLI as an MCP server ("tools", one global entry, per-workdir `tools.json`), an allow rule `mcp(tools/*)` written by the installer, the server validates arguments against the schema and the bridge takes the first valid `call_mcp_tool` as the decision — stateless: end the request and close the one-shot process; stateful: the server answers "handed to the caller" and the bridge discards the model's closing words. The text TOOL PROTOCOL becomes the fallback only.
+
+## Stateful against stateless, measured 2026-09-10 (A/B, cold cache)
+
+The assumption this repository has carried since the bridge was written — that a
+living CLI process is markedly cheaper per turn than a fresh one — is **false under
+today's code**. The same ten-turn conversation, same system prompt, same tools, same
+canned tool results, against two private bridge instances that served nothing else:
+
+| | stateless | stateful | |
+|---|---|---|---|
+| requests | 15 | 14 | |
+| input tokens, total | 293,070 | 748,272 | **+155%** |
+| marginal (input − cached) | 293,070 | 748,272 | **+155%** |
+| average per request | 19,538 | 53,448 | **+174%** |
+| output tokens | 43,678 | 44,122 | +1% |
+| wall clock | 188 s | 105 s | **−44%** |
+
+- **Stateful grows monotonically and then compacts.** Input per request went 3.8k,
+  13.5k, 26k, 40k, 49k, 59k, 66k, 88k, 100k, 113k, 127k — the CLI keeps the whole
+  conversation in its own context and re-sends it every turn — then fell to 14k at
+  turn 9 when `--compact-at 120000` fired, a 60-second turn that bought the drop.
+- **Stateless stays bounded** because the transcript it sends is trimmed to a budget
+  (`trim_history`). It oscillates with the size of the last tool result and never
+  climbs.
+- **The old figures in `agy_shim.py`'s header (5,863 against 14,120 on turn 3)
+  predate both the transcript trimming and agent mode.** They are no longer the
+  system being described. The header should say so.
+- **Identity held in BOTH modes**, at turns 1, 5 and 10, with no vendor name and no
+  register slip. That is the failure ADR 0021 abolished the stateful pool for, and
+  agent mode has closed it — so the reason to stay stateless is now cost, not drift.
+- **Stateful is much faster**: no process spawn per request, 2 to 5 seconds against
+  5 to 20. If latency ever matters more than quota, this is the lever.
+
+**The caveat, and it is not small.** `cached` was 0 on every single request in both
+modes: two cold instances, prefixes nobody had sent before. Production shows the
+stateless path running at `cached ≈ in`. This run therefore compares the two modes
+with the cache switched off by accident, and whether a warm prefix changes the
+ranking is unmeasured. Repeating the identical A/B immediately afterwards, when both
+prefixes are warm, is one more run of about thirty turns and would settle it.
+
+Conclusion for now: **do not adopt the stateful pool for cost.** It is the wrong
+direction by a factor of two and a half on the numbers we have. Keep `--stateful`
+where it is, behind the flag, as the latency option.
