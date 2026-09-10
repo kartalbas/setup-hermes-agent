@@ -284,6 +284,25 @@ check_secrets() {
     fi
 }
 
+# A tool run with an unset or misread HOME writes its cache into whatever the
+# empty value rendered as — a directory literally named "None", or a bare
+# `.cache` beside the source. What lands there is that machine's, and one such
+# file (a developer-tools device id) reached a commit through `git add -A` on
+# 2026-09-11. Nothing of this repository ever lives under such a path, so the
+# rule is the path, not its contents: it catches the next one whatever it holds.
+check_stray_home() {
+    local strays f
+    strays=$(git ls-files --cached --others --exclude-standard 2>/dev/null |
+             grep -E '(^|/)(None|\.cache|\.config|\.local|\.azure|\.gemini|\.claude)/' || true)
+    if [[ -z $strays ]]; then
+        ok "no tool caches or stray home directories among the files"
+        return 0
+    fi
+    while IFS= read -r f; do
+        [[ -n $f ]] && fail "$f — a tool wrote this beside the source; nothing of this repository lives under such a path"
+    done <<<"$strays"
+}
+
 # ---------------------------------------------------------------------------
 
 main() {
@@ -295,6 +314,7 @@ main() {
     check_local_identity
     check_ip_literals
     check_emails
+    check_stray_home
     check_secrets
 
     printf '\n'

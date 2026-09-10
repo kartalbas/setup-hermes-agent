@@ -35,4 +35,10 @@ temp/
 
 # Generated artefacts (Teams app package etc.)
 bot/build/
+
+# A tool run with an unset HOME writes into a directory literally named "None".
+# One did, under sudo, and `git add -A` then committed the Microsoft
+# developer-tools device id it had left there (2026-09-11). Ignored so the next
+# one cannot reach a commit.
+None/
 __pycache__/
