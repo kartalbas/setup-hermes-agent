@@ -98,6 +98,11 @@ config_defaults() {
     : "${AGY_SHIM_MAX_PROCESSES:=6}"
     : "${AGY_SHIM_IDLE_TIMEOUT:=900}"
     : "${AGY_SHIM_COMPACT_AT:=120000}"
+    # Characters of transcript one request may carry. A stateless request holds
+    # the whole chat, and a bot that researches fills it with tool output: the
+    # newest entries fit this, the rest are dropped with a note, so the question
+    # at the end stays the loudest thing in the request. 0 = send everything.
+    : "${AGY_SHIM_HISTORY_BUDGET:=120000}"
 
     : "${MAILPROXY_ENABLED:=false}"
     : "${MAILPROXY_FLOW:=device}"
@@ -168,7 +173,10 @@ config_defaults() {
     # The vendor's default names a "hermes-teams" toolset that this release
     # does not define, so Teams would run without tools. Any defined platform
     # toolset works; hermes-telegram is the core set with no platform extras.
-    : "${CHANNEL_TEAMS_TOOLSET:=hermes-telegram}"
+    # Left at this value, a bot's role decides its tools (bot_role_toolset);
+    # any other value is the operator naming one set for every bot.
+    CHANNEL_TEAMS_TOOLSET_DEFAULT=hermes-telegram
+    : "${CHANNEL_TEAMS_TOOLSET:=$CHANNEL_TEAMS_TOOLSET_DEFAULT}"
     # Fail-closed by default. Exchange Online stamps Authentication-Results on
     # inbound external mail but not on mail between mailboxes of the same
     # tenant, so a tenant-internal operator must switch this off.
@@ -803,6 +811,8 @@ _validate_agyshim() {
     _check_enum AGY_SHIM_NATIVE_TOOLS "$AGY_SHIM_NATIVE_TOOLS" auto on off
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
     _check_abs_path AGY_SHIM_LIB_DIR "$AGY_SHIM_LIB_DIR"
+    [[ $AGY_SHIM_HISTORY_BUDGET =~ ^[0-9]+$ ]] ||
+        _bad "AGY_SHIM_HISTORY_BUDGET='${AGY_SHIM_HISTORY_BUDGET}' must be a number of characters (0 = no limit)"
     [[ $AGY_SHIM_HOST == 0.0.0.0 ]] &&
         _bad "AGY_SHIM_HOST=0.0.0.0 publishes an unauthenticated model endpoint on every interface"
     return 0
@@ -1006,8 +1016,34 @@ bot_field() {
         LLM_BALANCE)   printf 'false' ;;                # true: the remaining API balance is appended to every final answer
         COMMAND_ALLOWLIST) printf '%s' "${CHANNELS_COMMAND_ALLOWLIST:-}" ;;   # semicolon-separated approval categories/commands
         DELEGATION_ENDPOINT) printf '' ;;               # LLM_ENDPOINT_n the bot's sub-agents (delegate_task) run on; empty: they inherit the bot's model
-        TOOLSET)       printf '%s' "${CHANNEL_TEAMS_TOOLSET:-hermes-telegram}" ;;   # one composite, or a space-separated list of the agent's toolsets
+        TOOLSET)       bot_role_toolset "$(bot_field "$key" ROLE)" ;;   # one composite, or a space-separated list of the agent's toolsets
         *) die "bot_field: unknown field '${field}'" ;;
+    esac
+}
+
+# The tools a role gets when the operator has not named a toolset for the bot.
+#
+# The default composite is the vendor's full personal-messaging set: a terminal,
+# read_file/write_file, the browser. A bot reaches for what it has — and a role
+# whose own text forbids files and says to use the web tools then researches
+# with `curl | grep` instead. That is not hypothetical: it filled the news bot's
+# Teams transcript with 130 tool turns of raw HTML in a day, and the request
+# grew until the model answered the transcript instead of the question
+# (2026-09-10, see docs/decisions/0026). So roles that must not touch the host
+# get the tools their text describes and nothing else.
+#
+# BOT_<KEY>_TOOLSET names one bot's tools; CHANNEL_TEAMS_TOOLSET set to anything
+# other than the built-in composite names them for every bot and wins here too.
+bot_role_toolset() {        # bot_role_toolset ROLE -> toolset name(s)
+    local fallback=${CHANNEL_TEAMS_TOOLSET:-${CHANNEL_TEAMS_TOOLSET_DEFAULT:-hermes-telegram}}
+    [[ $fallback == "${CHANNEL_TEAMS_TOOLSET_DEFAULT:-hermes-telegram}" ]] ||
+        { printf '%s' "$fallback"; return 0; }
+    case $1 in
+        # "Never write files on this machine", "use the web tools" — both roles
+        # say so themselves; search names the browser tools as well.
+        news)   printf 'web memory session_search clarify cronjob todo' ;;
+        search) printf 'web browser memory session_search clarify cronjob todo' ;;
+        *)      printf '%s' "$fallback" ;;
     esac
 }
 

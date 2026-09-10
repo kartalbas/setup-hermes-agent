@@ -28,3 +28,4 @@ Status is `accepted`, `superseded by NNNN`, or `proposed`.
 | [0023](0023-tasks-in-planner-not-to-do-or-own-store.md) | Tasks live in Microsoft Planner, not in To Do and not in a store of the bot's own | accepted |
 | [0024](0024-callers-tools-as-native-mcp-tools.md) | The caller's tools reach the model as real tools, not as a text protocol | accepted |
 | [0025](0025-kubernetes-deployment.md) | Move the six bots onto the Kubernetes cluster | proposed |
+| [0026](0026-transcript-is-background-tools-follow-the-role.md) | The transcript is background, and a role's tools follow its text | accepted |

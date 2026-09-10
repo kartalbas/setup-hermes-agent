@@ -218,6 +218,25 @@ setup() {
     unset BOT_GITHUB_TOOLSET
 }
 
+@test "a role that must not touch the host does not get the full composite" {
+    # news and search say so themselves: never write files, use the web tools.
+    # The composite is the vendor's personal-messaging set — terminal, files,
+    # browser — and a news desk handed a terminal researches with curl.
+    [ "$(bot_field news TOOLSET)" = "web memory session_search clarify cronjob todo" ]
+    [ "$(bot_field search TOOLSET)" = "web browser memory session_search clarify cronjob todo" ]
+    [[ "$(bot_field news TOOLSET)" != *terminal* ]]
+    [ "$(bot_field secretary TOOLSET)" = hermes-telegram ]
+
+    BOT_NEWS_TOOLSET="hermes-telegram"                 # the operator may still say so
+    [ "$(bot_field news TOOLSET)" = hermes-telegram ]
+    unset BOT_NEWS_TOOLSET
+
+    CHANNEL_TEAMS_TOOLSET="web todo"                   # one set for every bot wins too
+    [ "$(bot_field news TOOLSET)" = "web todo" ]
+    [ "$(bot_field secretary TOOLSET)" = "web todo" ]
+    CHANNEL_TEAMS_TOOLSET=$CHANNEL_TEAMS_TOOLSET_DEFAULT
+}
+
 @test "toolset names are checked against the registry; MCP servers and no_mcp pass" {
     tmp=$(mktemp -d); printf '    "web": {\n    "memory": {\n    "hermes-telegram": {\n' >"${tmp}/toolsets.py"
     hermes_install_dir() { printf '%s' "$tmp"; }

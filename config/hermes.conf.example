@@ -104,6 +104,11 @@ AGY_SHIM_MAX_PROCESSES=6
 AGY_SHIM_MAX_CONCURRENT=3
 AGY_SHIM_IDLE_TIMEOUT=900
 AGY_SHIM_COMPACT_AT=120000
+# Characters of transcript one request may carry (ADR 0026). A stateless request
+# holds the whole chat; the newest entries fit this, the rest are dropped with a
+# count, so the question at the end stays the loudest thing in the request.
+# 0 sends everything — and a research bot's tool output then drowns the question.
+AGY_SHIM_HISTORY_BUDGET=120000
 
 # --- hosted providers, prepared but not active --------------------------
 # Raise LLM_ENDPOINT_COUNT and uncomment a block to bring one in. A hosted

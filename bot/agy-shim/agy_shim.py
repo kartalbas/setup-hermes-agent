@@ -584,7 +584,8 @@ class Pool:
                             system: str, model: str,
                             images: list[tuple[bytes, str]],
                             tool_names: set[str],
-                            tools: list | None = None) -> tuple[str, dict, dict]:
+                            tools: list | None = None,
+                            pending: str = "") -> tuple[str, dict, dict]:
         spec = tools if self.native_tools else None
         # A pre-warmed spare cannot serve a request whose system prompt or
         # toolset it does not carry: both are read at spawn (the agent
@@ -598,8 +599,10 @@ class Pool:
             proc = self._take_spare(model)
         proc.available_tools = tool_names
         try:
-            text = (transcript_message(history, message, identity_name(system)) if self.args.agent_mode
-                    else stateless_message(system, history, message))
+            budget = getattr(self.args, "history_budget", DEFAULT_HISTORY_BUDGET)
+            text = (transcript_message(history, message, identity_name(system), pending, budget)
+                    if self.args.agent_mode
+                    else stateless_message(system, history, message, pending, budget))
             if images:
                 text = place_images(text, images, proc.workdir)
             proc.full_prefix = text          # re-sent whole if a built-in tool is denied
@@ -627,8 +630,8 @@ class Pool:
                 with proc.lock:
                     result = proc.turn(text + reminder, self.args.timeout)
             usage = result.get("usage", {}) or {}
-            log.info("stateless [%s] history=%d in=%s cached=%s out=%s %.1fs",
-                     model, len(history), usage.get("input_tokens"),
+            log.info("stateless [%s] history=%d sent=%d in=%s cached=%s out=%s %.1fs",
+                     model, len(history), len(text), usage.get("input_tokens"),
                      usage.get("cache_read_tokens"), usage.get("output_tokens"),
                      time.time() - started)
             return result.get("response", ""), usage, {"turns": 1, "model": model}
@@ -639,19 +642,21 @@ class Pool:
                  system: str = "", model: str = "",
                  images: list[tuple[bytes, str]] | None = None,
                  tool_names: set[str] | None = None,
-                 tools: list | None = None) -> tuple[str, dict, dict]:
+                 tools: list | None = None,
+                 pending: str = "") -> tuple[str, dict, dict]:
         acquired = self.slots.acquire(timeout=self.args.queue_timeout)
         if not acquired:
             raise TimeoutError("too many conversations in flight")
         try:
             if self.args.stateless:
-                return self._complete_stateless(history, message, system, model, images or [], tool_names or set(), tools)
+                return self._complete_stateless(history, message, system, model, images or [],
+                                                tool_names or set(), tools, pending)
             proc = self._get_or_start(key, history, system, model, tools)
             proc.available_tools = tool_names or set()
 
             # A first turn on a fresh conversation carries the system prompt.
             prefix = getattr(proc, "pending_prefix", "")
-            message = identity_line(getattr(proc, "identity", "")) + message
+            message = live_block(message, pending, getattr(proc, "identity", ""))
             if prefix:
                 message = prefix + "\n\n" + message
                 proc.pending_prefix = ""
@@ -1052,19 +1057,102 @@ def map_cli_intents(intents: list[dict], available: set[str]) -> dict | None:
     return None
 
 
-def transcript_message(history: list[str], message: str, name: str) -> str:
+# ---------------------------------------------------------------------------
+# The transcript is background; the last message is the work
+#
+# A stateless request carries the whole chat. That is the design (ADR 0021) and
+# it is why nothing drifts — but it also means the model reads one enormous
+# message whose end is the only part that is live. Two things went wrong with
+# that on a bot that researches (news, 2026-09-10):
+#
+#   * one turn of tool work left ~90 entries of raw HTML in the transcript, so
+#     the request grew to 155k tokens of which the question was one line;
+#   * inside a tool loop the final entry is a tool RESULT, not the question, so
+#     nothing at the end even names what is being answered.
+#
+# The model then answered the topic that filled the transcript — the same
+# aircraft summary for three different questions in a row. So: the transcript
+# is capped and labelled as background, and the live request is named.
+# ---------------------------------------------------------------------------
+
+TRANSCRIPT_HEAD = ("=== CONVERSATION SO FAR (oldest first) ===\n"
+                   "BACKGROUND ONLY. None of it is the question; do not answer it again.\n")
+TRANSCRIPT_TAIL = "\n=== END CONVERSATION ==="
+LIVE_HEAD = "=== THE MESSAGE TO ANSWER NOW ===\n"
+
+# Characters of any single transcript entry that reach the model. One scraped
+# page is 100k characters and a turn produces dozens; the entry was read when
+# it was current, and its opening is what the next turn needs.
+ENTRY_CAP = 6000
+# Characters of transcript, all entries together. The newest fit; the rest are
+# counted and dropped. ~30k tokens, against 155k measured before this.
+DEFAULT_HISTORY_BUDGET = 120000
+
+
+def trim_history(history: list[str], budget: int,
+                 entry_cap: int = ENTRY_CAP) -> tuple[list[str], int]:
+    """The newest entries that fit the budget, and how many were dropped.
+
+    Newest first, because the old ones are the ones already answered. The
+    newest entry always survives, whatever its size — a turn must never lose
+    the tool result it just asked for."""
+    if budget <= 0:
+        return list(history), 0
+    kept, used = [], 0
+    for entry in reversed(history):
+        if len(entry) > entry_cap:
+            entry = entry[:entry_cap] + f"\n… [{len(entry) - entry_cap} characters left out]"
+        if kept and used + len(entry) > budget:
+            break
+        kept.append(entry)
+        used += len(entry)
+    kept.reverse()
+    return kept, len(history) - len(kept)
+
+
+def transcript_block(history: list[str], budget: int) -> str:
+    """The transcript as it goes to the model, or '' when there is none."""
+    kept, dropped = trim_history(history, budget)
+    if not kept:
+        return ""
+    body = "\n\n".join(kept)
+    if dropped:
+        body = f"[{dropped} earlier messages left out]\n\n" + body
+    return TRANSCRIPT_HEAD + body + TRANSCRIPT_TAIL
+
+
+def live_block(message: str, pending: str, name: str) -> str:
+    """The part of the request that is actually live.
+
+    `pending` is the user's own last message, and is passed only when the
+    message to run is NOT it — a tool result, mid-loop. Naming the request
+    there is what keeps a long tool loop pointed at the question that started
+    it instead of at whatever the transcript is full of."""
+    head = LIVE_HEAD
+    if pending:
+        if len(pending) > ENTRY_CAP:
+            pending = pending[:ENTRY_CAP] + " …"
+        head += (f"You are working on this request from the user: {pending}\n"
+                 "The message below is the result of a step you took for it. Use it to "
+                 "answer THAT request — not an earlier one.\n\n")
+    return head + identity_line(name) + message
+
+
+def transcript_message(history: list[str], message: str, name: str,
+                       pending: str = "", budget: int = DEFAULT_HISTORY_BUDGET) -> str:
     """Agent mode: the system prompt is in the agent definition; the user
     message carries only the transcript and the new message (identity line
     still directly before it — cheap, and it settled the who-are-you case)."""
     parts = []
-    if history:
-        parts.append("=== CONVERSATION SO FAR (oldest first) ===\n" + "\n\n".join(history)
-                     + "\n=== END CONVERSATION ===")
-    parts.append(identity_line(name) + message)
+    block = transcript_block(history, budget)
+    if block:
+        parts.append(block)
+    parts.append(live_block(message, pending, name))
     return "\n\n".join(parts)
 
 
-def stateless_message(system: str, history: list[str], message: str) -> str:
+def stateless_message(system: str, history: list[str], message: str,
+                      pending: str = "", budget: int = DEFAULT_HISTORY_BUDGET) -> str:
     """The whole exchange as one message for a fresh CLI conversation.
 
     Stateless by design: the CLI keeps no memory between requests, so nothing
@@ -1073,10 +1161,10 @@ def stateless_message(system: str, history: list[str], message: str) -> str:
     first, the transcript so far in the middle, and the identity line sits
     immediately before the user's message, where it is followed."""
     parts = [IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL]
-    if history:
-        parts.append("=== CONVERSATION SO FAR (oldest first) ===\n" + "\n\n".join(history)
-                     + "\n=== END CONVERSATION ===")
-    parts.append(identity_line(identity_name(system)) + message)
+    block = transcript_block(history, budget)
+    if block:
+        parts.append(block)
+    parts.append(live_block(message, pending, identity_name(system)))
     return "\n\n".join(parts)
 
 
@@ -1295,6 +1383,23 @@ def split_history(messages: list[dict]) -> tuple[str, list[str], str]:
     return "\n\n".join(system_parts), prior, last
 
 
+def pending_request(messages: list[dict]) -> str:
+    """The user's own last message, when it is not the one being run.
+
+    Mid tool loop the message to run is a tool result and the request it serves
+    can be a hundred entries back. Empty when the last message IS the user's,
+    which is the ordinary case and needs no restating."""
+    if not messages or messages[-1].get("role") == "user":
+        return ""
+    for m in reversed(messages[:-1]):
+        if m.get("role") != "user":
+            continue
+        text = flatten(m.get("content")).strip()
+        if text:
+            return text
+    return ""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pool: Pool = None
@@ -1396,7 +1501,8 @@ class Handler(BaseHTTPRequestHandler):
         key = conversation_key(messages) + ":" + model + ":" + tools_signature(tools)
         try:
             tool_names = {fn["name"] for fn in tool_functions(tools)}
-            text, usage, meta = self.pool.complete(key, history, message, system, model, images, tool_names, tools)
+            text, usage, meta = self.pool.complete(key, history, message, system, model, images,
+                                                   tool_names, tools, pending_request(messages))
         except TimeoutError as exc:
             return self._error(504, str(exc))
         except Exception as exc:
@@ -1536,6 +1642,11 @@ def main() -> int:
                    help="conversations held open at once")
     p.add_argument("--compact-at", type=int, default=120000,
                    help="summarise and restart past this many input tokens")
+    p.add_argument("--history-budget", type=int,
+                   default=int(os.environ.get("AGY_SHIM_HISTORY_BUDGET", DEFAULT_HISTORY_BUDGET)),
+                   help="characters of transcript a request may carry; the newest fit, the rest "
+                        "are dropped with a note. 0 sends everything (a research bot's tool "
+                        "output then drowns the question it was asked)")
     p.add_argument("--extra-args", default=os.environ.get("AGY_SHIM_EXTRA_ARGS", ""),
                    help="additional arguments passed to the CLI")
     p.add_argument("--log-level", default=os.environ.get("AGY_SHIM_LOG_LEVEL", "info"))
@@ -1583,8 +1694,8 @@ def main() -> int:
     log.info("models (default first): %s", ", ".join(args.models))
     if args.aliases:
         log.info("aliases: %s", ", ".join(f"{k}->{v}" for k, v in args.aliases.items()))
-    log.info("unknown models: %s | max %d concurrent | compact at %d tokens",
-             args.unknown_model, args.max_concurrent, args.compact_at)
+    log.info("unknown models: %s | max %d concurrent | compact at %d tokens | transcript budget %d chars",
+             args.unknown_model, args.max_concurrent, args.compact_at, args.history_budget)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

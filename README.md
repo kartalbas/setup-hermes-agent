@@ -364,6 +364,13 @@ a bot runs **without a shell**: the GitHub bot, for one, reached for `gh` in the
 terminal instead of its GitHub tools until the terminal was gone. MCP servers
 join every list on their own; names are checked against the installed registry.
 
+Left at the default, the **role decides** (ADR 0026): a role whose own text says
+"never write files, use the web tools" is not handed a terminal, because a bot
+reaches for what it has. News and Search therefore default to `web [browser]
+memory session_search clarify cronjob todo`; every other role to the composite.
+`BOT_<KEY>_TOOLSET`, and `CHANNEL_TEAMS_TOOLSET` set to anything but
+`hermes-telegram`, override that.
+
 **Which tools the model sees.** `AGENT_TOOL_SEARCH` — `off` (default) puts
 every MCP tool in front of the model by name; `auto`/`on` hides them behind the
 agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
@@ -1666,6 +1673,31 @@ grep -c 'setup-hermes-agent: readable choices' <install dir>/gateway/platforms/b
 
 Answer such a question with the number, the option's text, or your own words —
 that works on every channel, with or without the patch.
+
+### The bot answers an earlier question — the same answer to everything you ask
+
+Not repetition: the model is answering the loudest thing in the request, and
+your question is not it. A stateless request carries the whole chat (ADR 0021),
+so one research-heavy turn can leave a hundred entries of scraped page behind
+it, and the question is a single line at the end of 150k tokens. Mid tool loop
+it is worse — the last message is a tool *result*, so nothing at the end even
+names what is being answered.
+
+What it looks like in the journal, and what to compare:
+
+```bash
+journalctl -u <service>-bridge | grep stateless | tail       # history=NNN sent=NNN in=NNN
+journalctl -u <bot-service> | grep 'conversation turn'       # history=NNN msg='…'
+```
+
+Since bot 0.4.x the bridge caps the transcript (`AGY_SHIM_HISTORY_BUDGET`,
+120000 characters; `0` sends everything), labels it `BACKGROUND ONLY`, heads the
+live message with `=== THE MESSAGE TO ANSWER NOW ===`, and restates the user's
+request on a tool-result turn (ADR 0026). If `history=` keeps climbing into the
+hundreds within a day, the cause upstream of that is usually the bot's toolset:
+a bot with a terminal researches with `curl | grep`, one page per turn — see
+"Which toolsets a bot gets" in §Day to day, and `/reset` in the chat to drop a
+transcript that is already poisoned.
 
 ### The bot answers as the vendor's coding assistant, or "forgets" its role
 

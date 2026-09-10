@@ -264,6 +264,7 @@ ExecStart=${py} $(agyshim_script_path) \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
     --compact-at ${AGY_SHIM_COMPACT_AT} \\
+    --history-budget ${AGY_SHIM_HISTORY_BUDGET} \\
     --native-tools ${AGY_SHIM_NATIVE_TOOLS}${AGY_SHIM_MODEL_ALIASES:+ \\
     --model-aliases ${AGY_SHIM_MODEL_ALIASES}}
 Restart=always

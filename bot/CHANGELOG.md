@@ -5,6 +5,8 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Bridge: the transcript is background and bounded — headed `BACKGROUND ONLY`, each entry capped, the newest kept within `AGY_SHIM_HISTORY_BUDGET` characters (120000) and the rest replaced by a count; the live message is headed `=== THE MESSAGE TO ANSWER NOW ===` and a tool-result turn restates the user request it serves. The news bot answered three different questions with the same earlier summary: one turn of `curl` research had left ~90 entries of HTML behind it and the question was one line of a 155k-token request (2026-09-10, ADR 0026)
+- Installer: a role's own text decides its default toolset — News and Search run on `web [browser] memory session_search clarify cronjob todo`, no terminal and no files, which is what their role files say and what stops a news desk from researching with `curl | grep` (`BOT_<KEY>_TOOLSET` still decides)
 - Teams: carried adapter patch — a question with options arrives as a list, not as one run of prose (the options were visible on the phone but not distinguishable, let alone answerable, 2026-09-09); the numbers stay, so "reply with 2" still works
 - Bridge: independent calls the model makes in one turn travel together as parallel tool calls instead of costing a full round trip each (a GitHub report spent twelve turns of 75k tokens on one call apiece, 2026-09-09)
 - Bridge: a turn decided through the tools server is allowed to end (grace 45 s) instead of being cut short, so its token counts reach the log and the caller — the first live turn reported none (2026-09-09); a turn decided through the *rejected* native channel still ends at once, there being nothing to wait for
