@@ -217,7 +217,7 @@ The migration analysis read the repository closely and found five defects in
 what runs today. None is caused by the cluster question; all of them are worth
 fixing whether or not the move happens.
 
-- [ ] **The token store can publish a truncated file.** `TokenStore.save` in `bot/mcp/assistant_common.py` writes through a CONSTANT temp path (`<path>.tmp`) with no lock, and `m365.token` has more than one holder — the Secretary's `m365` server and the Tasks bot's `tasks` server both refresh it. Two savers open, truncate and rename the same file. Fix: a per-process temp name plus an exclusive lock, and a test with two concurrent savers
+- [x] **The token store can publish a truncated file** — fixed 2026-09-11: lock over the whole read-modify-write, re-read under it, merge from disk, unique temp name, fsync before rename; three tests.
 - [ ] **Uninstall leaves three things behind.** `uninstall_apply` (libs/99-uninstall.sh) calls neither `apiproxy_uninstall` nor `ops_uninstall`, and no `mailproxy_uninstall` exists at all — so the balance proxy, the ops applier units, and the whole mail relay including the CA it added to the system trust store survive an uninstall. `tests/acceptance.sh` passes over it, so the suite carries a false negative
 - [ ] **Two units order themselves against a retired unit.** `libs/35-agy-shim.sh:242` (`Before=${SERVICE_NAME}.service`) and `libs/90-backup.sh:76` (`After=…`) name the default-profile unit that `_service_retire_default` disables as soon as there are bots. Both lines have been inert since the bots existed
 - [ ] **`opsctl modules-for` has no case for `libs/46-*`** (credentials), so a rotated credential maps to no module and the Admin bot reports nothing to apply

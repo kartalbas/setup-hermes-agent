@@ -5,6 +5,10 @@ the Teams app). The installer stamps the version into what it installs.
 
 ## Unreleased
 
+- Assistants: the token store survives two writers — an exclusive lock over the whole read-modify-write, the file re-read under it, a merge that starts from disk so a stale holder cannot overwrite a newer refresh, a temp file nobody else can name, fsync before the rename (`m365.token` has two holders, and losing a refresh token costs a manual sign-in)
+- Bridge: one CLI process kept warm per bot — keyed by model, system prompt and toolset, which is what a spare has to carry — so a request stops paying the 2.3 s a start costs (measured 3.5 s cold against 1.2 s warm); `AGY_SHIM_MAX_SPARES` bounds the shelf and the reaper retires what nobody came back for
+- Bridge: an optional bearer token on `/v1` (`AGY_SHIM_AUTH`), minted by the run into a 0600 file the unit names; `/healthz` stays open and reports the bridge's version. The endpoint refuses to start unauthenticated anywhere but loopback, and validation names any declared caller that would not present the token
+
 - Bridge: the transcript is background and bounded — headed `BACKGROUND ONLY`, each entry capped, the newest kept within `AGY_SHIM_HISTORY_BUDGET` characters (120000) and the rest replaced by a count; the live message is headed `=== THE MESSAGE TO ANSWER NOW ===` and a tool-result turn restates the user request it serves. The news bot answered three different questions with the same earlier summary: one turn of `curl` research had left ~90 entries of HTML behind it and the question was one line of a 155k-token request (2026-09-10, ADR 0026)
 - Installer: a role's own text decides its default toolset — News and Search run on `web [browser] memory session_search clarify cronjob todo`, no terminal and no files, which is what their role files say and what stops a news desk from researching with `curl | grep` (`BOT_<KEY>_TOOLSET` still decides)
 - Teams: carried adapter patch — a question with options arrives as a list, not as one run of prose (the options were visible on the phone but not distinguishable, let alone answerable, 2026-09-09); the numbers stay, so "reply with 2" still works
