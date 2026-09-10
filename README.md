@@ -1220,6 +1220,14 @@ systemctl is-active '<service-prefix>-*'      # the bots
 and one message per bot in Teams. A relay that answers its first IMAP poll with
 `EOF` is the known hiccup and self-heals.
 
+**Why the first message to a bot after a run is slower.** The bridge keeps one
+CLI process warm per bot, because starting one costs about 2.3 seconds of a
+turn (measured: a short question answered in 3.5 s cold and 1.2 s warm). A
+restart empties that shelf, so the first message to each bot pays the start and
+the next ones do not. `AGY_SHIM_MAX_SPARES` sets how many are held — one per
+bot is the point of it, each holds roughly 200 MB, and `0` switches it off. The
+count is in the bridge's `/stats`.
+
 **Where the bots write.** Each bot's terminal starts in its profile's `work/`
 directory and its `TMPDIR` points to `work/tmp`; the shared persona says so and
 tells the bot to remove what it made. A tmpfiles rule

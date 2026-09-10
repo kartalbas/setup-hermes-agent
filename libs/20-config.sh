@@ -95,6 +95,11 @@ config_defaults() {
     # which this run writes. "off" keeps the text protocol.
     : "${AGY_SHIM_NATIVE_TOOLS:=auto}"
     : "${AGY_SHIM_MAX_CONCURRENT:=3}"
+    # CLI processes kept warm, one per (model, system prompt, toolset) — in
+    # practice one per bot. Starting one costs about a fifth of a request
+    # (2.3 s of 11 s, measured 2026-09-11), and a warm one holds roughly 200 MB
+    # open, so the ceiling is memory rather than taste. 0 switches it off.
+    : "${AGY_SHIM_MAX_SPARES:=3}"
     : "${AGY_SHIM_MAX_PROCESSES:=6}"
     : "${AGY_SHIM_IDLE_TIMEOUT:=900}"
     : "${AGY_SHIM_COMPACT_AT:=120000}"
@@ -809,6 +814,7 @@ _validate_agyshim() {
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
     _check_enum AGY_SHIM_NATIVE_TOOLS "$AGY_SHIM_NATIVE_TOOLS" auto on off
+    [[ ${AGY_SHIM_MAX_SPARES:-} =~ ^[0-9]+$ ]] || _bad "AGY_SHIM_MAX_SPARES must be a number of processes (0 switches the warm pool off)"
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
     _check_abs_path AGY_SHIM_LIB_DIR "$AGY_SHIM_LIB_DIR"
     [[ $AGY_SHIM_HISTORY_BUDGET =~ ^[0-9]+$ ]] ||

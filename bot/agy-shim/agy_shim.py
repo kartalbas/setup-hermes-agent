@@ -466,16 +466,22 @@ class Pool:
 
     def _reaper(self):
         """Retire idle conversations so a day of traffic does not leave dozens
-        of processes holding context nobody is going to continue."""
+        of processes holding context nobody is going to continue — and idle
+        SPARES for the same reason: a bot nobody has spoken to since yesterday
+        should not be holding a process open for the next time."""
         while True:
             time.sleep(30)
             cutoff = time.time() - self.args.idle_timeout
+            retired = []
             with self.lock:
-                stale = [k for k, p in self.procs.items()
-                         if p.last_used < cutoff or not p.alive()]
-                for key in stale:
+                for key in [k for k, p in self.procs.items() if p.last_used < cutoff or not p.alive()]:
                     log.info("retiring conversation %s (idle or dead)", key[:8])
-                    self.procs.pop(key).close()
+                    retired.append(self.procs.pop(key))
+                for key in [k for k, p in self.spares.items() if p.created < cutoff or not p.alive()]:
+                    log.info("retiring the warm process for %s (unused or dead)", key[:20])
+                    retired.append(self.spares.pop(key))
+            for proc in retired:
+                proc.close()
 
     def _get_or_start(self, key: str, seed: list[str], system: str,
                       model: str, tools: list | None = None) -> AgentProcess:
@@ -561,32 +567,77 @@ class Pool:
         return fresh
 
     # -- stateless: one fresh CLI conversation per request ---------------------
-    def _spawn(self, model: str) -> AgentProcess:
-        return AgentProcess(self.args.binary, model, self.args.workdir,
-                            self.args.extra_args, agents_md=agents_md_text(""))
+    #
+    # Starting a process is 2.3 seconds of an eleven-second round trip
+    # (measured 2026-09-11, docs/research/agy-cli.md), and statelessness pays
+    # it on every request. A pre-warmed process removes it — but only if the
+    # spare is one THIS request can use, and a spare is not interchangeable:
+    # the system prompt travels in an agent definition and the caller's
+    # functions in a tools file, both written into the process's own working
+    # directory BEFORE it starts. A spare that does not carry this caller's two
+    # files is no use, which is why the older pool, keyed by model alone, was
+    # bypassed on every request that had either.
+    #
+    # What makes it work is that there are not many combinations. A bot has one
+    # system prompt and one toolset, and both change only when the installer
+    # runs — so the key is (model, system, toolset) and there are as many live
+    # keys as there are bots. A changed persona simply stops matching its old
+    # spare, which the reaper then collects.
+    def _warm_key(self, model: str, system: str, tools: list | None) -> str:
+        return "%s:%s:%s" % (model, hashlib.sha256((system or "").encode()).hexdigest()[:12],
+                             tools_signature(tools or []))
 
-    def _take_spare(self, model: str) -> AgentProcess:
-        """A pre-warmed process for this model, or a fresh one. Start-up is the
-        one cost of statelessness, so the next process is started right after
-        one is taken."""
+    def _spawn(self, model: str, system: str, tools: list | None) -> AgentProcess:
+        """One CLI process ready to take a request for THIS caller: its system
+        prompt in the agent definition, its functions in the tools file."""
+        spec = tools if self.native_tools else None
+        return AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
+                            agents_md="" if self.args.agent_mode else agents_md_text(system),
+                            agent_def=agent_file_text(system) if self.args.agent_mode else "",
+                            tools_spec=spec)
+
+    def _take_spare(self, model: str, system: str, tools: list | None) -> AgentProcess:
+        """A pre-warmed process for this caller, or a fresh one; either way the
+        next one is started right after, so the wait is paid once per bot
+        rather than once per request."""
+        key = self._warm_key(model, system, tools)
         with self.lock:
-            proc = self.spares.pop(model, None)
-        if proc is None or not proc.alive():
-            proc = self._spawn(model)
-        threading.Thread(target=self._warm, args=(model,), daemon=True).start()
+            proc = self.spares.pop(key, None)
+        if proc is not None and not proc.alive():
+            log.info("a pre-warmed process had died before it was used; starting one now")
+            proc.close()
+            proc = None
+        if proc is None:
+            proc = self._spawn(model, system, tools)
+        threading.Thread(target=self._warm, args=(key, model, system, tools), daemon=True).start()
         return proc
 
-    def _warm(self, model: str):
-        try:
-            fresh = self._spawn(model)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("could not pre-warm a process for %s: %s", model, exc)
+    def _warm(self, key: str, model: str, system: str, tools: list | None):
+        """Start the replacement, and keep the shelf bounded: each spare holds a
+        CLI process open, so an installation with many bots would otherwise
+        park hundreds of megabytes it may never use. Over the cap the least
+        recently warmed one goes."""
+        if self.args.max_spares <= 0:
             return
+        try:
+            fresh = self._spawn(model, system, tools)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not pre-warm a process for %s: %s", key[:20], exc)
+            return
+        evicted = []
         with self.lock:
-            old = self.spares.get(model)
-            self.spares[model] = fresh
-        if old is not None:
-            old.close()
+            old = self.spares.pop(key, None)
+            if old is not None:
+                evicted.append(old)
+            self.spares[key] = fresh
+            while len(self.spares) > self.args.max_spares:
+                oldest = min(self.spares.items(), key=lambda kv: kv[1].created)
+                if oldest[0] == key:            # never evict the one just warmed
+                    break
+                log.info("more warm processes than --max-spares %d; retiring %s", self.args.max_spares, oldest[0][:20])
+                evicted.append(self.spares.pop(oldest[0]))
+        for proc in evicted:
+            proc.close()
 
     def _complete_stateless(self, history: list[str], message: str,
                             system: str, model: str,
@@ -595,16 +646,7 @@ class Pool:
                             tools: list | None = None,
                             pending: str = "") -> tuple[str, dict, dict]:
         spec = tools if self.native_tools else None
-        # A pre-warmed spare cannot serve a request whose system prompt or
-        # toolset it does not carry: both are read at spawn (the agent
-        # definition, and the tools file the CLI's tools server lists once).
-        if self.args.agent_mode or spec:
-            proc = AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
-                                agents_md="" if self.args.agent_mode else agents_md_text(system),
-                                agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                                tools_spec=spec)
-        else:
-            proc = self._take_spare(model)
+        proc = self._take_spare(model, system, tools)
         proc.available_tools = tool_names
         try:
             budget = getattr(self.args, "history_budget", DEFAULT_HISTORY_BUDGET)
@@ -625,11 +667,7 @@ class Pool:
                 # turns clear on retry; a genuine failure costs one extra turn.
                 log.warning("transient CLI failure (%s); retrying once on a fresh process", str(exc)[:160])
                 threading.Thread(target=proc.close, daemon=True).start()
-                proc = (AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
-                                     agents_md="" if self.args.agent_mode else agents_md_text(system),
-                                     agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                                     tools_spec=spec)
-                        if (self.args.agent_mode or spec) else self._take_spare(model))
+                proc = self._take_spare(model, system, tools)
                 proc.available_tools = tool_names
                 proc.full_prefix = text
                 proc.identity = identity_name(system)
@@ -693,7 +731,8 @@ class Pool:
             return {
                 "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else "")
                         + ("+native-tools" if self.native_tools else ""),
-                "spares": sorted(self.spares),
+                "spares": len(self.spares),
+                "max_spares": self.args.max_spares,
                 "conversations": len(self.procs),
                 "detail": [
                     {"key": k[:8], "model": p.model, "turns": p.turns,
@@ -1648,6 +1687,10 @@ def main() -> int:
                    help="turns running at once; each is a live process")
     p.add_argument("--max-processes", type=int, default=12,
                    help="conversations held open at once")
+    p.add_argument("--max-spares", type=int,
+                   default=int(os.environ.get("AGY_SHIM_MAX_SPARES", "3")),
+                   help="CLI processes kept warm, one per (model, system prompt, toolset) — "
+                        "starting one costs about a fifth of a request; 0 switches it off")
     p.add_argument("--compact-at", type=int, default=120000,
                    help="summarise and restart past this many input tokens")
     p.add_argument("--history-budget", type=int,

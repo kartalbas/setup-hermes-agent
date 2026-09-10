@@ -448,3 +448,91 @@ assert [c["function"]["name"] for c in calls] == ["get_me", "search_repos"], cal
 PY
     grep -q 'they travel together' "$(dirname "$SHIM")/tools_mcp.py"
 }
+
+@test "a warm process is kept per bot, reused, capped and reaped" {
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys, threading, time, types
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+made = []
+class FakeProc:
+    def __init__(self, *a, **kw):
+        self.kw = kw; self.created = time.time() + len(made) * 0.001
+        self.last_used = self.created; self.closed = False
+        made.append(self)
+    def alive(self): return not self.closed
+    def close(self): self.closed = True
+
+def pool(max_spares=3, agent_mode=True, native=True):
+    p = types.SimpleNamespace(
+        args=types.SimpleNamespace(binary="agy", workdir="/tmp", extra_args=[], agent_mode=agent_mode,
+                                   max_spares=max_spares, idle_timeout=900),
+        native_tools=native, procs={}, spares={}, lock=threading.Lock())
+    for name in ("_warm_key", "_spawn", "_take_spare", "_warm", "_reaper"):
+        setattr(p, name, types.MethodType(getattr(m.Pool, name), p))
+    return p
+
+TOOLS_A = [{"function": {"name": "web_search", "parameters": {}}}]
+TOOLS_B = [{"function": {"name": "tasks_add", "parameters": {}}}]
+SYS_A, SYS_B = "Your name is **A**.", "Your name is **B**."
+
+# the key is model + system + toolset, and nothing else
+p = pool()
+assert p._warm_key("m", SYS_A, TOOLS_A) == p._warm_key("m", SYS_A, list(TOOLS_A))
+assert p._warm_key("m", SYS_A, TOOLS_A) != p._warm_key("m", SYS_B, TOOLS_A)
+assert p._warm_key("m", SYS_A, TOOLS_A) != p._warm_key("m", SYS_A, TOOLS_B)
+assert p._warm_key("m", SYS_A, TOOLS_A) != p._warm_key("n", SYS_A, TOOLS_A)
+
+m.AgentProcess = FakeProc
+# first request spawns; the replacement is warmed in the background
+p = pool()
+first = p._take_spare("m", SYS_A, TOOLS_A)
+for _ in range(200):
+    if p.spares: break
+    time.sleep(0.01)
+assert len(p.spares) == 1, p.spares
+# the second request for the SAME bot takes the warm one instead of starting
+warm = list(p.spares.values())[0]
+second = p._take_spare("m", SYS_A, TOOLS_A)
+assert second is warm, "a warm process for this bot was not reused"
+assert first is not second
+
+# the process carries this caller's own two files
+assert "**A**" in first.kw["agent_def"] and first.kw["tools_spec"] == TOOLS_A
+assert first.kw["agents_md"] == ""            # agent mode puts the prompt in the definition
+
+# a dead spare is discarded rather than handed out
+p = pool()
+p._take_spare("m", SYS_A, TOOLS_A)
+for _ in range(200):
+    if p.spares: break
+    time.sleep(0.01)
+list(p.spares.values())[0].closed = True
+fresh = p._take_spare("m", SYS_A, TOOLS_A)
+assert fresh.alive()
+
+# over the cap, the least recently warmed goes
+p = pool(max_spares=2)
+for i, (s, t) in enumerate([(SYS_A, TOOLS_A), (SYS_B, TOOLS_A), (SYS_A, TOOLS_B)]):
+    p._warm(p._warm_key("m", s, t), "m", s, t)
+assert len(p.spares) == 2, p.spares
+
+# max_spares 0 keeps no shelf at all
+p = pool(max_spares=0)
+p._warm(p._warm_key("m", SYS_A, TOOLS_A), "m", SYS_A, TOOLS_A)
+assert p.spares == {}
+
+# the reaper collects a spare nobody came back for
+p = pool()
+p._warm(p._warm_key("m", SYS_A, TOOLS_A), "m", SYS_A, TOOLS_A)
+stale = list(p.spares.values())[0]
+stale.created = time.time() - 10_000
+t = threading.Thread(target=p._reaper, daemon=True); t.start()
+for _ in range(400):
+    if not p.spares: break
+    time.sleep(0.1)
+assert p.spares == {}, "an idle warm process was never retired"
+assert stale.closed
+PY
+    grep -q -- '--max-spares ${AGY_SHIM_MAX_SPARES}' "$REPO_ROOT/libs/35-agy-shim.sh" 2>/dev/null || grep -q -- '--max-spares' "$(dirname "$SHIM")/../../libs/35-agy-shim.sh"
+}

@@ -261,6 +261,7 @@ ExecStart=${py} $(agyshim_script_path) \\
     --models ${AGY_SHIM_MODELS} \\
     --unknown-model ${AGY_SHIM_UNKNOWN_MODEL} \\
     --max-concurrent ${AGY_SHIM_MAX_CONCURRENT} \\
+    --max-spares ${AGY_SHIM_MAX_SPARES} \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
     --compact-at ${AGY_SHIM_COMPACT_AT} \\
