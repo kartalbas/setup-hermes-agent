@@ -494,3 +494,64 @@ class DropFolders(unittest.TestCase):
         put = next(c for c in g.calls if c[0] == "PUT")
         self.assertIn("office_bus.md:/content", put[1]); self.assertIn(b"Frist 30.09.", put[2]["data"])
         self.assertEqual(out["companion"], "/Secretary/Business/Letters/2026/2026-09-07 tax office_bus.md")
+
+
+class TokenFile(unittest.TestCase):
+    """One token file, several holders. `m365.token` is refreshed by the
+    Secretary's Microsoft 365 server and by the Tasks bot's server, each in its
+    own process, so the store has to survive two writers arriving together and
+    a writer that has been holding a stale copy."""
+
+    def test_a_stale_holder_cannot_overwrite_a_newer_refresh(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m365.token")
+            common.TokenStore(path).save(access_token="a0", refresh_token="r0", account="agent@example.com")
+            stale = common.TokenStore(path)                       # loaded now, written later
+            common.TokenStore(path).save(access_token="a1", refresh_token="r1")
+            stale.save(expires_at=99)                             # knows only this
+            with open(path, encoding="utf-8") as f:
+                final = json.load(f)
+            self.assertEqual(final["refresh_token"], "r1")        # the newer refresh survived
+            self.assertEqual(final["access_token"], "a1")
+            self.assertEqual(final["expires_at"], 99)             # and the stale writer's own field landed
+            self.assertEqual(final["account"], "agent@example.com")
+
+    def test_concurrent_writers_never_publish_a_torn_file_and_leave_no_temp_behind(self):
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m365.token")
+            common.TokenStore(path).save(access_token="seed", refresh_token="r", account="a@b")
+            errors = []
+
+            def writer(n):
+                try:
+                    for i in range(25):
+                        common.TokenStore(path).save(access_token=f"{n}-{i}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            def reader():
+                try:
+                    for _ in range(200):
+                        with open(path, encoding="utf-8") as f:
+                            got = json.load(f)          # never a half-written file
+                        self.assertEqual(got["account"], "a@b")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)] + [threading.Thread(target=reader)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            self.assertEqual([f for f in os.listdir(d) if f.endswith(".tmp")], [])
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["refresh_token"], "r")
+
+    def test_the_file_stays_private_and_so_does_its_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m365.token")
+            common.TokenStore(path).save(access_token="a")
+            self.assertEqual(oct(os.stat(path).st_mode)[-3:], "600")
+            self.assertEqual(oct(os.stat(path + ".lock").st_mode)[-3:], "600")

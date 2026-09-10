@@ -137,3 +137,40 @@ prefixes are warm, is one more run of about thirty turns and would settle it.
 Conclusion for now: **do not adopt the stateful pool for cost.** It is the wrong
 direction by a factor of two and a half on the numbers we have. Keep `--stateful`
 where it is, behind the flag, as the latency option.
+
+## Where a turn's nine seconds actually go, measured 2026-09-11
+
+Probed with the bridge's own `AgentProcess`, one turn, agent mode and native
+tools, a question asking for fifteen sentences of prose:
+
+| | |
+|---|---|
+| spawn to the `init` event | **2.3 s** |
+| question to answer | 9.1 s |
+| first `text_delta` of the answer | **7.6 s** in |
+| answer written | 2,292 characters over the last 1.5 s |
+| events | 64 `step_update`, of which 15 carried text, then one `result` |
+
+Two corrections to what was assumed before the measurement:
+
+- **Starting a process is 20% of a request, not half of it.** A warm spare per
+  bot therefore saves about 2.3 seconds of an eleven-second round trip — worth
+  half a day, not the halving that was claimed.
+- **The CLI DOES stream the answer.** `step_update` with
+  `step_type: agent_response` carries `text_delta`, so real token streaming is
+  available and needs no new protocol. But the silence is not where the writing
+  is: the model thinks for 7.6 of 9.1 seconds (1,833 thinking tokens) and then
+  writes the whole answer in 1.5. Streaming the deltas buys the last sixth of
+  the wait, not the wait.
+
+**Why streaming is not adopted yet, despite being available.** The turns that
+matter carry tools, and a turn that ends in a tool call has its closing text
+discarded by the bridge (ADR 0024). Streaming the deltas of such a turn would
+send the client prose that the same response then contradicts with a tool call,
+and whether the agent's own relay handles content and `tool_calls` in one
+streamed message is untested — the cost of being wrong is five bots that stop
+answering. The remaining option, injecting "thinking…" into the content stream,
+pollutes the answer with progress text.
+
+So: spares first (measured, contained), and streaming when there is a way to
+show progress that is not the answer's own text.

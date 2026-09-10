@@ -12,10 +12,12 @@ protocol and HTTP, ``pypdf`` and ``python-docx`` only for document text.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -127,15 +129,61 @@ class TokenStore:
             float(self.data.get("expires_at", 0)) - margin > time.time()
 
     def save(self, **fields: Any) -> None:
-        self.data.update(fields)
-        d = os.path.dirname(self.path)
-        if d:
-            os.makedirs(d, mode=0o700, exist_ok=True)
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=1)
-        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-        os.replace(tmp, self.path)
+        """Merge FIELDS into the stored token and publish it atomically.
+
+        ONE FILE, SEVERAL WRITERS. A token file has more than one holder — the
+        Secretary's Microsoft 365 server and the Tasks bot's server refresh the
+        same `m365.token`, each in its own process — and both can arrive here at
+        the same moment. Two defects lived in the simple version:
+
+          A CONSTANT temp path. Two writers opened, truncated and renamed the
+          same `<path>.tmp`, so one could rename a file the other was still
+          filling: a truncated token, and the next start asks for a sign-in.
+
+          NO LOCK, and the merge started from this object's own `data`. A
+          process holding a token it read minutes ago wrote it back over a
+          newer refresh, and the newer REFRESH token was the thing lost — which
+          costs a manual sign-in, not a retry.
+
+        So the whole read-modify-write happens under an exclusive lock; the file
+        is re-read under that lock because another process may have refreshed
+        since this object loaded it; the merge starts from what is ON DISK and
+        applies only the fields THIS caller actually learned; the temp file has
+        a name nobody else can pick; and the bytes are on the disk before the
+        rename makes them visible.
+        """
+        d = os.path.dirname(self.path) or "."
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        lock_path = f"{self.path}.lock"
+        with open(lock_path, "a+", encoding="utf-8") as lock:
+            os.chmod(lock_path, stat.S_IRUSR | stat.S_IWUSR)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    with open(self.path, "r", encoding="utf-8") as f:
+                        on_disk = json.load(f)
+                    if not isinstance(on_disk, dict):
+                        on_disk = {}
+                except (OSError, ValueError):
+                    on_disk = {}
+                merged = {**on_disk, **fields}
+                fd, tmp = tempfile.mkstemp(dir=d, prefix=f"{os.path.basename(self.path)}.", suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(merged, f, indent=1)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+                    os.replace(tmp, self.path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+                self.data = merged
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
