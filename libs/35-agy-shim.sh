@@ -36,7 +36,7 @@ agyshim_apply() {
 readonly _AGYSHIM_SYSTEMD_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 AGY_SHIM_BINARY_RESOLVED=""
 
-agyshim_unit_name() { printf '%s-bridge' "$SERVICE_NAME"; }
+agyshim_unit_name() { printf '%s-bridge' "$(shared_service_name)"; }
 agyshim_script_path() { printf '%s/agy_shim.py' "${AGY_SHIM_LIB_DIR}"; }
 agyshim_tools_script_path() { printf '%s/tools_mcp.py' "${AGY_SHIM_LIB_DIR}"; }
 
@@ -269,9 +269,9 @@ _agyshim_write_unit() {
 Description=OpenAI-compatible bridge to a subscription CLI
 After=network-online.target
 Wants=network-online.target
-# The gateway talks to this; starting the other way round means its first
-# request meets a closed port.
-Before=${SERVICE_NAME}.service
+# Every consumer of the bridge is ordered after it; starting the other way
+# round means a bot's first request meets a closed port.
+Before=$(service_consumer_units)
 
 [Service]
 Type=simple

@@ -39,7 +39,7 @@ mailproxy_apply() {
     _mailproxy_verify
 }
 
-mailproxy_unit_name()   { printf '%s-mailproxy' "$SERVICE_NAME"; }
+mailproxy_unit_name()   { printf '%s-mailproxy' "$(shared_service_name)"; }
 mailproxy_config_path() { printf '%s/emailproxy.config' "${MAILPROXY_STATE_DIR}"; }
 mailproxy_python()      { printf '%s/bin/python' "${MAILPROXY_VENV}"; }
 
@@ -280,9 +280,9 @@ _mailproxy_write_unit() {
 Description=OAuth mail relay for ${CHANNEL_EMAIL_WORK_ADDRESS}
 After=network-online.target
 Wants=network-online.target
-# The gateway polls through this; starting the other way round means its first
-# poll meets a closed port.
-Before=${SERVICE_NAME}.service
+# Every consumer of the relay is ordered after it; starting the other way
+# round means a bot's first poll meets a closed port.
+Before=$(service_consumer_units)
 
 [Service]
 Type=simple
@@ -367,4 +367,44 @@ mailproxy_force_refresh() {
     run systemctl start "$(mailproxy_unit_name)"
     sleep 3
     mark_changed
+}
+
+# ---------------------------------------------------------------------------
+# Teardown.
+#
+# The relay's state directory is treated the way the agent's is: kept unless
+# --purge, because it holds the refresh token, and a refresh token costs an
+# interactive sign-in to replace. Everything else the module created goes: the
+# unit, the virtual environment, and the certificate it planted in the system
+# trust store — that last one matters, because a CA anchor nobody owns any more
+# is a certificate the host keeps trusting for ten years.
+# ---------------------------------------------------------------------------
+mailproxy_uninstall() {
+    local unit anchor=/usr/local/share/ca-certificates/hermes-mail-relay.crt
+    unit=$(mailproxy_unit_name)
+
+    if have_cmd systemctl && systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+        run systemctl disable --now "${unit}.service" || true
+        run rm -f "/etc/systemd/system/${unit}.service"
+        run systemctl daemon-reload
+        mark_changed
+    fi
+
+    [[ -n ${MAILPROXY_VENV:-} && -d ${MAILPROXY_VENV} ]] && { run rm -rf "$MAILPROXY_VENV"; mark_changed; }
+
+    if [[ -f $anchor ]]; then
+        run rm -f "$anchor"
+        have_cmd update-ca-certificates && run update-ca-certificates --fresh >/dev/null 2>&1
+        mark_changed
+        log_ok "removed the relay certificate from the system trust store"
+    fi
+
+    if [[ $DO_PURGE == true && -n ${MAILPROXY_STATE_DIR:-} && -d ${MAILPROXY_STATE_DIR} ]]; then
+        run rm -rf "$MAILPROXY_STATE_DIR"
+        mark_changed
+        log_ok "removed ${MAILPROXY_STATE_DIR} (including the relay's refresh token)"
+    elif [[ -n ${MAILPROXY_STATE_DIR:-} && -d ${MAILPROXY_STATE_DIR} ]]; then
+        log_info "kept ${MAILPROXY_STATE_DIR}; the refresh token there survives, use --purge to remove it"
+    fi
+    return 0
 }

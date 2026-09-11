@@ -73,7 +73,10 @@ _backup_write_units() {
 # Managed by setup-hermes-agent.
 [Unit]
 Description=Back up ${SERVICE_NAME} state
-After=${SERVICE_NAME}.service
+# After whatever this installation actually runs — the bots, or the single
+# default gateway when there are none. Naming the default unit unconditionally
+# ordered the backup against a unit that is retired as soon as bots exist.
+After=$(service_consumer_units)
 
 [Service]
 Type=oneshot

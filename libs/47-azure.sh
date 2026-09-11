@@ -440,6 +440,9 @@ PY
     log_info "  -> Upload a custom app -> ${out}"
 }
 
+# Nothing on the host: the app registration lives in the tenant, and removing
+# it from here would take a bot's identity away from an operator who is only
+# reinstalling. It is deleted in the portal, deliberately, by a person.
 azure_uninstall() { return 0; }
 
 # ---------------------------------------------------------------------------

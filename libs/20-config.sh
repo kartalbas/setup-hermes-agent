@@ -1015,6 +1015,20 @@ bots() {                    # the keys, one per line, in configured order
 
 bot_count() { bots | grep -c . || true; }
 
+# The host runs exactly ONE bridge, ONE mail relay and ONE balance proxy. They
+# are named after the installation, never after a bot — but the loop that
+# writes the bot units rebinds SERVICE_NAME to the bot's own unit name, and
+# bash's dynamic scoping makes that rebinding visible inside any function
+# called from there. A helper that read SERVICE_NAME would therefore name
+# "<bot>-bridge" while the unit on disk is "<installation>-bridge", and the
+# dependency it wrote would point at nothing: systemd treats a Wants= on an
+# unknown unit as satisfied, so the bot would start before its model.
+#
+# Hence the anchor, taken once at config time and read by the shared services'
+# unit-name helpers. The fallback keeps a caller that sets only SERVICE_NAME
+# (the unit tests) working unchanged.
+shared_service_name() { printf '%s' "${SHARED_SERVICE_NAME:-${SERVICE_NAME}}"; }
+
 bot_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 
 bot_index() {               # 0-based position of KEY in BOTS

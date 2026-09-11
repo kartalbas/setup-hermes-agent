@@ -180,7 +180,21 @@ modules_for() {                   # modules_for PATH… -> "a,b" or "all"
             libs/40-*)                          add host ;;
             libs/44-*)                          add git ;;
             libs/90-*)                          add backup ;;
-            *) ;;                               # docs, tests, configs: no module
+            libs/30-*)                          add preflight ;;
+            libs/46-*)                          add credentials ;;
+            libs/50-*)                          add docker ;;
+            libs/99-*) ;;                       # teardown: nothing an install run applies
+            config/install.conf)                add clis; add devtools ;;
+            config/bootstrap.conf)              add host ;;
+            # Nothing that reaches the host: the examples document the
+            # configuration, they are not the configuration.
+            docs/*|tests/*|*.md|.gitignore|config/*.example) ;;
+            # Anything else is unrecognised, and the safe reading of that is
+            # "everything": an install run is idempotent, so running too much
+            # costs minutes, while running too little reports success for a
+            # change that was never applied. A module added to libs/ after this
+            # list was written lands here, which is the case worth surviving.
+            *) printf 'all\n'; return 0 ;;
         esac
     done
     if (( ${#mods[@]} == 0 )); then printf 'none\n'; return 0; fi

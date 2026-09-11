@@ -1135,6 +1135,16 @@ sudo ./install.sh --uninstall    # remove service and code, keep the agent's sta
 sudo ./install.sh --uninstall --purge   # also remove state and the account
 ```
 
+**What an uninstall takes.** Every unit this repository installed, the code,
+the balance proxies, the ops applier, the bridge, and the mail relay including
+the certificate it added to the system trust store. What it keeps without
+`--purge`: the agent's data directory, which is the conversations, the memory
+and the skills the bots wrote for themselves, and the relay's own directory,
+which holds a refresh token that costs an interactive sign-in to replace. The
+Entra app registration and the Google OAuth client are not touched at all —
+they live in the tenant and the project, and deleting them from a script would
+take a bot's identity away from an operator who is only reinstalling.
+
 **Running part of it.** A full run touches every module, and the cloud-side
 ones (Azure, tunnel, developer tools, Google) spend most of the time asking
 APIs whether anything changed. After a role, provider or channel change, name

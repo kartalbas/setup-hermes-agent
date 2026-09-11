@@ -20,14 +20,28 @@ uninstall_apply() {
             die "aborted"
     fi
 
+    # First, because this one can undo everything after it: the applier
+    # watches for a request file and answers it with a full installer run.
+    # Left in place during a teardown it would reinstall what the next lines
+    # remove, and the failure would look like an uninstall that did nothing.
+    ops_uninstall
+
     _uninstall_services
     _uninstall_units
     _uninstall_backup
     _uninstall_tunnel
     _uninstall_dashboard
     agyshim_uninstall
+    apiproxy_uninstall
+    mailproxy_uninstall
     assistant_uninstall
     site_uninstall
+    # Called although they do nothing today: the rule "every module's teardown
+    # runs" is one a test can check, and "every module's teardown runs unless
+    # it happens to be empty" is not. Three of these were already orphaned.
+    azure_uninstall
+    google_uninstall
+    profiles_uninstall
     _uninstall_code
     _uninstall_state
     _uninstall_account

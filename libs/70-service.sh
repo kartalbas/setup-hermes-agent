@@ -25,6 +25,12 @@ service_apply() {
     # The vendor's default unit, if it exists, is retired.
     require_root "installing the bot units"
     _service_retire_default
+    # The loop below rebinds SERVICE_NAME to each bot's own unit name, and
+    # bash's dynamic scoping carries that rebinding into every function called
+    # from inside it — including the ones that name the shared services. Pin
+    # the installation's name here, before the first rebinding, so those keep
+    # naming the units that actually exist. See shared_service_name().
+    SHARED_SERVICE_NAME=$SERVICE_NAME
     local key
     while IFS= read -r key; do
         [[ -n $key ]] || continue
@@ -60,6 +66,25 @@ _service_retire_default() {
     else
         log_skip "${default} already retired"
     fi
+}
+
+# Everything that waits for a shared service (the bridge, the mail relay): with
+# bots that is every bot unit, without them the single default gateway. Written
+# into the shared unit as Before=, which says the same thing as the consumers'
+# After= from the other side and costs nothing to state twice — while a shared
+# unit that named only the default gateway would, once bots exist, be ordered
+# against a unit that is deliberately never started.
+service_consumer_units() {
+    local IFS=$' \t\n' key units=()
+    if (( $(bot_count) > 0 )); then
+        while IFS= read -r key; do
+            [[ -n $key ]] || continue
+            units+=("$(bot_field "$key" SERVICE).service")
+        done < <(bots)
+    else
+        units+=("${SHARED_SERVICE_NAME:-${SERVICE_NAME}}.service")
+    fi
+    printf '%s' "${units[*]}"
 }
 
 # What a bot waits for at boot: the network, and the local services it talks

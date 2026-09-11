@@ -9,9 +9,17 @@
 # for one operator — and are rendered from bot/site/ with the operator's name
 # and contact from configuration.
 #
-# nginx serves the directory on loopback; the tunnel module publishes the
-# hostname (see tunnel_hostnames / tunnel_ingress_rules). Order: after
-# `dashboard`, which installs nginx when it publishes the dashboard.
+# nginx serves the directory on its own loopback port; the tunnel module
+# publishes the hostname (see tunnel_hostnames / tunnel_ingress_rules).
+#
+# Order: BEFORE `assistant`. The assistant's Google side needs a refresh token
+# that survives a week, and a token only becomes durable once the consent
+# screen is published — which Google refuses to do while the privacy and terms
+# links do not resolve. Those links are these pages. Running the assistant
+# first produced a sign-in that worked and then expired seven days later, with
+# nothing in the logs to connect the two. The module installs nginx itself if
+# `dashboard` has not already, and listens on its own port, so nothing about
+# the earlier position is load-bearing.
 
 site_apply() {
     is_true "${SITE_ENABLED:-false}" || { log_skip "public site disabled (SITE_ENABLED=false)"; return 0; }

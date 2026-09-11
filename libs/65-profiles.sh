@@ -158,4 +158,7 @@ _profile_soul() {
     fi
 }
 
+# Nothing of its own: a profile is a directory under the agent's data
+# directory, which survives an uninstall unless --purge is given — that is
+# the conversations and the memory, the part no reinstall can rebuild.
 profiles_uninstall() { return 0; }

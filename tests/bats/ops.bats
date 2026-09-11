@@ -17,6 +17,21 @@ setup() {
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for README.md tests/bats/x.bats)" = none ]
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/20-config.sh bot/roles/x.md)" = all ]
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for bot/agy-shim/agy_shim.py bot/mcp/m365_assistant.py bot/ops/opsctl)" = "agyshim,assistant,ops" ]
+    # Modules that had no case at all: a change to them reported "nothing to install".
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/46-credentials.sh)" = credentials ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/30-preflight.sh libs/50-docker.sh)" = "preflight,docker" ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for config/install.conf)" = "clis,devtools" ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/99-uninstall.sh config/hermes.conf.example)" = none ]
+}
+
+# The catch-all used to be silence, so a path this list had never heard of —
+# a module added to libs/ after it was written — reported "nothing to install"
+# and the change was never applied. An install run is idempotent, so the safe
+# reading of "I do not recognise this" is "run everything".
+@test "an unrecognised path asks for a full run rather than none" {
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/77-something-new.sh)" = all ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for bot/newthing/x.py)" = all ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for docs/plan.md tests/run.sh README.md)" = none ]
 }
 
 @test "opsctl without a configuration file says so instead of guessing" {

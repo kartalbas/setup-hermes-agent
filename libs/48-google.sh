@@ -110,4 +110,7 @@ _google_client_check() {
     return 0
 }
 
+# Nothing on the host: the OAuth client lives in the Google project, and the
+# tokens it issued sit in the assistant's state directory, which the
+# assistant's own teardown removes.
 google_uninstall() { return 0; }

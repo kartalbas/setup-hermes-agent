@@ -10,7 +10,7 @@
 #
 # Order: after `agyshim` (same code directory), before `hermes`.
 
-apiproxy_unit_name() { printf '%s-balance-%s' "$SERVICE_NAME" "$1"; }      # apiproxy_unit_name PROVIDER
+apiproxy_unit_name() { printf '%s-balance-%s' "$(shared_service_name)" "$1"; }      # apiproxy_unit_name PROVIDER
 apiproxy_script_path() { printf '%s/balance_proxy.py' "$AGY_SHIM_LIB_DIR"; }
 
 # The providers the bots want a balance for — each once.
