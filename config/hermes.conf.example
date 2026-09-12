@@ -304,8 +304,8 @@ BOTS="secretary search news github"
 BOT_PREFIX="Acme"                      # display names: "Acme Secretary", …
 TEAMS_APP_DEVELOPER="Acme"             # shown under the app name in the Teams app card (default: GIT_USER_NAME)
 BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
-BOT_PORT_BASE=3978
-AGENT_SESSION_RESET="daily@4"          # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
+BOT_PORT_BASE=3978                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
+AGENT_SESSION_RESET="none"             # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET
 AGENT_CRON_DRIFT_GUARD=false        # true: the agent skips unpinned reminders after a provider/model change (spend guard); false: they fire
 AGENT_TOOL_SEARCH="off"             # off: MCP tools inline (the bridge needs the real names) | auto/on: behind tool_search; per bot: BOT_<KEY>_TOOL_SEARCH
 
@@ -319,6 +319,12 @@ BOT_SEARCH_CHANNELS="teams email"
 BOT_SEARCH_MAIL_ALIAS="search@example.com"
 BOT_NEWS_CHANNELS="teams email"
 BOT_NEWS_MAIL_ALIAS="news@example.com"
+# A fresh start suits a bot whose questions stand on their own: yesterday's search
+# has nothing to do with today's, and a full window of it only crowds the question
+# out. A bot that carries work across days should keep its thread, so the global
+# default stays "none" and the exceptions are named here.
+# BOT_NEWS_SESSION_RESET="daily@4"
+# BOT_SEARCH_SESSION_RESET="daily@4"
 BOT_GITHUB_NAME="GitHub"                             # the derived default would be "Github"
 BOT_GITHUB_CHANNELS="teams email"
 BOT_GITHUB_MAIL_ALIAS="github@example.com"
