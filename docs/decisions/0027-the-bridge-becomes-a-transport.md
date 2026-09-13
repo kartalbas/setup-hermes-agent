@@ -1,6 +1,6 @@
 # 0027 — The bridge becomes a transport, and context management moves out of it
 
-Date: 2026-09-12 · Status: **accepted for moves 1 and 2 (shipped 2026-09-13, `5c225c0`); move 3 in progress** · Supersedes part of ADR 0021, refines ADR 0024
+Date: 2026-09-12 · Status: **accepted; moves 1 and 2 shipped 2026-09-13 (`5c225c0`), move 3 decided for 3b the same evening** · Supersedes part of ADR 0021, refines ADR 0024
 
 **The yardstick, stated by the operator on 2026-09-13:** the quality of a real API,
 reached through the subscription CLI. No API key for any bot but the Secretary,
@@ -137,9 +137,14 @@ persistent by construction. Official Google software, versions 1.0.0 and
 linux-x64 among others, authenticated with Google's own OAuth. It removes the
 most code because the protocol does natively what this repository hand-rolled.
 
-3b is **not decidable today**. One question blocks it: can the server be
-fetched, started and authenticated headless, outside the registry UI of an
-editor? Until that is answered, 3b is a hypothesis.
+**3b decided on 2026-09-13**, on measurements recorded in
+`docs/research/agy-cli.md`: the server fetches and starts headless, takes the
+CLI's own refresh token without a browser, loads our tools server, lets the
+client refuse the built-ins by protocol, runs the whole ADR 0024 loop in 6.0 s
++ 1.5 s, streams, and restores a session after its process was killed. What it
+does not do: report tokens per turn, or load anything from `.agents/`, so the
+contract stays in the prompt. What only production can tell: identity over
+days, and cost.
 
 **3c — the CLI's own local server.** The operator's question: rather than
 wrapping the binary, talk to the server the binary itself runs. Two pieces of

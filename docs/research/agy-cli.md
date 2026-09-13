@@ -293,3 +293,74 @@ reproduces the cache, and the cache is the whole question.
 **Cost of the experiment:** the five-hour quota window moved from 100% to 99%
 and the weekly figure did not move from 99%, for roughly thirty measured turns
 plus warm-ups on both instances.
+
+## The ACP server carries the whole tool loop — measured 2026-09-13, evening
+
+Everything below was run against `agy_acp_server` 1.1.1 on this host, with
+`bot/agy-shim/tools_mcp.py` attached as the `tools` MCP server. It settles the
+questions ADR 0027 left open for move 3b.
+
+**Login without a browser.** The CLI and the ACP server ship the same OAuth
+client (`1071006060591-…`), and the CLI's `id_token` names it as its audience.
+So the refresh token the CLI holds is one this client issued, and the server —
+presenting the same client id — may use it. The server loads
+`~/.gemini/antigravity-acp/acp_token.json` through google-auth's
+`from_authorized_user_info` (`client_id`, `client_secret`, `refresh_token`; the
+installed-app secret is shipped in the server binary as
+`_DEFAULT_CLIENT_SECRET`). Written without an access token, the first call
+refreshed and `session/new` answered with a session id. No OAuth URL, no
+loopback redirect, no port forward. This is the vendor's own second binary
+using a token the vendor's own first binary obtained for the same user under
+the same client — nothing is presented that is not true.
+
+**What the server does and does not load from the workspace.**
+`.agents/agents/<name>.md` (the bridge's way of switching built-in tools off:
+`tools: []`, `commandExecutionPolicy: off`, `inheritCustomizations: false`) is
+**ignored** — the tool list the model recites is identical with and without it.
+`.agents/rules/*.md` with `trigger: always_on` is **not loaded either**: asked
+to recite its rules, the model quotes the `<artifacts>` rules and the tool
+descriptions and has never seen ours. So the tool contract goes into the
+prompt, exactly as the bridge does today.
+
+**How our tools appear.** Not as `call_mcp_tool` with a `ServerName`, which is
+what the print-mode CLI reports in `step_update` and what `mcp_call_decision`
+matches. Over ACP the call arrives as a `tool_call` update titled
+`tools_web_search` — server name as prefix — with `kind: other` and
+`rawInput: {"arguments": {...}}`. A first policy that looked for `mcp` in the
+title denied our own tool and produced 75 seconds of the model being refused;
+the corrected rule is *allow anything titled `tools_*`, deny the rest*.
+
+**Enforcement is the client's, by protocol.** Every tool call comes back as
+`session/request_permission` with `allow_once / allow_always / reject_once /
+reject_always`. That is where a bridge on this back end switches the built-ins
+off — not by asking the model, but by refusing. Refused once with no contract
+in the prompt, the model gave up ("access to web search was denied"); with the
+contract in the prompt it reached for `tools_web_search` **on its first
+attempt** and was never refused.
+
+**The full ADR 0024 loop, timed:**
+
+| turn | what | wall clock |
+|---|---|---|
+| 1 | contract + question → `tools_web_search` allowed → our server's marker → model writes `pending` → `end_turn` | **6.0 s** |
+| 2 | `tool result (web_search): …` as the next prompt → answer from it, no further call | **1.5 s** |
+
+7.5 s for a tool-using exchange that costs about 11 s today across two
+process starts. The second turn is the session advantage undiluted: nothing is
+re-sent.
+
+**Streaming** is there for nothing: the answer arrives as
+`agent_message_chunk` updates while it is being written.
+
+**A session survives the process.** Tell the model a codeword, kill the
+server, start a new one: `session/list` shows the session, `session/load`
+restores it, and the model answers with the codeword. Issue #997 describes a
+failure during a checkpoint; the ordinary path works.
+
+**What ACP does not give:** per-turn token usage. The prompt result is
+`{"stopReason": "end_turn"}` and nothing else. Consumption is measurable only
+in aggregate through `agy -p /usage`.
+
+**What only production can answer:** identity across days (held over ten turns
+in both print modes; not yet exercised over ACP for longer), and cost, for the
+reasons the warm A/B section gives.
