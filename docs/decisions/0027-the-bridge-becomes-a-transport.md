@@ -123,6 +123,24 @@ most code because the protocol does natively what this repository hand-rolled.
 fetched, started and authenticated headless, outside the registry UI of an
 editor? Until that is answered, 3b is a hypothesis.
 
+**3c — the CLI's own local server.** The operator's question: rather than
+wrapping the binary, talk to the server the binary itself runs. Two pieces of
+evidence say such a thing exists. The CLI carries a `remote-control` subcommand
+that starts a background daemon registered as `antigravity-cli-daemon.service`,
+and at least one community ACP adapter describes itself as driving "a warm
+language server over its local Connect API". On this host the daemon does not
+start, for a mundane reason: no user D-Bus session, because nothing here runs
+in a desktop session.
+
+3c is the closest thing to "stop wrapping" that exists, and it is warm by
+construction, so it would remove the spawn cost without any of the framing.
+Its defect is one the other two do not share: this is an **internal**
+interface. No documented protocol, no compatibility promise, and a vendor free
+to change it on any update. It is not the kind of dependency the 9router
+discussion ruled out, because it is our own installation talking to its own
+local server with its own login, and nothing is impersonated. It is simply
+fragile in a way a published protocol is not, and the failure would be silent.
+
 ## What the plan buys
 
 1. **Nothing is truncated any more.** A long mail arrives whole. This is the
@@ -139,12 +157,41 @@ editor? Until that is answered, 3b is a hypothesis.
 
 ## What the plan costs
 
-1. **Tokens go up, and the direction is the opposite of this project's
-   origin.** Untrimmed plus stateful means the full conversation on every
-   turn. Stateful alone measured 2.5×; untrimmed adds to that. The current
-   measurement makes it affordable (weekly quota at 99–100% remaining, about
-   1% consumed per week), but affordability is not the same as free, and it
-   depends on a number that could change with usage.
+1. **Tokens go up.** Untrimmed plus stateful means the full conversation on
+   every turn. Stateful alone measured 2.5×; untrimmed adds to that.
+
+   **Corrected 2026-09-13, on the operator's premise and on the evidence.**
+   The yardstick of this project is answer quality; tokens are a constraint to
+   respect, never a reason to give quality away. Measured against that
+   yardstick, "more context reaches the model" is the goal, not the price, and
+   this line is only a cost to the extent that the quota is finite. It is not
+   currently near finite: 99–100% of the weekly limit remains, about 1%
+   consumed per week.
+
+   The 2.5× figure also deserves its caveat stated where it is used, not only
+   where it was recorded. It was measured with `cached` at **zero on every
+   single request in both modes** — two cold instances, prefixes nobody had
+   sent before. Production is nothing like that. Over 917 turns in seven days
+   on this host:
+
+   | | |
+   |---|---|
+   | turns with a cache hit | 623 of 917 (**67%**) |
+   | on a hit: cache read / input | 78,738 / 65,628 |
+   | without a hit: input | 24,962 |
+
+   Note that `cache_read_tokens` is a **separate counter, not a subset of
+   `input_tokens`** — 197 turns report more cached than input. The A/B script
+   computed `marginal = input − cached` on the opposite assumption, so that
+   column of the 2026-09-10 table does not mean what it says.
+
+   And the direction of the cache favours the option this ADR is weighing. The
+   earlier three-turn measurement recorded in the bridge header: a fresh
+   process holds its cache flat at 8,131 while paying ~14k new tokens a turn; a
+   living process reads 8,124 then 16,242, growing with the conversation, while
+   paying ~5.9k. Cold, statefulness looks 2.5× worse. Warm, it may look better.
+   **Nobody has measured warm**, and no move in this plan should be justified
+   by the cold number in either direction.
 2. **A control is handed over.** Trimming was blunt, but it was ours. After
    this, bounding context depends on the CLI's compaction: closed source, and
    free to change on any update.
