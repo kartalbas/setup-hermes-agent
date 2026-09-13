@@ -1,6 +1,13 @@
 # 0027 — The bridge becomes a transport, and context management moves out of it
 
-Date: 2026-09-12 · Status: **proposed** · Supersedes part of ADR 0021, refines ADR 0024
+Date: 2026-09-12 · Status: **accepted for moves 1 and 2 (shipped 2026-09-13, `5c225c0`); move 3 in progress** · Supersedes part of ADR 0021, refines ADR 0024
+
+**The yardstick, stated by the operator on 2026-09-13:** the quality of a real API,
+reached through the subscription CLI. No API key for any bot but the Secretary,
+which runs on a paid provider by an earlier decision. And **no backward
+compatibility is owed**: move 3 replaces the stateless path, it does not sit
+beside it behind a flag. Every hedge below that reads "keep both until proven"
+is withdrawn by that statement.
 
 ## Context
 
@@ -82,14 +89,14 @@ count. Two places know more:
 Three moves. The first two are pure removal and need no backend change. The
 third is a fork that one experiment decides.
 
-### Move 1 — stop cutting content
+### Move 1 — stop cutting content — **done 2026-09-13**
 
 Set `--history-budget 0`, then delete `trim_history`, `ENTRY_CAP`,
 `DEFAULT_HISTORY_BUDGET`, the trimming inside `transcript_block`, and the
 config keys that carry them. What bounds the prompt afterwards: the CLI's own
 compaction and `session_reset` on the framework side.
 
-### Move 2 — delete the text tool protocol
+### Move 2 — delete the text tool protocol — **done 2026-09-13**
 
 Set `--native-tools on` instead of `auto`, then delete `parse_decision`, its
 payload helper, and the text branch of `tool_contract`. Roughly 140 lines; the
@@ -98,6 +105,17 @@ writers stay, because they serve the channel ADR 0024 established.
 
 The bridge then *requires* the MCP tools server. That is a real trade and is
 listed under costs.
+
+As shipped, move 2 went further than written here, and for a reason found on
+the way: `parse_decision` was not only the text protocol's parser. The native
+path serialised its own decision into the same JSON envelope and parsed it
+back, so deleting the parser meant changing how a decision travels. It now
+goes as an object — from the CLI's structured report of a completed call,
+through the result and the meta dict, to `decision_to_calls`, which renders it
+and refuses an unknown shape rather than guessing. Nothing a model wrote is
+parsed anywhere any more. `AGY_SHIM_NATIVE_TOOLS` went too: with no second
+channel there is nothing to select, and the bridge refuses to start when the
+tools server is not registered.
 
 ### Move 3 — a session instead of a process per request
 
