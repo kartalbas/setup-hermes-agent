@@ -96,7 +96,6 @@ AGY_SHIM_PORT=8787
 AGY_SHIM_MODELS="gemini-3.8-flash-high,gemini-3.1-pro-high"
 AGY_SHIM_MODEL_ALIASES="fast=gemini-3.8-flash-high,smart=gemini-3.1-pro-high"
 AGY_SHIM_UNKNOWN_MODEL="reject"
-AGY_SHIM_NATIVE_TOOLS="auto"    # the caller's functions as real tools of the CLI (ADR 0024); auto: on once the run has registered the tools server | on | off (the text protocol)
 AGY_SHIM_MAX_SPARES=3           # CLI processes kept warm, one per bot; starting one is ~20% of a request, holding one ~200 MB. 0 = off
 # A bearer token on /v1. Off is right while the bridge is on loopback — the kernel is the
 # boundary there. Required as soon as AGY_SHIM_HOST reaches further, because the endpoint
@@ -114,7 +113,6 @@ AGY_SHIM_COMPACT_AT=120000
 # holds the whole chat; the newest entries fit this, the rest are dropped with a
 # count, so the question at the end stays the loudest thing in the request.
 # 0 sends everything — and a research bot's tool output then drowns the question.
-AGY_SHIM_HISTORY_BUDGET=120000
 
 # --- hosted providers, prepared but not active --------------------------
 # Raise LLM_ENDPOINT_COUNT and uncomment a block to bring one in. A hosted

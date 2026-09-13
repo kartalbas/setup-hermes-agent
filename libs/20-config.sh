@@ -93,7 +93,6 @@ config_defaults() {
     # The caller's functions as REAL tools of the CLI (ADR 0024): auto turns
     # them on once the CLI's configuration names the bridge's tools server,
     # which this run writes. "off" keeps the text protocol.
-    : "${AGY_SHIM_NATIVE_TOOLS:=auto}"
     : "${AGY_SHIM_MAX_CONCURRENT:=3}"
     # CLI processes kept warm, one per (model, system prompt, toolset) — in
     # practice one per bot. Starting one costs about a fifth of a request
@@ -114,7 +113,6 @@ config_defaults() {
     # the whole chat, and a bot that researches fills it with tool output: the
     # newest entries fit this, the rest are dropped with a note, so the question
     # at the end stays the loudest thing in the request. 0 = send everything.
-    : "${AGY_SHIM_HISTORY_BUDGET:=120000}"
 
     : "${MAILPROXY_ENABLED:=false}"
     : "${MAILPROXY_FLOW:=device}"
@@ -844,13 +842,10 @@ _validate_agyshim() {
     _validating agyshim || return 0
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
-    _check_enum AGY_SHIM_NATIVE_TOOLS "$AGY_SHIM_NATIVE_TOOLS" auto on off
     [[ ${AGY_SHIM_MAX_SPARES:-} =~ ^[0-9]+$ ]] || _bad "AGY_SHIM_MAX_SPARES must be a number of processes (0 switches the warm pool off)"
     _check_agyshim_callers_carry_the_token
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
     _check_abs_path AGY_SHIM_LIB_DIR "$AGY_SHIM_LIB_DIR"
-    [[ $AGY_SHIM_HISTORY_BUDGET =~ ^[0-9]+$ ]] ||
-        _bad "AGY_SHIM_HISTORY_BUDGET='${AGY_SHIM_HISTORY_BUDGET}' must be a number of characters (0 = no limit)"
     # The refusal used to be flat: never bind anything but loopback, because
     # the endpoint checked nothing and the kernel was the whole boundary. Now
     # it checks a bearer token when one is configured, so the rule is about the

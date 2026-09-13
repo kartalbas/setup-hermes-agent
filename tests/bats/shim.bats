@@ -10,19 +10,26 @@ setup() {
     [ -f "$SHIM" ]
 }
 
-_decide() {
+_render() {                       # a decision this program built -> the OpenAI shape
     python3 - "$SHIM" "$1" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("shim", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-content, calls = m.parse_decision(sys.argv[2])
+content, calls = m.decision_to_calls(json.loads(sys.argv[2]))
 print(json.dumps({"content": content, "names": [c["function"]["name"] for c in calls],
                   "args": [c["function"]["arguments"] for c in calls]}))
 PY
 }
 
+# ADR 0027 move 2 deleted the text protocol and the hundred lines of rescue it
+# needed - fenced JSON, prose around the envelope, a brace inside a string, an
+# envelope abandoned mid-object. None of those shapes can occur any more,
+# because a decision is no longer text a model wrote: it is an object built
+# from the CLI's structured report of a completed call to the tools server.
+# What is left to check is the rendering, and that an unknown shape is refused.
+
 @test "a tool_call becomes one OpenAI tool call" {
-    run _decide '{"type":"tool_call","name":"send_email","arguments":{"to":"a@example.com"}}'
+    run _render '{"type":"tool_call","name":"send_email","arguments":{"to":"a@example.com"}}'
     [ "$status" -eq 0 ]
     [[ "$output" == *'"names": ["send_email"]'* ]]
     [[ "$output" == *'a@example.com'* ]]
@@ -30,41 +37,27 @@ PY
 }
 
 @test "several calls survive as several" {
-    run _decide '{"type":"tool_calls","calls":[{"name":"a","arguments":{}},{"name":"b","arguments":{}}]}'
+    run _render '{"type":"tool_calls","calls":[{"name":"a","arguments":{}},{"name":"b","arguments":{}}]}'
     [[ "$output" == *'"names": ["a", "b"]'* ]]
 }
 
 @test "a message is content, not a call" {
-    run _decide '{"type":"message","content":"Hallo"}'
+    run _render '{"type":"message","content":"Hallo"}'
     [[ "$output" == *'"content": "Hallo"'* ]]
     [[ "$output" == *'"names": []'* ]]
 }
 
-@test "a code fence around the JSON is tolerated" {
-    run _decide '```json
-{"type":"message","content":"fenced"}
-```'
-    [[ "$output" == *'"content": "fenced"'* ]]
-}
-
-@test "prose around the JSON is tolerated" {
-    run _decide 'Sicher! {"type":"tool_call","name":"x","arguments":{}} — bitte.'
-    [[ "$output" == *'"names": ["x"]'* ]]
-}
-
-# A brace inside a string must not end the object early — the naive scan for a
-# closing brace truncates the JSON and the whole turn is lost.
-@test "a brace inside a string does not end the object" {
-    run _decide '{"type":"message","content":"mit } Klammer"}'
-    [[ "$output" == *'mit } Klammer'* ]]
-}
-
-# Better a passthrough than a failed turn: text that is not a decision is still
-# the model telling the user something.
-@test "text that is not a decision is returned as content" {
-    run _decide 'Einfach nur Text.'
-    [[ "$output" == *'"content": "Einfach nur Text."'* ]]
+@test "a shape this program never builds is refused, not guessed at" {
+    run _render '{"type":"something-else"}'
     [[ "$output" == *'"names": []'* ]]
+    [[ "$output" == *'"content": ""'* ]]
+}
+
+@test "the rescue parser and its helpers are gone" {
+    ! grep -q 'def parse_decision' "$SHIM"
+    ! grep -q 'def unwrap_nested_call' "$SHIM"
+    ! grep -q 'TOOL PROTOCOL' "$SHIM"
+    ! grep -q '_MESSAGE_ENVELOPE' "$SHIM"
 }
 
 @test "the contract names every function and forbids the CLI its own tools" {
@@ -80,8 +73,9 @@ print(m.tool_contract([
 PY
     [[ "$output" == *"send_email"* ]]
     [[ "$output" == *"run_shell"* ]]
-    [[ "$output" == *"NO tools"* ]]
-    [[ "$output" == *"tool_call"* ]]
+    [[ "$output" == *"the ONLY"* ]]
+    [[ "$output" == *"Never write a tool call as JSON text"* ]]
+    [[ "$output" != *"NO tools"* ]]
 }
 
 @test "no tools means no contract" {
@@ -95,7 +89,7 @@ PY
 }
 
 @test "the tool contract tells the model its built-in tools are disabled, and the bridge reminds once" {
-    grep -q 'DISABLED and auto-denied' "$SHIM"
+    grep -q 'those are disabled' "$SHIM"
     grep -q 'TOOL_REMINDER' "$SHIM"
     grep -q '_retry=False' "$SHIM"
 }
@@ -140,18 +134,6 @@ assert out[i_id:i_msg].endswith("Message from the user:\n")
 assert "CONVERSATION SO FAR" not in m.stateless_message(system, [], "x")
 PY
     grep -q 'AGY_SHIM_STATELESS' "$SHIM"
-}
-
-@test "a nested tool_call envelope is unwrapped to the inner call" {
-    python3 - "$SHIM" <<'PY'
-import importlib.util, sys, json
-spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-c = {"id": "x", "type": "function", "function": {"name": "tool_call", "arguments": json.dumps({"name": "m365_drive_list", "arguments": {"path": "Secretary"}})}}
-out = m.unwrap_nested_call(c)
-assert out["function"]["name"] == "m365_drive_list" and json.loads(out["function"]["arguments"]) == {"path": "Secretary"}
-plain = {"id": "y", "type": "function", "function": {"name": "m365_whoami", "arguments": "{}"}}
-assert m.unwrap_nested_call(plain) == plain
-PY
 }
 
 @test "data-url images become files the CLI can read, named in the prompt" {
@@ -235,9 +217,9 @@ assert m.native_call_decision(step, {"web_search"}) is None                     
 assert m.native_call_decision(dict(step, state="DONE"), {"terminal"}) is None    # the CLI ran it itself
 assert m.native_call_decision(dict(step, error="permission denied"), {"terminal"}) is None
 assert m.native_call_decision({"step_type": "agent_response", "state": "DONE"}, {"terminal"}) is None
-content, calls = m.parse_decision(json.dumps(d))
+content, calls = m.decision_to_calls(d)
 assert calls and calls[0]["function"]["name"] == "terminal"
-assert "plain text" in m.NATIVE_CALL_REMINDER
+assert not hasattr(m, "NATIVE_CALL_REMINDER")      # the text protocol it pointed at is gone
 PY
 }
 
@@ -256,31 +238,16 @@ PY
     rm -rf "$tmp"
 }
 
-@test "a message envelope with real newlines or stray quotes still yields its content" {
-    python3 - "$SHIM" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-raw = '{"type":"message","content":"Hier ist die Übersicht:\nZeile zwei\n\nQuelle: X"}'         # raw newlines: invalid JSON, common
-content, calls = m.parse_decision(raw)
-assert calls == [] and content == "Hier ist die Übersicht:\nZeile zwei\n\nQuelle: X", repr(content)
-raw2 = '{"type":"message","content":"Er sagte "schneller" und ging.\nEnde"}'                   # unescaped quotes: only the shape is left
-content, calls = m.parse_decision(raw2)
-assert calls == [] and content == 'Er sagte "schneller" und ging.\nEnde', repr(content)
-content, calls = m.parse_decision('{"type":"tool_call","name":"web_search","arguments":{"q":"a\nb"}}')   # tool call with a raw newline
-assert calls and calls[0]["function"]["name"] == "web_search"
-PY
-}
-
 @test "the caller's tools reach the model as real tools: server, allow rule and the unit's switch" {
     load helper
     load_libs
     silence_logs
     SCRIPT_DIR=$REPO_ROOT DRY_RUN=true
     config_defaults
-    [ "$AGY_SHIM_NATIVE_TOOLS" = auto ]
-    _invalid=(); AGY_SHIM_ENABLED=true AGY_SHIM_MODELS=m AGY_SHIM_NATIVE_TOOLS=sometimes; _validate_agyshim
-    [ "${#_invalid[@]}" -eq 1 ]
-    _invalid=(); AGY_SHIM_NATIVE_TOOLS=off; _validate_agyshim; [ "${#_invalid[@]}" -eq 0 ]
+    # There is no switch any more: without the tools server there is no tool
+    # channel at all, so the bridge refuses to start instead of degrading.
+    [ -z "${AGY_SHIM_NATIVE_TOOLS:-}" ]
+    grep -q 'there is no text fallback' "$REPO_ROOT/bot/agy-shim/agy_shim.py"
 
     # the merge into the CLI's own two files: additive, idempotent, nothing else touched
     tmp=$(mktemp -d)
@@ -296,7 +263,7 @@ PY
 
     [ "$(agyshim_tools_script_path)" = /usr/local/lib/hermes-provisioner/tools_mcp.py ]
     grep -q 'agyshim_tools_script_path' "$REPO_ROOT/libs/35-agy-shim.sh"
-    grep -q -- '--native-tools ${AGY_SHIM_NATIVE_TOOLS}' "$REPO_ROOT/libs/35-agy-shim.sh"
+    ! grep -q -- '--native-tools' "$REPO_ROOT/libs/35-agy-shim.sh"
 }
 
 @test "the tools server hands a call over instead of executing it, and the bridge takes it as the decision" {
@@ -322,8 +289,8 @@ assert m.mcp_call_decision(dict(step, state="ACTIVE")) is None
 assert "`tools` server" in m.tool_contract(tools, native=True)
 assert '{"type":"tool_call"' not in m.tool_contract(tools, native=True)
 PY
-    grep -q 'tools_spec=spec' "$SHIM"
-    grep -q 'AGY_SHIM_NATIVE_TOOLS' "$SHIM"
+    grep -q 'tools_spec=tools' "$SHIM"
+    ! grep -q 'AGY_SHIM_NATIVE_TOOLS' "$SHIM"
 }
 
 @test "stateful mode with agent mode carries the system prompt once, in the agent definition" {
@@ -389,14 +356,15 @@ res = fake([mcp_step("DONE", {"query": "x"}),
             {"event": "step_update", "step_update": {"step_type": "agent_response", "state": "DONE"}},
             {"event": "result", "result": {"status": "SUCCESS", "response": "pending",
                                            "usage": {"input_tokens": 7000, "cache_read_tokens": 6000, "output_tokens": 40}}}]).turn("hi", 5)
-assert json.loads(res["response"]) == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}, res
+assert res["decision"] == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}, res
+assert res["response"] == "", res      # the decision is an object now, never text
 assert res["usage"]["input_tokens"] == 7000, res["usage"]
 
 # a turn that dies after the decision still yields the decision
 res = fake([mcp_step("DONE", {"query": "x"}),
             {"event": "result", "result": {"status": "ERROR", "error": "improperly formatted function call",
                                            "usage": {"input_tokens": 99}}}]).turn("hi", 5)
-assert json.loads(res["response"])["name"] == "web_search" and res["usage"]["input_tokens"] == 99
+assert res["decision"]["name"] == "web_search" and res["usage"]["input_tokens"] == 99
 
 # the broken channel (unknown tool) ends the one-shot turn at once — nothing to wait for
 res = fake([{"event": "step_update", "step_update": {"step_type": "tool", "state": "ERROR",
@@ -404,7 +372,7 @@ res = fake([{"event": "step_update", "step_update": {"step_type": "tool", "state
              "error": {"message": 'unknown tool: "terminal"'}}}])
 res.available_tools = {"terminal"}
 out = res.turn("hi", 5)
-assert out["native_call"] is True and json.loads(out["response"])["name"] == "terminal"
+assert out["native_call"] is True and out["decision"]["name"] == "terminal"
 PY
     grep -q 'DECISION_GRACE_SECONDS' "$SHIM"
 }
@@ -435,15 +403,15 @@ done = {"event": "result", "result": {"status": "SUCCESS", "response": "pending"
 res = fake([mcp_step("get_me", {}), mcp_step("search_repos", {"query": "acme"}),
             mcp_step("get_me", {}),                                   # the same call twice is one call
             done]).turn("hi", 5)
-payload = json.loads(res["response"])
+payload = res["decision"]
 assert payload["type"] == "tool_calls", payload
 assert [c["name"] for c in payload["calls"]] == ["get_me", "search_repos"], payload
 assert res["usage"]["input_tokens"] == 7000
 
-single = json.loads(fake([mcp_step("get_me", {}), done]).turn("hi", 5)["response"])
+single = fake([mcp_step("get_me", {}), done]).turn("hi", 5)["decision"]
 assert single == {"type": "tool_call", "name": "get_me", "arguments": {}}, single
 
-content, calls = m.parse_decision(json.dumps(payload))
+content, calls = m.decision_to_calls(payload)
 assert [c["function"]["name"] for c in calls] == ["get_me", "search_repos"], calls
 PY
     grep -q 'they travel together' "$(dirname "$SHIM")/tools_mcp.py"

@@ -161,15 +161,21 @@ class Contract(unittest.TestCase):
         self.assertNotIn("properties", text)
         self.assertIn("Never write a tool call as JSON text", text)
 
-    def test_the_text_protocol_is_still_there_for_a_cli_without_the_tools_server(self):
+    def test_the_text_protocol_is_gone(self):
+        """ADR 0027 move 2. There is no second contract any more: the tools
+        server is the tool channel, and a bridge that cannot reach it refuses
+        to start rather than falling back to asking the model for JSON."""
         text = agy_shim.tool_contract(TOOLS)
-        self.assertIn("NO tools", text)
-        self.assertIn('{"type":"tool_call"', text)
-        self.assertIn("properties", text)
+        self.assertNotIn("NO tools", text)
+        self.assertNotIn('{"type":"tool_call"', text)
+        self.assertNotIn("properties", text)
+        self.assertNotIn("TOOL PROTOCOL", text)
+        self.assertFalse(hasattr(agy_shim, "parse_decision"))
 
-    def test_no_tools_no_contract_in_either_mode(self):
+    def test_no_tools_no_contract(self):
         self.assertEqual(agy_shim.tool_contract([]), "")
         self.assertEqual(agy_shim.tool_contract([], native=True), "")
+        self.assertEqual(agy_shim.tool_contract(TOOLS, native=False), "")
 
 
 class Detection(unittest.TestCase):

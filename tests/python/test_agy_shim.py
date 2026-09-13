@@ -1,7 +1,12 @@
-"""The bridge's decision parser on what the model actually sent (2026-09-08):
-two envelopes glued together — the first abandoned before its closing brace,
-a stray token, then a rewrite — and arguments encoded as a string, escaped or
-not. The last complete envelope is the decision; the rest is noise."""
+"""The bridge's decision path.
+
+Until ADR 0027 the model wrote its decisions as JSON text into its answer and
+this file pinned the parser that had to survive them: envelopes abandoned
+mid-object, a stray token between two attempts, arguments encoded as a string
+with the quotes left unescaped. Those cases are gone with the protocol that
+produced them. A decision is now an object this program builds from the CLI's
+own structured report of a completed tool call, so what is left to test is the
+rendering, and that an unknown shape is refused rather than guessed at."""
 import json
 import os
 import sys
@@ -17,56 +22,43 @@ def names_and_args(calls):
     return [(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls]
 
 
-class ParseDecision(unittest.TestCase):
-    def test_a_truncated_envelope_followed_by_its_rewrite_yields_the_rewrite(self):
-        text = ('{"type":"tool_calls","calls":[{"name":"web_search","arguments":{"query":"foo"}}]幻assistant\n'
-                '{"type":"tool_calls","calls":[{"name":"web_search","arguments":{"query":"bar"}}]}')
-        content, calls = agy_shim.parse_decision(text)
-        self.assertEqual(content, "")
-        self.assertEqual(names_and_args(calls), [("web_search", {"query": "bar"})])
-
-    def test_arguments_encoded_as_an_escaped_string_are_decoded(self):
-        text = '{"type":"tool_calls","calls":[{"name":"web_search","arguments":"{\\"query\\":\\"foo\\"}"}]}'
-        content, calls = agy_shim.parse_decision(text)
+class DecisionRendering(unittest.TestCase):
+    def test_one_call_becomes_one_openai_tool_call(self):
+        content, calls = agy_shim.decision_to_calls(
+            {"type": "tool_call", "name": "web_search", "arguments": {"query": "foo"}})
         self.assertEqual(content, "")
         self.assertEqual(names_and_args(calls), [("web_search", {"query": "foo"})])
+        self.assertTrue(calls[0]["id"].startswith("call_"))
+        self.assertEqual(calls[0]["type"], "function")
 
-    def test_arguments_as_a_string_with_unescaped_quotes_are_rescued(self):
-        text = '{"type":"tool_calls","calls":[{"name":"web_search","arguments":"{"query":"foo"}"}]}'
-        content, calls = agy_shim.parse_decision(text)
+    def test_several_independent_calls_travel_together(self):
+        content, calls = agy_shim.decision_to_calls({"type": "tool_calls", "calls": [
+            {"name": "web_search", "arguments": {"query": "a"}},
+            {"name": "web_search", "arguments": {"query": "b"}},
+            {"name": "read_page", "arguments": {"url": "https://example.com"}}]})
         self.assertEqual(content, "")
-        self.assertEqual(names_and_args(calls), [("web_search", {"query": "foo"})])
+        self.assertEqual([n for n, _ in names_and_args(calls)],
+                         ["web_search", "web_search", "read_page"])
+        self.assertEqual(len({c["id"] for c in calls}), 3)      # ids are distinct
 
-    def test_both_at_once(self):
-        text = ('{"type":"tool_calls","calls":[{"name":"web_search","arguments":{"query":"broken"}}]幻assistant\n'
-                '{"type":"tool_calls","calls":[{"name":"web_search","arguments":"{"query":"fixed"}"}]}')
-        content, calls = agy_shim.parse_decision(text)
-        self.assertEqual(content, "")
-        self.assertEqual(names_and_args(calls), [("web_search", {"query": "fixed"})])
+    def test_a_message_decision_is_prose_and_no_calls(self):
+        self.assertEqual(agy_shim.decision_to_calls({"type": "message", "content": "Die Märkte fallen."}),
+                         ("Die Märkte fallen.", []))
 
-    def test_the_reported_answer_verbatim_becomes_three_searches(self):
-        # "warum fallen gerade die Märkte?" — what reached the chat as text on 2026-09-08
-        text = ('{"type":"tool_calls","calls":[{"name":"web_search","arguments":{"query":"stock markets falling September 2026 oil inflation"}},'
-                '{"name":"web_search","arguments":{"query":"DAX Wall Street Kursverluste September 2026"}},'
-                '{"name":"web_search","arguments":{"query":"stock market drop September 8 2026"}}]幻assistant\n'
-                '{"type":"tool_calls","calls":[{"name":"web_search","arguments":"{"query":"stock markets falling September 2026 oil inflation"}"},'
-                '{"name":"web_search","arguments":"{"query":"DAX Wall Street Kursverluste September 2026"}"},'
-                '{"name":"web_search","arguments":"{"query":"global markets selloff September 8 2026"}"}]}')
-        content, calls = agy_shim.parse_decision(text)
-        self.assertEqual(content, "")
-        self.assertEqual([n for n, _ in names_and_args(calls)], ["web_search"] * 3)
-        self.assertEqual([a["query"] for _, a in names_and_args(calls)],
-                         ["stock markets falling September 2026 oil inflation",
-                          "DAX Wall Street Kursverluste September 2026",
-                          "global markets selloff September 8 2026"])
+    def test_missing_arguments_render_as_an_empty_object(self):
+        _, calls = agy_shim.decision_to_calls({"type": "tool_call", "name": "now", "arguments": None})
+        self.assertEqual(calls[0]["function"]["arguments"], "{}")
 
-    def test_a_plain_message_and_a_plain_call_are_untouched(self):
-        content, calls = agy_shim.parse_decision('{"type":"message","content":"Die Märkte fallen wegen X."}')
-        self.assertEqual((content, calls), ("Die Märkte fallen wegen X.", []))
-        content, calls = agy_shim.parse_decision('{"type":"tool_call","name":"web_search","arguments":{"query":"x"}}')
-        self.assertEqual(names_and_args(calls), [("web_search", {"query": "x"})])
-        content, calls = agy_shim.parse_decision("Nur Text mit einer { Klammer.")
-        self.assertEqual((content, calls), ("Nur Text mit einer { Klammer.", []))
+    def test_a_call_without_a_name_is_dropped_not_guessed(self):
+        _, calls = agy_shim.decision_to_calls({"type": "tool_calls", "calls": [
+            {"arguments": {"query": "x"}}, {"name": "web_search", "arguments": {"query": "y"}}]})
+        self.assertEqual(names_and_args(calls), [("web_search", {"query": "y"})])
+
+    def test_an_unknown_shape_is_refused_rather_than_interpreted(self):
+        # The old parser guessed at anything; a decision this program built
+        # itself has no excuse for an unknown shape, so it is discarded loudly.
+        self.assertEqual(agy_shim.decision_to_calls({"type": "something-else"}), ("", []))
+        self.assertEqual(agy_shim.decision_to_calls({}), ("", []))
 
 
 class TranscriptFraming(unittest.TestCase):
@@ -76,30 +68,25 @@ class TranscriptFraming(unittest.TestCase):
     scraped HTML behind it, and mid-loop the last entry is a tool result rather
     than a question. Three different questions came back with the same answer."""
 
-    def test_the_newest_entries_survive_the_budget_and_the_rest_are_counted(self):
-        history = [f"user: q{i}" + "x" * 100 for i in range(20)]
-        kept, dropped = agy_shim.trim_history(history, budget=400)
-        self.assertEqual(dropped, 20 - len(kept))
-        self.assertLess(len(kept), 20)
-        self.assertEqual(kept[-1], history[-1])          # newest kept
-        self.assertNotIn(history[0], kept)               # oldest dropped
-
-    def test_one_enormous_entry_is_capped_not_dropped(self):
+    def test_nothing_in_the_transcript_is_cut(self):
+        """ADR 0027, move 1. A 6,000-character cap used to apply to every entry
+        and a 120,000-character budget across all of them. Both are gone: this
+        bridge translates, it does not decide what the model may read. A long
+        mail now arrives whole."""
         history = ["user: hi", "tool result (web): " + "H" * 500_000]
-        kept, dropped = agy_shim.trim_history(history, budget=1000, entry_cap=200)
-        self.assertEqual((dropped, len(kept)), (0, 2))   # capped, so both still fit
-        self.assertLess(len(kept[1]), 400)
-        self.assertIn("characters left out", kept[1])
+        block = agy_shim.transcript_block(history)
+        self.assertIn("H" * 500_000, block)
+        self.assertNotIn("characters left out", block)
+        self.assertNotIn("earlier messages left out", block)
 
-    def test_the_newest_entry_survives_a_budget_it_cannot_fit(self):
-        history = ["user: hi", "tool result (web): " + "H" * 500_000]
-        kept, dropped = agy_shim.trim_history(history, budget=10)
-        self.assertEqual((dropped, len(kept)), (1, 1))
-        self.assertTrue(kept[0].startswith("tool result (web): HHH"))
+    def test_an_empty_transcript_produces_no_block_at_all(self):
+        self.assertEqual(agy_shim.transcript_block([]), "")
 
-    def test_a_budget_of_zero_sends_everything(self):
-        history = ["a" * 10_000, "b" * 10_000]
-        self.assertEqual(agy_shim.trim_history(history, budget=0), (history, 0))
+    def test_a_long_pending_request_is_restated_in_full(self):
+        pending = "Bitte prüfe " + "x" * 20_000
+        text = agy_shim.transcript_message(["user: older"], "tool result (web): …",
+                                           "Acme News", pending=pending)
+        self.assertIn(pending, text)
 
     def test_the_question_is_the_last_thing_and_is_labelled(self):
         text = agy_shim.stateless_message(
@@ -140,15 +127,18 @@ class TranscriptFraming(unittest.TestCase):
         self.assertEqual(agy_shim.pending_request(messages),
                          "did the president promise a payment?")
 
-    def test_the_transcript_cannot_outweigh_the_question(self):
+    def test_a_huge_transcript_still_ends_with_the_question(self):
         # The shape that failed on the host: ~90 entries of scraped page, one
-        # line of question. Trimmed, the question is a visible share again.
+        # line of question. Cutting was one answer to it; the framing is the
+        # other, and the framing is the one that survives move 1. The
+        # transcript is now sent whole and the question is still last, still
+        # under its own heading, with everything before it marked background.
         history = ["tool result (terminal): " + "<html>" * 4000 for _ in range(90)]
         question = "did the president promise a payment?"
-        text = agy_shim.transcript_message(history, question, "Acme News",
-                                           budget=agy_shim.DEFAULT_HISTORY_BUDGET)
-        self.assertLess(len(text), 200_000)
-        self.assertIn("earlier messages left out", text)
+        text = agy_shim.transcript_message(history, question, "Acme News")
+        self.assertGreater(len(text), 2_000_000)         # nothing was dropped
+        self.assertNotIn("earlier messages left out", text)
+        self.assertIn("BACKGROUND ONLY", text)
         self.assertTrue(text.rstrip().endswith(question))
 
 

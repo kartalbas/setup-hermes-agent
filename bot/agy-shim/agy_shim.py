@@ -286,7 +286,7 @@ class AgentProcess:
                     log.info("decision taken, closing line not written within %.0fs; going with it", DECISION_GRACE_SECONDS)
                     self.turns += 1
                     self.last_used = time.time()
-                    return {"status": "SUCCESS", "response": json.dumps(decided, separators=(",", ":")),
+                    return {"status": "SUCCESS", "response": "", "decision": decided,
                             "usage": {}, "native_call": True}
                 raise TimeoutError(f"no result within {timeout}s")
             try:
@@ -311,7 +311,7 @@ class AgentProcess:
                     if getattr(self, "one_shot", False):
                         self.turns += 1
                         self.last_used = time.time()
-                        return {"status": "SUCCESS", "response": json.dumps(broken, separators=(",", ":")),
+                        return {"status": "SUCCESS", "response": "", "decision": broken,
                                 "usage": {}, "native_call": True}
                     continue
                 offered = mcp_call_decision(su)
@@ -344,7 +344,7 @@ class AgentProcess:
                 # A complete native call to a caller function decided the turn:
                 # whatever followed — a malformed retry that killed the turn, or
                 # the "pending" line the tools server asked for — is not the answer.
-                result = dict(result, status="SUCCESS", response=json.dumps(decided, separators=(",", ":")))
+                result = dict(result, status="SUCCESS", response="", decision=decided)
             if result.get("status") != "SUCCESS":
                 # CANCELED/WAITING without a client cancel are the CLI's own
                 # hiccups (its issues #902/#944): worth exactly one fresh try.
@@ -356,7 +356,7 @@ class AgentProcess:
             # A denied tool permission is reported as success with no text: the
             # CLI abandons the turn rather than answering with what it has. That
             # surfaced as an unexplained failure, so say what actually happened.
-            if not str(result.get("response", "")).strip():
+            if not str(result.get("response", "")).strip() and not result.get("decision"):
                 detail = self.stderr_tail()
                 denied = result.get("denied_actions") or []
                 if denied and not AgentProcess._denied_shape_logged:
@@ -365,7 +365,7 @@ class AgentProcess:
                 if denied or "permission" in detail.lower():
                     decision = map_cli_intents(self.tool_intents, getattr(self, "available_tools", set()))
                     if decision is not None:
-                        result["response"] = json.dumps(decision, separators=(",", ":"))
+                        result["decision"] = decision
                         return result
                     if _retry:
                         # The whole operating context again, not just a nudge:
@@ -459,10 +459,7 @@ class Pool:
         # Whether the CLI will inject the caller's functions as real tools: it
         # does when its own configuration names our tools server (the installer
         # writes that). Checked once, here, so a turn never has to guess.
-        self.native_tools = tools_server_configured() if getattr(args, "native_tools", "auto") == "auto" \
-            else bool(getattr(args, "native_tools", "auto") == "on")
-        log.info("caller tools reach the model %s", "as native MCP tools" if self.native_tools
-                 else "as the text TOOL PROTOCOL (no tools server in the CLI's configuration)")
+        log.info("caller tools reach the model as native MCP tools (%s)", TOOLS_SERVER_NAME)
         self.procs: dict[str, AgentProcess] = {}
         self.spares: dict[str, AgentProcess] = {}   # pre-warmed, stateless mode
         self.lock = threading.Lock()
@@ -508,7 +505,7 @@ class Pool:
                                 self.args.workdir, self.args.extra_args,
                                 agents_md=agents_md_text(system),
                                 agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                                tools_spec=tools if self.native_tools else None)
+                                tools_spec=tools)
             self.procs[key] = proc
 
         # In agent mode the system prompt is already in the CLI's own system
@@ -595,11 +592,10 @@ class Pool:
     def _spawn(self, model: str, system: str, tools: list | None) -> AgentProcess:
         """One CLI process ready to take a request for THIS caller: its system
         prompt in the agent definition, its functions in the tools file."""
-        spec = tools if self.native_tools else None
         return AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
                             agents_md="" if self.args.agent_mode else agents_md_text(system),
                             agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                            tools_spec=spec)
+                            tools_spec=tools)
 
     def _take_spare(self, model: str, system: str, tools: list | None) -> AgentProcess:
         """A pre-warmed process for this caller, or a fresh one; either way the
@@ -650,14 +646,12 @@ class Pool:
                             tool_names: set[str],
                             tools: list | None = None,
                             pending: str = "") -> tuple[str, dict, dict]:
-        spec = tools if self.native_tools else None
         proc = self._take_spare(model, system, tools)
         proc.available_tools = tool_names
         try:
-            budget = getattr(self.args, "history_budget", DEFAULT_HISTORY_BUDGET)
-            text = (transcript_message(history, message, identity_name(system), pending, budget)
+            text = (transcript_message(history, message, identity_name(system), pending)
                     if self.args.agent_mode
-                    else stateless_message(system, history, message, pending, budget))
+                    else stateless_message(system, history, message, pending))
             if images:
                 text = place_images(text, images, proc.workdir)
             proc.full_prefix = text          # re-sent whole if a built-in tool is denied
@@ -677,7 +671,7 @@ class Pool:
                 proc.full_prefix = text
                 proc.identity = identity_name(system)
                 proc.one_shot = True
-                reminder = (MCP_CALL_REMINDER if spec else NATIVE_CALL_REMINDER) if tool_names else ""
+                reminder = MCP_CALL_REMINDER if tool_names else ""
                 with proc.lock:
                     result = proc.turn(text + reminder, self.args.timeout)
             usage = result.get("usage", {}) or {}
@@ -685,7 +679,8 @@ class Pool:
                      model, len(history), len(text), usage.get("input_tokens"),
                      usage.get("cache_read_tokens"), usage.get("output_tokens"),
                      time.time() - started)
-            return result.get("response", ""), usage, {"turns": 1, "model": model}
+            return result.get("response", ""), usage, {"turns": 1, "model": model,
+                                                       "decision": result.get("decision")}
         finally:
             threading.Thread(target=proc.close, daemon=True).start()
 
@@ -727,7 +722,8 @@ class Pool:
                 time.time() - started,
             )
             return result.get("response", ""), usage, {"turns": proc.turns,
-                                                       "model": proc.model}
+                                                       "model": proc.model,
+                                                       "decision": result.get("decision")}
         finally:
             self.slots.release()
 
@@ -735,7 +731,7 @@ class Pool:
         with self.lock:
             return {
                 "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else "")
-                        + ("+native-tools" if self.native_tools else ""),
+                        + "+native-tools",
                 "spares": len(self.spares),
                 "max_spares": self.args.max_spares,
                 "conversations": len(self.procs),
@@ -1047,33 +1043,10 @@ def write_tools_file(workdir: str, tools: list) -> str:
     return path
 
 
-NATIVE_CALL_REMINDER = ("\n\nREMINDER: you have no functions to call natively — a native call fails the turn. "
-                        "Write the ONE JSON object of the TOOL PROTOCOL as plain text.")
 MCP_CALL_REMINDER = (f"\n\nREMINDER: the caller's functions are the tools of the `{TOOLS_SERVER_NAME}` server and nothing else. "
                      "Call ONE of them, with every required argument, or answer in plain prose. Any other function call fails the turn.")
 
 
-def unwrap_nested_call(call: dict) -> dict:
-    """{"name":"tool_call","arguments":{"name":X,"arguments":Y}} -> a call of X.
-
-    The model sometimes wraps the protocol's own envelope one level too deep;
-    the agent then reports "tool_call requires a 'name' argument" and the turn
-    is lost. Unwrap instead."""
-    fn = (call or {}).get("function") or {}
-    if fn.get("name") != "tool_call":
-        return call
-    try:
-        args = json.loads(fn.get("arguments") or "{}")
-    except ValueError:
-        return call
-    inner = args.get("name")
-    if not inner:
-        return call
-    inner_args = args.get("arguments", {})
-    if not isinstance(inner_args, str):
-        inner_args = json.dumps(inner_args, separators=(",", ":"))
-    log.info("unwrapped a nested tool_call -> %s", inner)
-    return {**call, "function": {"name": inner, "arguments": inner_args}}
 
 
 # The CLI's own tools, mapped onto the agent's. When the CLI reaches for one of
@@ -1132,45 +1105,29 @@ TRANSCRIPT_HEAD = ("=== CONVERSATION SO FAR (oldest first) ===\n"
 TRANSCRIPT_TAIL = "\n=== END CONVERSATION ==="
 LIVE_HEAD = "=== THE MESSAGE TO ANSWER NOW ===\n"
 
-# Characters of any single transcript entry that reach the model. One scraped
-# page is 100k characters and a turn produces dozens; the entry was read when
-# it was current, and its opening is what the next turn needs.
-ENTRY_CAP = 6000
-# Characters of transcript, all entries together. The newest fit; the rest are
-# counted and dropped. ~30k tokens, against 155k measured before this.
-DEFAULT_HISTORY_BUDGET = 120000
+# NOTHING IS CUT HERE ANY MORE (ADR 0027, move 1).
+#
+# What used to stand here: a 6,000-character cap on every single entry and a
+# 120,000-character budget across all of them. The cap was written for scraped
+# pages and applied to everything — a long mail, a long message from the
+# operator — and a page and a half in, the rest became a count.
+#
+# It went because this bridge translates; it does not decide what the model is
+# allowed to read. What bounds the prompt now sits where the information is:
+# the agent framework, which owns the conversation and has `session_reset` per
+# bot, and the CLI, which compacts its own context at a token threshold it can
+# measure and this program cannot.
+#
+# The framing below stays. It is not cutting — it says which part of the text
+# is the question, which is the failure that made a research bot answer three
+# different questions with the same summary.
 
 
-def trim_history(history: list[str], budget: int,
-                 entry_cap: int = ENTRY_CAP) -> tuple[list[str], int]:
-    """The newest entries that fit the budget, and how many were dropped.
-
-    Newest first, because the old ones are the ones already answered. The
-    newest entry always survives, whatever its size — a turn must never lose
-    the tool result it just asked for."""
-    if budget <= 0:
-        return list(history), 0
-    kept, used = [], 0
-    for entry in reversed(history):
-        if len(entry) > entry_cap:
-            entry = entry[:entry_cap] + f"\n… [{len(entry) - entry_cap} characters left out]"
-        if kept and used + len(entry) > budget:
-            break
-        kept.append(entry)
-        used += len(entry)
-    kept.reverse()
-    return kept, len(history) - len(kept)
-
-
-def transcript_block(history: list[str], budget: int) -> str:
+def transcript_block(history: list[str]) -> str:
     """The transcript as it goes to the model, or '' when there is none."""
-    kept, dropped = trim_history(history, budget)
-    if not kept:
+    if not history:
         return ""
-    body = "\n\n".join(kept)
-    if dropped:
-        body = f"[{dropped} earlier messages left out]\n\n" + body
-    return TRANSCRIPT_HEAD + body + TRANSCRIPT_TAIL
+    return TRANSCRIPT_HEAD + "\n\n".join(history) + TRANSCRIPT_TAIL
 
 
 def live_block(message: str, pending: str, name: str) -> str:
@@ -1182,8 +1139,6 @@ def live_block(message: str, pending: str, name: str) -> str:
     it instead of at whatever the transcript is full of."""
     head = LIVE_HEAD
     if pending:
-        if len(pending) > ENTRY_CAP:
-            pending = pending[:ENTRY_CAP] + " …"
         head += (f"You are working on this request from the user: {pending}\n"
                  "The message below is the result of a step you took for it. Use it to "
                  "answer THAT request — not an earlier one.\n\n")
@@ -1191,12 +1146,12 @@ def live_block(message: str, pending: str, name: str) -> str:
 
 
 def transcript_message(history: list[str], message: str, name: str,
-                       pending: str = "", budget: int = DEFAULT_HISTORY_BUDGET) -> str:
+                       pending: str = "") -> str:
     """Agent mode: the system prompt is in the agent definition; the user
     message carries only the transcript and the new message (identity line
     still directly before it — cheap, and it settled the who-are-you case)."""
     parts = []
-    block = transcript_block(history, budget)
+    block = transcript_block(history)
     if block:
         parts.append(block)
     parts.append(live_block(message, pending, name))
@@ -1204,7 +1159,7 @@ def transcript_message(history: list[str], message: str, name: str,
 
 
 def stateless_message(system: str, history: list[str], message: str,
-                      pending: str = "", budget: int = DEFAULT_HISTORY_BUDGET) -> str:
+                      pending: str = "") -> str:
     """The whole exchange as one message for a fresh CLI conversation.
 
     Stateless by design: the CLI keeps no memory between requests, so nothing
@@ -1213,193 +1168,90 @@ def stateless_message(system: str, history: list[str], message: str,
     first, the transcript so far in the middle, and the identity line sits
     immediately before the user's message, where it is followed."""
     parts = [IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL]
-    block = transcript_block(history, budget)
+    block = transcript_block(history)
     if block:
         parts.append(block)
     parts.append(live_block(message, pending, identity_name(system)))
     return "\n\n".join(parts)
 
 
-def tool_contract(tools: list, native: bool = False) -> str:
-    """Render OpenAI tool definitions as instructions the CLI can follow.
+def tool_contract(tools: list, native: bool = True) -> str:
+    """Say whose the tools are and how they are used.
 
-    NATIVE (the tools server is in place): the CLI has injected the functions
-    as real tools, so the text only says whose they are and how they are
-    used — call natively, one at a time, complete arguments, the result comes
-    back as the next message — and names them once for routing; no schemas,
-    no JSON envelope. Otherwise the TOOL PROTOCOL: decisions as JSON text."""
+    The CLI has injected the caller's functions as real tools, so this names
+    them once for routing and states the rules — call natively, one at a time,
+    every required argument filled in, the result arrives as the next message.
+    No schemas and no JSON envelope: the CLI already has the schemas.
+
+    The `native` parameter survives only so a caller can ask for nothing; the
+    text protocol it used to select is gone with ADR 0027 move 2."""
     fns = tool_functions(tools)
-    if not fns:
+    if not fns or not native:
         return ""
 
-    if native:
-        lines = [
-            "TOOLS — read this before answering.",
-            "",
-            f"The functions of the `{TOOLS_SERVER_NAME}` server are the caller's tools, and the ONLY",
-            "tools you have. Call them natively, one at a time, with every required argument",
-            "filled in; the caller executes the call and its result arrives as the next message.",
-            "Never write a tool call as JSON text. Never try commands, files, the browser or the",
-            "web yourself — those are disabled. When no tool is needed, answer in plain prose.",
-            "",
-            "The caller's functions:",
-        ]
-        for fn in fns:
-            desc = " ".join((fn.get("description") or "").split())
-            lines.append(f"- {fn['name']}: {desc}"[:300])
-        return "\n".join(lines)
-
     lines = [
-        "TOOL PROTOCOL — read this before answering.",
+        "TOOLS — read this before answering.",
         "",
-        "You have NO tools and NO execution environment. Your built-in tools",
-        "(command, shell, file, web, browser) are DISABLED and auto-denied; an",
-        "attempt to use one aborts the turn and the user gets nothing. To act,",
-        "emit a tool_call from the list below — the CALLER executes it for you.",
+        f"The functions of the `{TOOLS_SERVER_NAME}` server are the caller's tools, and the ONLY",
+        "tools you have. Call them natively, one at a time, with every required argument",
+        "filled in; the caller executes the call and its result arrives as the next message.",
+        "Never write a tool call as JSON text. Never try commands, files, the browser or the",
+        "web yourself — those are disabled. When no tool is needed, answer in plain prose.",
         "",
-        "Functions the caller can run:",
+        "The caller's functions:",
     ]
     for fn in fns:
         desc = " ".join((fn.get("description") or "").split())
-        lines.append(f"- {fn['name']}: {desc}"[:400])
-        lines.append("  parameters: " + json.dumps(fn.get("parameters") or {}, separators=(",", ":")))
-    lines += [
-        "",
-        "Answer with exactly ONE JSON object and nothing else — no prose around",
-        "it, no code fence:",
-        '  {"type":"message","content":"<your reply to the user>"}',
-        '  {"type":"tool_call","name":"<function>","arguments":{...}}',
-        '  {"type":"tool_calls","calls":[{"name":"<fn>","arguments":{...}},...]}',
-        "",
-        "Use a tool_call when answering needs one; a message when it does not.",
-        "Results come back as the next turn, prefixed 'tool result'. When you",
-        "have what you need, reply with a message.",
-    ]
+        lines.append(f"- {fn['name']}: {desc}"[:300])
     return "\n".join(lines)
 
 
-_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
 
-_MESSAGE_ENVELOPE = re.compile(r'^\s*\{\s*"type"\s*:\s*"message"\s*,\s*"content"\s*:\s*"(.*)"\s*\}\s*$', re.S)
 
 
-def _lenient_message(raw: str) -> str | None:
-    """A message envelope that is not valid JSON — unescaped quotes inside the
-    content, typically — still has a recognisable shape; take its content."""
-    m = _MESSAGE_ENVELOPE.match(raw)
-    if not m:
-        return None
-    body = m.group(1)
-    for esc, plain in (('\\"', '"'), ("\\n", "\n"), ("\\t", "\t"), ("\\\\", "\\")):
-        body = body.replace(esc, plain)
-    return body
+def decision_to_calls(decision: dict) -> tuple[str, list]:
+    """A decision THIS PROGRAM built, rendered in the shape the caller expects.
+
+    Strict on purpose, and that is the whole point of ADR 0027 move 2. Until
+    now the model wrote its decisions as JSON text into its answer, and the
+    parser that stood here had to survive whatever came back: an envelope
+    abandoned mid-object followed by a second attempt, a stray token between
+    the two, arguments encoded as a string with the quotes left unescaped. A
+    hundred lines of rescue, every line of it earned by a real failure.
+
+    None of that is needed once the decision never becomes text. The CLI
+    reports a completed call to the tools server as a structured event, this
+    program keeps it as an object, and it arrives here as an object. There is
+    nothing to parse, so there is nothing to rescue and nothing to guess."""
+    kind = (decision or {}).get("type")
+    if kind == "message":
+        return str(decision.get("content") or ""), []
+    if kind == "tool_call":
+        return "", _calls([decision])
+    if kind == "tool_calls":
+        return "", _calls(decision.get("calls") or [])
+    log.warning("a decision of unknown shape was discarded: %s", str(decision)[:200])
+    return "", []
 
 
-def parse_decision(text: str) -> tuple[str, list]:
-    """(content, tool_calls). Anything unparseable is returned as content.
-
-    Tolerant on purpose: a model that wraps its JSON in a sentence is still
-    telling us what it wants, and failing the whole turn over punctuation
-    would be worse than the occasional passthrough.
-
-    Every "{" is tried in turn and the first envelope that parses wins: the
-    model has been seen to abandon an envelope before its closing brace,
-    emit a stray token, and write it again (2026-09-08) — the rewrite is the
-    decision. Arguments may arrive as a string, escaped or with the object's
-    own quotes unescaped; both are decoded back into the object.
-    """
-    raw = _FENCE.sub("", text or "").strip()
-
-    def try_parse(start_idx: int) -> int:
-        depth, end, in_str, esc = 0, -1, False, False
-        for i, ch in enumerate(raw[start_idx:], start_idx):
-            if in_str:
-                if esc:      esc = False
-                elif ch == "\\": esc = True
-                elif ch == '"':  in_str = False
-                continue
-            if ch == '"':   in_str = True
-            elif ch == "{": depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        return end
-
-    def fix_unescaped_arguments(s: str) -> str:
-        def repl(m):
-            inner = m.group(1)
-            try:
-                json.loads(inner)
-                return '"arguments":' + inner
-            except json.JSONDecodeError:
-                try:
-                    unescaped = inner.replace('\\"', '"')
-                    json.loads(unescaped)
-                    return '"arguments":' + unescaped
-                except json.JSONDecodeError:
-                    return m.group(0)
-        return re.sub(r'"arguments"\s*:\s*"(\{.*?\})"(?=\s*[,}\]])', repl, s)
-
-    def extract(obj: dict) -> tuple[str, list]:
-        kind = obj.get("type")
-        if kind == "message":
-            return str(obj.get("content", "")), []
-
-        calls = []
-        if kind == "tool_call":
-            calls = [obj]
-        elif kind == "tool_calls":
-            calls = obj.get("calls") or []
-        if not calls:
-            return text, []
-
-        out = []
-        for c in calls:
-            name = (c or {}).get("name")
-            if not name:
-                continue
-            args = c.get("arguments")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
-                    pass
-            out.append({
-                "id": "call_" + uuid.uuid4().hex[:20],
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(args or {}, separators=(",", ":")) if isinstance(args, dict) else (args if isinstance(args, str) else "{}"),
-                },
-            })
-        return ("", out) if out else (text, [])
-
-    search_start = 0
-    while True:
-        start = raw.find("{", search_start)
-        if start < 0:
-            break
-        end = try_parse(start)
-        if end > 0:
-            candidate = raw[start:end]
-            fixed = fix_unescaped_arguments(candidate)
-            try:
-                # strict=False: a model writes real newlines inside the string; JSON
-                # forbids them, the reader lived with them (a News briefing arrived as
-                # its raw envelope, 2026-09-07).
-                obj = json.loads(fixed, strict=False)
-                if isinstance(obj, dict) and "type" in obj:
-                    return extract(obj)
-            except json.JSONDecodeError:
-                lenient = _lenient_message(candidate)
-                if lenient is not None:
-                    return lenient, []
-        search_start = start + 1
-
-    return text, []
+def _calls(items: list) -> list:
+    out = []
+    for item in items:
+        name = (item or {}).get("name")
+        if not name:
+            continue
+        args = item.get("arguments")
+        out.append({
+            "id": "call_" + uuid.uuid4().hex[:20],
+            "type": "function",
+            "function": {
+                "name": str(name),
+                "arguments": (args if isinstance(args, str)
+                              else json.dumps(args or {}, separators=(",", ":"))),
+            },
+        })
+    return out
 
 
 def split_history(messages: list[dict]) -> tuple[str, list[str], str]:
@@ -1575,7 +1427,7 @@ class Handler(BaseHTTPRequestHandler):
         # process starts and then cached — not re-sent every turn. That is the
         # whole reason this bridge is affordable.
         tools = body.get("tools") or []
-        contract = tool_contract(tools, native=self.pool.native_tools)
+        contract = tool_contract(tools)
         if contract:
             system = f"{contract}\n\n{system}" if system else contract
 
@@ -1600,8 +1452,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self._error(502, f"{type(exc).__name__}: {exc}")
 
-        content, tool_calls = parse_decision(text) if tools else (text, [])
-        tool_calls = [unwrap_nested_call(c) for c in tool_calls]
+        decision = meta.get("decision")
+        content, tool_calls = (decision_to_calls(decision) if decision else (text, []))
         choice_message = {"role": "assistant", "content": content or None}
         finish = "stop"
         if tool_calls:
@@ -1741,11 +1593,6 @@ def main() -> int:
                         "starting one costs about a fifth of a request; 0 switches it off")
     p.add_argument("--compact-at", type=int, default=120000,
                    help="summarise and restart past this many input tokens")
-    p.add_argument("--history-budget", type=int,
-                   default=int(os.environ.get("AGY_SHIM_HISTORY_BUDGET", DEFAULT_HISTORY_BUDGET)),
-                   help="characters of transcript a request may carry; the newest fit, the rest "
-                        "are dropped with a note. 0 sends everything (a research bot's tool "
-                        "output then drowns the question it was asked)")
     p.add_argument("--extra-args", default=os.environ.get("AGY_SHIM_EXTRA_ARGS", ""),
                    help="additional arguments passed to the CLI")
     p.add_argument("--log-level", default=os.environ.get("AGY_SHIM_LOG_LEVEL", "info"))
@@ -1753,10 +1600,6 @@ def main() -> int:
                    default=os.environ.get("AGY_SHIM_AGENT_MODE", "true").lower() not in ("0", "false", "no"),
                    help="do not load the system prompt through a CLI agent definition (--agent); "
                         "default on: the prompt goes into the CLI's system slot and its tools are off")
-    p.add_argument("--native-tools", choices=("auto", "on", "off"),
-                   default=os.environ.get("AGY_SHIM_NATIVE_TOOLS", "auto"),
-                   help="offer the caller's functions to the CLI as real MCP tools (ADR 0024); "
-                        "auto: on when the CLI's configuration names the tools server")
     p.add_argument("--stateful", dest="stateless", action="store_false",
                    default=os.environ.get("AGY_SHIM_STATELESS", "true").lower() not in ("0", "false", "no"),
                    help="keep one CLI conversation per chat (legacy); default is stateless: "
@@ -1797,6 +1640,17 @@ def main() -> int:
                   "subscription for anyone who reaches it; pass --auth-token-file", args.host)
         return 1
 
+    # ADR 0027 move 2: there is no text protocol left to fall back to, so the
+    # tools server is not an option — it IS the tool channel. A bridge that
+    # cannot route the caller's functions is broken for every bot here, and the
+    # place to say that is startup, where the installer sees it, not the first
+    # turn that happens to need a tool.
+    if not tools_server_configured():
+        log.error("the caller's tools server is not registered with the CLI, and since ADR 0027 "
+                  "there is no text fallback. Run the installer: it writes mcp_config.json and "
+                  "the permissions.allow rule the CLI needs to call %s.", TOOLS_SERVER_NAME)
+        return 1
+
     startup_checks(args)
     Handler.pool = Pool(args)
     Handler.models = args.models
@@ -1810,8 +1664,8 @@ def main() -> int:
     log.info("models (default first): %s", ", ".join(args.models))
     if args.aliases:
         log.info("aliases: %s", ", ".join(f"{k}->{v}" for k, v in args.aliases.items()))
-    log.info("unknown models: %s | max %d concurrent | compact at %d tokens | transcript budget %d chars",
-             args.unknown_model, args.max_concurrent, args.compact_at, args.history_budget)
+    log.info("unknown models: %s | max %d concurrent | compact at %d tokens | transcript sent whole",
+             args.unknown_model, args.max_concurrent, args.compact_at)
     log.info("bridge %s | /v1 %s | up to %d warm process(es)", BRIDGE_VERSION,
              "requires a bearer token" if token else "open (loopback only)", args.max_spares)
     try:
