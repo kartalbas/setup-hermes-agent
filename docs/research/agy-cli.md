@@ -364,3 +364,17 @@ in aggregate through `agy -p /usage`.
 **What only production can answer:** identity across days (held over ten turns
 in both print modes; not yet exercised over ACP for longer), and cost, for the
 reasons the warm A/B section gives.
+
+### One process for the whole fleet — measured 2026-09-13
+
+Two sessions in one `agy_acp_server` process, two prompts sent back to back
+without waiting: both finished in 5.9 s, not 5.9 + 5.9. The server multiplexes
+sessions on one process. So the print-mode design — a CLI process per
+conversation, warm spares per bot — has no counterpart here: **one server
+process carries every bot, each bot a session.** The 2.6 GB on disk is then a
+single fixed cost, not per bot, and there is no spawn to keep warm because the
+process never goes away.
+
+This is the fact that most changes the bridge's shape. The `Pool` that keyed
+processes by (conversation, model, toolset) collapses to a session table keyed
+by conversation, in front of one long-lived subprocess.
