@@ -174,3 +174,122 @@ pollutes the answer with progress text.
 
 So: spares first (measured, contained), and streaming when there is a way to
 show progress that is not the answer's own text.
+
+## The official ACP server, tested headless 2026-09-13
+
+The question that blocked ADR 0027's move 3b: can `agy_acp_server` be fetched,
+started and authenticated without an editor's registry UI? **Yes, except for
+one interactive step.**
+
+**Fetching needs no editor.** The registry publishes a machine-readable index
+at `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`; the
+`antigravity-acp` entry carries a per-platform `distribution.binary` block with
+a direct `dl.google.com` archive URL, the command to run and its arguments. For
+`linux-x86_64` that is a 651 MB zip holding `agy_acp_server.par` (1.8 GB) and
+`localharness_external` (123 MB). **2.6 GB on disk**, against 213 MB for the
+CLI — the largest single operational cost of this option.
+
+**It must be started with `--uid=` on Linux**, which is why the registry entry
+carries that argument for the Linux platforms and not for macOS or Windows.
+Without it the process aborts immediately:
+
+```
+Check failed: LookupGIDByGroupName(groupname, &new_gid)  Group nobody not found
+```
+
+It is trying to drop privileges to a group named `nobody`, which Debian and
+Ubuntu do not have — they ship user `nobody` with group `nogroup`. With
+`--uid=` the privilege drop is skipped and the server runs.
+
+**It speaks ACP v1 and answers `initialize` in well under a second.** The
+capabilities it reports matter for the decision:
+
+| capability | value | why it matters |
+|---|---|---|
+| `loadSession` | `true` | a session can be reloaded, not only created |
+| `sessionCapabilities` | `{list, resume}` | sessions are enumerable and resumable |
+| `mcpCapabilities` | `{http: true, sse: true}` | MCP servers beyond stdio |
+| `auth` | `{logout: {}}` | the login can be dropped without editing files |
+
+`list` and `resume` bear directly on the restart objection raised in ADR 0027:
+the protocol has the vocabulary for surviving a restart. Whether it works is a
+separate question, and issue #997 says it sometimes does not.
+
+**It does NOT inherit the CLI's login.** The CLI keeps its token at
+`~/.gemini/antigravity-cli/antigravity-oauth-token`; the server reads
+`~/.gemini/antigravity-acp/settings.json`, a sibling directory. `session/new`
+without configuration returns:
+
+```
+Authentication required — No authentication method selected. Either call the
+`authenticate` method (supports oauth-personal, gemini-api-key, agent-platform),
+or set `auth.type` in settings.json
+```
+
+With `{"auth": {"type": "oauth-personal"}}` written there, it emits an ordinary
+Google OAuth URL on stderr: `accounts.google.com/o/oauth2/v2/auth`, response
+type `code`, a Google-owned client id (`1071006060591-…apps.googleusercontent.com`),
+and a **loopback redirect** to `http://127.0.0.1:<ephemeral-port>/`.
+
+Two observations about that. It is the vendor's own binary presenting the
+vendor's own OAuth client, which is the distinction the 9router discussion
+turned on, and this lands on the supported side of it. And the loopback
+redirect is the one real obstacle on a host with no inbound route: the browser
+that completes the consent must reach `127.0.0.1` **on this host**, so an
+operator opening the link on their laptop lands on their own machine instead.
+An SSH port-forward of that port closes it; nothing else about the flow is
+unusual.
+
+**What is still unknown:** whether a session survives a restart in practice,
+whether our stdio MCP tools server is accepted as-is, and what a turn costs.
+
+## Warm A/B, attempted 2026-09-13 — and why it failed
+
+The warm re-run promised after the cold A/B of 2026-09-10. Each instance was
+given two throwaway turns with the exact system prompt and toolset of the
+measured run, under a different opening message, so the conversation would be
+new while the cacheable prefix was not. Warm and measure ran back to back per
+mode.
+
+| | stateless | stateful | |
+|---|---|---|---|
+| requests | 14 | 14 | |
+| input tokens | 109,620 | 752,810 | +587% |
+| **cache reads** | **0** | **0** | — |
+| output tokens | 52,943 | 58,827 | +11% |
+| wall clock | 225.9 s | 125.9 s | **−44%** |
+
+**The warm-up did not warm anything.** Zero cache reads on every request in
+both modes, exactly as in the cold run. Meanwhile production over the same
+period reports a hit on 623 of 917 turns (67%), averaging 78,738 cache reads
+against 65,628 input tokens.
+
+The difference is not size: the stateful run reached 131k input tokens on a
+single turn and still read nothing from cache, while production averages 52k
+and hits two turns in three. What production has and the experiment does not is
+**repetition over time** — the same handful of system prompts sent hundreds of
+times over days. Two priming turns seconds earlier do not produce that.
+
+So the honest conclusion is methodological: **a synthetic A/B cannot reproduce
+the production cache condition, and two attempts have now failed the same way.**
+The `+587%` here is no more usable than the `+155%` before it, and the two are
+not even comparable to each other — the stateless side did far less tool work
+this time (109,620 against 293,070 input tokens).
+
+What did replicate, and can be relied on:
+
+- **Identity held in both modes**, at turns 1, 5 and 10, with no vendor name and
+  no register slip. Second independent confirmation that agent mode closed the
+  drift ADR 0021 retired the stateful pool for.
+- **Stateful is 44% faster** — 125.9 s against 225.9 s, the same figure as the
+  cold run to the percentage point.
+- **Stateful input grows monotonically** until compaction: 13k, 20k, 25k, …,
+  103k, 117k, 132k.
+
+**What would actually settle it:** one production bot on `--stateful` for a
+week, compared against its own history on the same traffic. Nothing smaller
+reproduces the cache, and the cache is the whole question.
+
+**Cost of the experiment:** the five-hour quota window moved from 100% to 99%
+and the weekly figure did not move from 99%, for roughly thirty measured turns
+plus warm-ups on both instances.

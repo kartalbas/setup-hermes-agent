@@ -201,15 +201,44 @@ fragile in a way a published protocol is not, and the failure would be silent.
 4. **A session is stateful on a host that restarts.** Every deploy restarts
    the bots today; with sessions, every deploy drops every conversation. For
    3b this is worse than theoretical: a session unrecoverable after a process
-   restart is an open bug in the vendor's own tracker.
-5. **Move 3 may not be reachable.** If the ACP server cannot be authenticated
-   headless, what is left is 3a, whose prize is smaller for the same
-   disruption.
+   restart is an open bug in the vendor's own tracker — though the server does
+   advertise `loadSession`, `session/list` and `session/resume` (measured
+   2026-09-13), so the protocol has the vocabulary even where the
+   implementation stumbles.
+5. ~~**Move 3 may not be reachable.**~~ **Answered 2026-09-13, and the answer
+   is that it is reachable.** The ACP server downloads from `dl.google.com`
+   through the registry's machine-readable index with no editor involved,
+   starts headless once given `--uid=` (without it it aborts looking for a
+   group named `nobody`, which Ubuntu does not have), and answers `initialize`
+   with ACP v1. It does not inherit the CLI's login, and `session/new` without
+   configuration returns "Authentication required"; with
+   `auth.type: oauth-personal` it emits an ordinary Google OAuth URL with a
+   **loopback redirect**, which is the one interactive step and the one thing a
+   host with no inbound route cannot complete unaided. An SSH port-forward of
+   that port closes it. Full record in `docs/research/agy-cli.md`.
+
+   What remains as a cost rather than a blocker: **2.6 GB on disk** against the
+   CLI's 213 MB, and a second binary with its own update path and its own
+   login.
 6. **Identity risk returns.** ADR 0021 retired the stateful pool partly for
-   drift. Agent mode closed that in a ten-turn measurement; a session that
-   lives for days is a longer exposure than the test that cleared it.
+   drift. The warm A/B of 2026-09-13 is now a **second independent run in which
+   identity held in both modes** at all three probes, so this is the weakest
+   remaining objection.
 7. **This is elective surgery on the component every bot depends on.** Six
    bots answer today.
+
+### How the operator prices these
+
+Stated 2026-09-13: **outages are acceptable.** That is not a detail; it
+discounts items 3, 4 and 7 almost to nothing, since each of them is an
+availability cost rather than a correctness one. What survives at full weight
+is item 2, handing context bounding to a closed-source compaction we do not
+control, and the residue of item 5, which is size and a second thing to keep
+logged in.
+
+The plan should therefore be read with availability risk priced low and
+architecture priced high, which is the opposite of how the cost list above was
+originally weighted.
 
 ## The alternative this plan is measured against
 
@@ -218,7 +247,25 @@ operator's stated grievance is gone: nothing is cut at 6000 characters any
 more. Everything after that is architecture, not a fix.
 
 Naming this honestly matters, because Moves 2 and 3 are worth doing for the
-shape of the system, not because anything is currently broken.
+shape of the system, not because anything is currently broken. It is however a
+weaker alternative than it was when first written: 3b has since been shown
+reachable, and the operator has priced the availability risk that made "stop
+here" attractive at close to zero.
+
+## What cannot be decided by experiment, and why
+
+Two synthetic A/B runs have now failed to reproduce the production prompt
+cache: zero cache reads in both modes on both occasions, against 67% of turns
+hitting in production over the same week. The difference is repetition over
+days, which no priming turn reproduces. So the cost comparison between a
+stateless and a stateful back end **cannot be settled in a laboratory**, and
+neither the `+155%` of 2026-09-10 nor the `+587%` of 2026-09-13 should be cited
+as if it could.
+
+The measurement that would settle it is one production bot on `--stateful` for
+a week, compared against its own history on its own traffic. With outages
+acceptable, that experiment is cheap to run and is the obvious next step before
+Move 3 is chosen.
 
 ## Decision needed
 
