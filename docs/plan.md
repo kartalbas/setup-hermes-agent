@@ -193,6 +193,9 @@ when the operator says so.
 - [ ] Alarms via cron monitors: a unit restarted unexpectedly (Admin chat), a CI run on main failed (GitHub chat), the API balance below a threshold (Teams message, not only the footer)
 - [ ] Weekly `check-updates` and a nightly `tests/run.sh` by the Admin bot
 
+**Operator idea, 2026-09-14 — remember, not build yet**
+- [ ] One **status + settings page** for every integration we run against: M365 (Graph/Planner, the mail relay's device-flow OAuth), Google (the assistant's OAuth), Claude / agy (the subscription login, the ACP token), GitHub (the PAT), Teams, the tunnel. Show connection health and drive the interactive connects (OAuth flows, device codes) that today run as `journalctl -f` + terminal paste-back. Open: extend the hermes `dashboard` via its plugin system vs. a small standalone connect/status page. NOT a general form over the provisioner config — that duplicates `libs/20-config.sh` and the Admin bot + `opsctl` already are the talk-to-change path. Stays behind the LAN/loopback, never public. The narrow, high-value piece is the connect/status view.
+
 **Housekeeping already listed above, restated**
 - [ ] Retire a bot removed from BOTS (Azure bot, Entra app, DNS, unit, profile); replies as the alias; per-bot icons; dashboard over TLS; the second VM end to end
 
