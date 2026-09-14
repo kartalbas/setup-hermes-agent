@@ -378,3 +378,35 @@ process never goes away.
 This is the fact that most changes the bridge's shape. The `Pool` that keyed
 processes by (conversation, model, toolset) collapses to a session table keyed
 by conversation, in front of one long-lived subprocess.
+
+## Provisioning the ACP backend (what the installer defers to)
+
+`AGY_SHIM_BACKEND=acp` needs two things the agyshim module deliberately does
+NOT create for you — one is 2 GB, the other is a credential:
+
+1. **The server binary** at `AGY_SHIM_ACP_SERVER` (default
+   `/usr/local/lib/hermes-provisioner/agy_acp_server.par`). Fetch the linux-x64
+   archive named in the registry index
+   (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`,
+   entry `antigravity-acp`, `distribution.binary.linux-x86_64.archive` — a
+   `dl.google.com` URL, ~650 MB), unzip it (`agy_acp_server.par` ~1.8 GB and
+   `localharness_external` ~123 MB), place `agy_acp_server.par` at the path,
+   `chmod +x`, own it by the service account. Pin the sha you downloaded.
+
+2. **The OAuth token** at `AGY_SHIM_ACP_TOKEN` (default
+   `~/.gemini/antigravity-acp/acp_token.json`, 0600). Either run the server's
+   own OAuth flow (`auth.type: oauth-personal` in
+   `~/.gemini/antigravity-acp/settings.json`; it prints a Google URL with a
+   loopback redirect — reachable over an SSH port-forward of that port), or,
+   because the ACP server and the `agy` CLI share one OAuth client, seed it
+   from the CLI's own refresh token as a `google-auth` authorized-user file:
+   `{type: "authorized_user", client_id, client_secret, refresh_token, scopes}`
+   with `client_id`/`client_secret` the installed-app pair the server binary
+   ships and `refresh_token` copied from
+   `~/.gemini/antigravity-cli/antigravity-oauth-token`. No access token — the
+   first `session/new` refreshes. This is a shortcut, and it breaks if Google
+   rotates the client secret or the token is revoked; the fallback is the
+   interactive flow above.
+
+Both are one-time. The server process is then shared by every bot, so the
+2 GB and the token are a single fixed cost, not per bot.

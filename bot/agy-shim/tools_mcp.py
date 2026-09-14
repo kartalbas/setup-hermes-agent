@@ -177,7 +177,12 @@ class Server:
 
 
 if __name__ == "__main__":
+    # The directory holding tools.json. With one CLI process per conversation
+    # (print mode) that is the process's own cwd. With ONE ACP server process
+    # serving every bot, each session must point its own MCP subprocess at its
+    # own tools.json, so the bridge passes the directory per session through
+    # AGY_TOOLS_DIR; cwd stays the fallback.
     try:
-        Server(os.getcwd()).serve()
+        Server(os.environ.get("AGY_TOOLS_DIR") or os.getcwd()).serve()
     except KeyboardInterrupt:
         pass

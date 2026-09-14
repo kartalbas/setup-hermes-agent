@@ -1,6 +1,6 @@
 # 0027 — The bridge becomes a transport, and context management moves out of it
 
-Date: 2026-09-12 · Status: **accepted; moves 1 and 2 shipped 2026-09-13 (`5c225c0`), move 3 decided for 3b the same evening** · Supersedes part of ADR 0021, refines ADR 0024
+Date: 2026-09-12 · Status: **accepted; moves 1 and 2 shipped 2026-09-13 (`5c225c0`), move 3 (3b, the ACP backend) implemented 2026-09-14 behind `AGY_SHIM_BACKEND` (default still `print`); flipping production to `acp` is the operator's install step** · Supersedes part of ADR 0021, refines ADR 0024
 
 **The yardstick, stated by the operator on 2026-09-13:** the quality of a real API,
 reached through the subscription CLI. No API key for any bot but the Secretary,

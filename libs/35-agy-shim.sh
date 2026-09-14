@@ -23,6 +23,7 @@ agyshim_apply() {
 
     local before=$CHANGE_COUNT
     _agyshim_check_cli
+    _agyshim_check_acp
     _agyshim_install_script
     _agyshim_tools_server
     _agyshim_auth_token
@@ -43,6 +44,46 @@ agyshim_tools_script_path() { printf '%s/tools_mcp.py' "${AGY_SHIM_LIB_DIR}"; }
 # ---------------------------------------------------------------------------
 # The CLI must exist and be signed in AS THE SERVICE ACCOUNT
 # ---------------------------------------------------------------------------
+# When the ACP backend is chosen (ADR 0027 move 3), the bridge does not drive
+# the agy CLI — it drives a separate agy_acp_server binary with its own OAuth
+# token. Both are large and the token handover is deliberate, so this does NOT
+# fetch 2.6 GB or seed a credential on its own: it checks the two are present
+# and, when they are not, says exactly how to put them there and defers. The
+# download URL and the token derivation are in docs/research/agy-cli.md.
+_agyshim_check_acp() {
+    [[ ${AGY_SHIM_BACKEND} == acp ]] || return 0
+    local user=${SERVICE_USER:-$(id -un)} home
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+    [[ -n $home ]] || home=$HOME
+    local token=${AGY_SHIM_ACP_TOKEN/\$HOME/$home}
+
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] backend=acp: would require ${AGY_SHIM_ACP_SERVER} and the token ${token}"
+        return 0
+    fi
+
+    if [[ ! -x ${AGY_SHIM_ACP_SERVER} ]]; then
+        log_error "backend=acp but the ACP server is not at ${AGY_SHIM_ACP_SERVER}"
+        log_error "  It is a ~1.9 GB extract of Google's official agy_acp_server (see"
+        log_error "  docs/research/agy-cli.md for the dl.google.com URL and the sha), placed"
+        log_error "  and made executable there, owned by ${user}."
+        defer_failure "bridge: backend=acp, ACP server binary missing at ${AGY_SHIM_ACP_SERVER}"
+        return 0
+    fi
+    log_ok "ACP server present: ${AGY_SHIM_ACP_SERVER}"
+
+    if [[ ! -s ${token} ]]; then
+        log_error "backend=acp but no OAuth token at ${token}"
+        log_error "  The server authenticates with its own token. Either sign in through its"
+        log_error "  OAuth flow, or hand it the agy CLI's refresh token (same Google client);"
+        log_error "  docs/research/agy-cli.md records the derivation. The file must be 0600,"
+        log_error "  owned by ${user}."
+        defer_failure "bridge: backend=acp, ACP token missing at ${token}"
+        return 0
+    fi
+    log_ok "ACP token present for ${user}"
+}
+
 _agyshim_check_cli() {
     local user=${SERVICE_USER:-$(id -un)}
     local found=""
@@ -297,6 +338,7 @@ ExecStart=${py} $(agyshim_script_path) \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
     --compact-at ${AGY_SHIM_COMPACT_AT} \\
+    --backend ${AGY_SHIM_BACKEND}$([[ ${AGY_SHIM_BACKEND} == acp ]] && printf ' \\\n    --acp-server %s' "$AGY_SHIM_ACP_SERVER") \\
     ${AGY_SHIM_MODEL_ALIASES:+\\
     --model-aliases ${AGY_SHIM_MODEL_ALIASES}}
 Restart=always

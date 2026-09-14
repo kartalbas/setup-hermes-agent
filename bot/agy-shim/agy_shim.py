@@ -1560,6 +1560,297 @@ def startup_checks(args) -> None:
         log.warning("could not read the CLI model catalog: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# ACP backend (ADR 0027, move 3).
+#
+# The alternative to the print-mode Pool above, chosen by --backend acp. One
+# long-lived agy_acp_server process carries every bot, each bot a session
+# (measured 2026-09-13: sessions multiplex on one process, docs/research).
+#
+# The gateway still speaks OpenAI chat completions and still sends the whole
+# history on every request, so a session is a pure optimisation: while we hold
+# a live one we send only the new turn; when we do not — first contact, or
+# after a restart — we reseed it from the history the gateway sent. That makes
+# the vendor's "session unrecoverable after a restart" bug (#997) a non-event:
+# a lost session is simply remade from history.
+#
+# "The caller's tools are the only tools" is enforced by the client, by
+# protocol: every tool call arrives as session/request_permission, and this
+# code allows only the tools server (calls titled `<server>_*`) and refuses the
+# built-ins. An allowed such call IS the caller's function and becomes the
+# turn's decision — the same shape decision_to_calls renders for the print
+# path. ACP reports no per-turn tokens, so usage is empty; consumption is read
+# in aggregate through `agy -p /usage`.
+# ---------------------------------------------------------------------------
+
+
+class AcpError(RuntimeError):
+    pass
+
+
+class _Turn:
+    """What one session/prompt produces while it runs: the streamed text, and
+    the caller-function calls the client allowed. Filled by the reader thread,
+    read by complete() once the prompt's response arrives."""
+
+    def __init__(self):
+        self.text: list[str] = []
+        self.calls: list[dict] = []
+
+
+class AcpClient:
+    """The JSON-RPC transport to one agy_acp_server process: a writer under a
+    lock, a reader thread that routes responses by id and everything else by
+    session, and a fixed permission policy."""
+
+    def __init__(self, server_path: str):
+        self.server_path = server_path
+        self.proc: subprocess.Popen | None = None
+        self.started = False
+        self._wlock = threading.Lock()
+        self._id = 0
+        self._pending: dict[int, list] = {}      # id -> [Event, message]
+        self._turns: dict[str, _Turn] = {}        # sessionId -> the live turn
+
+    def start(self):
+        self.started = True
+        # --uid= skips the privilege drop the server does by default (to a
+        # group "nobody" that Debian/Ubuntu do not ship); the registry entry
+        # for linux carries the same argument for the same reason.
+        self.proc = subprocess.Popen(
+            [self.server_path, "--uid="],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1)
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        self.request("initialize", {"protocolVersion": 1, "clientCapabilities": {
+            "fs": {"readTextFile": False, "writeTextFile": False}}}, timeout=60)
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def close(self):
+        if self.proc:
+            try:
+                self.proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # -- io ----------------------------------------------------------------
+    def _write(self, obj: dict):
+        with self._wlock:
+            if not self.proc or self.proc.stdin is None:
+                raise AcpError("the ACP server is not running")
+            self.proc.stdin.write(json.dumps(obj) + "\n")
+            self.proc.stdin.flush()
+
+    def request(self, method: str, params: dict, timeout: float = 300.0) -> dict:
+        with self._wlock:
+            self._id += 1
+            rid = self._id
+        ev = threading.Event()
+        self._pending[rid] = [ev, None]
+        self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        if not ev.wait(timeout):
+            self._pending.pop(rid, None)
+            raise TimeoutError(f"no response to {method} within {timeout}s")
+        _, msg = self._pending.pop(rid)
+        if "error" in (msg or {}):
+            raise AcpError(f"{method}: {(msg or {}).get('error')}")
+        return (msg or {}).get("result") or {}
+
+    def _read_loop(self):
+        for line in self.proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            self._dispatch(msg)
+        # stdout closed: wake every waiter so no request hangs on a dead server
+        for slot in list(self._pending.values()):
+            slot[1] = {"error": {"message": "the ACP server exited"}}
+            slot[0].set()
+
+    def _dispatch(self, msg: dict):
+        mid, method = msg.get("id"), msg.get("method")
+        if mid is not None and method is None:              # a response to us
+            slot = self._pending.get(mid)
+            if slot:
+                slot[1] = msg
+                slot[0].set()
+            return
+        if method == "session/update":
+            turn = self._turns.get((msg.get("params") or {}).get("sessionId"))
+            if turn is not None:
+                u = (msg["params"].get("update") or {})
+                if u.get("sessionUpdate") == "agent_message_chunk":
+                    turn.text.append((u.get("content") or {}).get("text", ""))
+            return
+        if method == "session/request_permission" and mid is not None:
+            self._permit(msg)
+            return
+        if mid is not None:
+            # Any other request FROM the agent must be answered or it hangs; we
+            # granted no capabilities, so decline it.
+            self._write({"jsonrpc": "2.0", "id": mid,
+                         "error": {"code": -32601, "message": "unsupported"}})
+
+    def _permit(self, msg: dict):
+        params = msg["params"]
+        tc = params.get("toolCall") or {}
+        title = tc.get("title") or ""
+        allow = title.startswith(TOOLS_SERVER_NAME + "_")
+        if allow:
+            turn = self._turns.get(params.get("sessionId"))
+            if turn is not None:
+                raw = tc.get("rawInput") or {}
+                args = raw.get("arguments") if isinstance(raw.get("arguments"), dict) else raw
+                turn.calls.append({"name": title[len(TOOLS_SERVER_NAME) + 1:], "arguments": args or {}})
+        want = ("allow_once", "allow_always") if allow else ("reject_once", "reject_always")
+        opt = next((o for o in (params.get("options") or []) if o.get("kind") in want), None)
+        outcome = ({"outcome": "selected", "optionId": opt["optionId"]} if opt
+                   else {"outcome": "cancelled"})
+        self._write({"jsonrpc": "2.0", "id": msg["id"], "result": {"outcome": outcome}})
+
+    def prompt(self, sid: str, text: str, timeout: float) -> _Turn:
+        turn = _Turn()
+        self._turns[sid] = turn          # registered before the send, so no update is missed
+        try:
+            self.request("session/prompt",
+                         {"sessionId": sid, "prompt": [{"type": "text", "text": text}]}, timeout)
+        finally:
+            self._turns.pop(sid, None)
+        return turn
+
+
+def acp_decision(calls: list[dict]) -> dict | None:
+    """The turn's caller-function calls in the shape decision_to_calls reads,
+    or None when the model answered in prose."""
+    if not calls:
+        return None
+    if len(calls) == 1:
+        return {"type": "tool_call", "name": calls[0]["name"], "arguments": calls[0]["arguments"]}
+    return {"type": "tool_calls",
+            "calls": [{"name": c["name"], "arguments": c["arguments"]} for c in calls]}
+
+
+class _AcpSession:
+    __slots__ = ("sid", "workdir", "model", "turns", "seeded", "lock")
+
+    def __init__(self, sid, workdir, model):
+        self.sid, self.workdir, self.model = sid, workdir, model
+        self.turns, self.seeded = 0, False
+        self.lock = threading.Lock()
+
+
+class AcpPool:
+    """The print-mode Pool's counterpart: same complete()/stats() surface, one
+    server, a session per conversation, reseeded from the gateway's history
+    whenever no live session is held."""
+
+    def __init__(self, args):
+        self.args = args
+        self.lock = threading.Lock()
+        self.sessions: dict[str, _AcpSession] = {}
+        self.slots = threading.BoundedSemaphore(args.max_concurrent)
+        self.restarts = 0
+        self.procs: dict = {}          # main()'s shutdown loop over .procs then no-ops
+        self.client = AcpClient(args.acp_server)
+        self.client.start()
+
+    def complete(self, key, history, message, system="", model="",
+                 images=None, tool_names=None, tools=None, pending=""):
+        if not self.slots.acquire(timeout=self.args.queue_timeout):
+            raise TimeoutError("too many conversations in flight")
+        try:
+            self._ensure_alive()
+            sess = self._session(key, model, tools or [])
+            with sess.lock:
+                name = identity_name(system)
+                if sess.seeded:
+                    text = live_block(message, pending, name)
+                else:
+                    parts = [IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL]
+                    if history:
+                        parts.append(TRANSCRIPT_HEAD + "\n\n".join(history) + TRANSCRIPT_TAIL)
+                    parts.append(live_block(message, pending, name))
+                    text = "\n\n".join(parts)
+                if images:
+                    text = place_images(text, images, sess.workdir)
+                started = time.time()
+                turn = self.client.prompt(sess.sid, text, self.args.timeout)
+                sess.seeded = True
+                sess.turns += 1
+            content = "".join(turn.text).strip()
+            decision = acp_decision(turn.calls)
+            log.info("acp [%s] session=%s turn=%d calls=%d %.1fs", key[:8], sess.sid[:8],
+                     sess.turns, len(turn.calls), time.time() - started)
+            return content, {}, {"turns": sess.turns, "model": sess.model, "decision": decision}
+        finally:
+            self.slots.release()
+
+    def _ensure_alive(self):
+        if self.client.alive():
+            return
+        with self.lock:
+            if self.client.alive():
+                return
+            self.restarts += 1
+            log.warning("the ACP server had exited; restarting and dropping %d session(s) "
+                        "(they reseed from history on next use)", len(self.sessions))
+            self.sessions.clear()
+            self.client = AcpClient(self.args.acp_server)
+            self.client.start()
+
+    def _session(self, key: str, model: str, tools: list) -> _AcpSession:
+        with self.lock:
+            sess = self.sessions.get(key)
+            if sess is not None:
+                return sess
+        model = model or self.args.models[0]
+        workdir = os.path.join(self.args.workdir,
+                               "acp-" + hashlib.sha256(key.encode()).hexdigest()[:16])
+        os.makedirs(workdir, mode=0o700, exist_ok=True)
+        write_tools_file(workdir, tools)
+        servers = [{"name": TOOLS_SERVER_NAME, "command": sys.executable,
+                    "args": [TOOLS_SERVER_SCRIPT],
+                    "env": [{"name": "AGY_TOOLS_DIR", "value": workdir}]}]
+        res = self.client.request("session/new", {"cwd": workdir, "mcpServers": servers},
+                                  timeout=self.args.timeout)
+        sid = res.get("sessionId")
+        if not sid:
+            raise AcpError(f"session/new returned no sessionId: {res}")
+        self._set_model(sid, res.get("configOptions") or [], model)
+        sess = _AcpSession(sid, workdir, model)
+        with self.lock:
+            self.sessions[key] = sess
+        log.info("acp new session %s for %s (model %s)", sid[:8], key[:8], model)
+        return sess
+
+    def _set_model(self, sid: str, config_options: list, model: str):
+        for c in config_options:
+            if any((o or {}).get("value") == model for o in c.get("options") or []):
+                cid = c.get("id")
+                if not cid:
+                    return
+                try:
+                    self.client.request("session/set_config_option",
+                                        {"sessionId": sid, "configId": cid, "value": model}, 60)
+                except (AcpError, TimeoutError) as exc:
+                    log.warning("could not set model %s on session %s: %s", model, sid[:8], exc)
+                return
+        log.warning("the ACP server does not offer model %s; using its default", model)
+
+    def close(self):
+        self.client.close()
+
+    def stats(self) -> dict:
+        return {"mode": "acp", "sessions": len(self.sessions), "restarts": self.restarts,
+                "server": os.path.basename(self.args.acp_server)}
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     p.add_argument("--binary", default=os.environ.get("AGY_SHIM_BINARY", "agy"))
@@ -1604,6 +1895,14 @@ def main() -> int:
                    default=os.environ.get("AGY_SHIM_STATELESS", "true").lower() not in ("0", "false", "no"),
                    help="keep one CLI conversation per chat (legacy); default is stateless: "
                         "a fresh CLI conversation per request, so nothing drifts")
+    p.add_argument("--backend", choices=("print", "acp"),
+                   default=os.environ.get("AGY_SHIM_BACKEND", "print"),
+                   help="print: drive the agy CLI in stream-json print mode (the Pool above). "
+                        "acp: one long-lived agy_acp_server, a session per conversation (ADR 0027 move 3)")
+    p.add_argument("--acp-server",
+                   default=os.environ.get("AGY_SHIM_ACP_SERVER",
+                                          "/usr/local/lib/hermes-provisioner/agy_acp_server.par"),
+                   help="path to the official agy_acp_server binary (used only with --backend acp)")
     args = p.parse_args()
     args.extra_args = args.extra_args.split() if args.extra_args else []
     args.models = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -1620,8 +1919,12 @@ def main() -> int:
 
     # Fail here rather than on the first request, which would surface to the
     # user as the assistant being broken for no visible reason.
-    if not shutil.which(args.binary):
+    if args.backend == "print" and not shutil.which(args.binary):
         log.error("cannot find %r on PATH — is the CLI installed for this user?", args.binary)
+        return 1
+    if args.backend == "acp" and not os.path.exists(args.acp_server):
+        log.error("the ACP server is not at %s; set AGY_SHIM_ACP_SERVER or install it "
+                  "(docs/research/agy-cli.md names the download)", args.acp_server)
         return 1
 
     token = ""
@@ -1645,14 +1948,17 @@ def main() -> int:
     # cannot route the caller's functions is broken for every bot here, and the
     # place to say that is startup, where the installer sees it, not the first
     # turn that happens to need a tool.
-    if not tools_server_configured():
+    if args.backend == "print" and not tools_server_configured():
         log.error("the caller's tools server is not registered with the CLI, and since ADR 0027 "
                   "there is no text fallback. Run the installer: it writes mcp_config.json and "
                   "the permissions.allow rule the CLI needs to call %s.", TOOLS_SERVER_NAME)
         return 1
 
-    startup_checks(args)
-    Handler.pool = Pool(args)
+    if args.backend == "acp":
+        Handler.pool = AcpPool(args)
+    else:
+        startup_checks(args)
+        Handler.pool = Pool(args)
     Handler.models = args.models
     Handler.aliases = args.aliases
     Handler.unknown_model = args.unknown_model
@@ -1664,15 +1970,22 @@ def main() -> int:
     log.info("models (default first): %s", ", ".join(args.models))
     if args.aliases:
         log.info("aliases: %s", ", ".join(f"{k}->{v}" for k, v in args.aliases.items()))
-    log.info("unknown models: %s | max %d concurrent | compact at %d tokens | transcript sent whole",
-             args.unknown_model, args.max_concurrent, args.compact_at)
-    log.info("bridge %s | /v1 %s | up to %d warm process(es)", BRIDGE_VERSION,
-             "requires a bearer token" if token else "open (loopback only)", args.max_spares)
+    log.info("unknown models: %s | max %d concurrent | backend %s",
+             args.unknown_model, args.max_concurrent, args.backend)
+    if args.backend == "acp":
+        log.info("bridge %s | /v1 %s | acp server %s", BRIDGE_VERSION,
+                 "requires a bearer token" if token else "open (loopback only)",
+                 os.path.basename(args.acp_server))
+    else:
+        log.info("bridge %s | /v1 %s | up to %d warm process(es)", BRIDGE_VERSION,
+                 "requires a bearer token" if token else "open (loopback only)", args.max_spares)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("shutting down")
     finally:
+        if hasattr(Handler.pool, "close"):
+            Handler.pool.close()
         for proc in list(Handler.pool.procs.values()):
             proc.close()
     return 0

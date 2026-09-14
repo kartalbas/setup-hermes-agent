@@ -109,6 +109,15 @@ AGY_SHIM_MAX_PROCESSES=6
 AGY_SHIM_MAX_CONCURRENT=3
 AGY_SHIM_IDLE_TIMEOUT=900
 AGY_SHIM_COMPACT_AT=120000
+# Which backend answers a request (ADR 0027 move 3).
+#   print — drive the agy CLI in stream-json mode, a process per conversation (default)
+#   acp   — one long-lived agy_acp_server, a session per conversation: one process for
+#           every bot, context that survives a restart, no per-request history resend.
+# "acp" needs the server binary and its OAuth token in place; the agyshim module checks
+# and tells you what is missing (it does not download 2 GB or seed a credential for you).
+AGY_SHIM_BACKEND="print"
+AGY_SHIM_ACP_SERVER="/usr/local/lib/hermes-provisioner/agy_acp_server.par"
+AGY_SHIM_ACP_TOKEN="${HOME}/.gemini/antigravity-acp/acp_token.json"
 # Characters of transcript one request may carry (ADR 0026). A stateless request
 # holds the whole chat; the newest entries fit this, the rest are dropped with a
 # count, so the question at the end stays the loudest thing in the request.

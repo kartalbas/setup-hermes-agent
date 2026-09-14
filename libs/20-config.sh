@@ -109,6 +109,15 @@ config_defaults() {
     : "${AGY_SHIM_MAX_PROCESSES:=6}"
     : "${AGY_SHIM_IDLE_TIMEOUT:=900}"
     : "${AGY_SHIM_COMPACT_AT:=120000}"
+    # Which backend answers a request. "print" drives the agy CLI in
+    # stream-json print mode (a process per conversation). "acp" runs one
+    # long-lived agy_acp_server and gives each conversation a session
+    # (ADR 0027 move 3): one process for every bot, context that survives a
+    # restart, no per-request history resend. "acp" needs the server binary
+    # and its OAuth token in place — the agyshim module checks and says so.
+    : "${AGY_SHIM_BACKEND:=print}"
+    : "${AGY_SHIM_ACP_SERVER:=${AGY_SHIM_LIB_DIR}/agy_acp_server.par}"
+    : "${AGY_SHIM_ACP_TOKEN:=${HOME}/.gemini/antigravity-acp/acp_token.json}"
     # Characters of transcript one request may carry. A stateless request holds
     # the whole chat, and a bot that researches fills it with tool output: the
     # newest entries fit this, the rest are dropped with a note, so the question
@@ -842,6 +851,8 @@ _validate_agyshim() {
     _validating agyshim || return 0
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
+    _check_enum AGY_SHIM_BACKEND "$AGY_SHIM_BACKEND" print acp
+    [[ $AGY_SHIM_BACKEND != acp ]] || _check_abs_path AGY_SHIM_ACP_SERVER "$AGY_SHIM_ACP_SERVER"
     [[ ${AGY_SHIM_MAX_SPARES:-} =~ ^[0-9]+$ ]] || _bad "AGY_SHIM_MAX_SPARES must be a number of processes (0 switches the warm pool off)"
     _check_agyshim_callers_carry_the_token
     _check_required AGY_SHIM_MODELS "$AGY_SHIM_MODELS" "the bridge needs an explicit model allowlist"
