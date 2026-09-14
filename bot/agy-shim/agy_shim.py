@@ -1617,8 +1617,11 @@ class AcpClient:
         # --uid= skips the privilege drop the server does by default (to a
         # group "nobody" that Debian/Ubuntu do not ship); the registry entry
         # for linux carries the same argument for the same reason.
+        # cwd is the server's own directory: it runs localharness_external, its
+        # companion binary, from beside itself, so the two are installed together.
         self.proc = subprocess.Popen(
             [self.server_path, "--uid="],
+            cwd=os.path.dirname(self.server_path) or ".",
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1)
         threading.Thread(target=self._read_loop, daemon=True).start()

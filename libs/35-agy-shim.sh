@@ -23,7 +23,7 @@ agyshim_apply() {
 
     local before=$CHANGE_COUNT
     _agyshim_check_cli
-    _agyshim_check_acp
+    _agyshim_acp
     _agyshim_install_script
     _agyshim_tools_server
     _agyshim_auth_token
@@ -40,48 +40,109 @@ AGY_SHIM_BINARY_RESOLVED=""
 agyshim_unit_name() { printf '%s-bridge' "$(shared_service_name)"; }
 agyshim_script_path() { printf '%s/agy_shim.py' "${AGY_SHIM_LIB_DIR}"; }
 agyshim_tools_script_path() { printf '%s/tools_mcp.py' "${AGY_SHIM_LIB_DIR}"; }
+agyshim_script_dir()        { printf '%s' "${AGY_SHIM_LIB_DIR}"; }
+agyshim_acp_seed_path()     { printf '%s/acp_seed_token.py' "${AGY_SHIM_LIB_DIR}"; }
 
 # ---------------------------------------------------------------------------
 # The CLI must exist and be signed in AS THE SERVICE ACCOUNT
 # ---------------------------------------------------------------------------
-# When the ACP backend is chosen (ADR 0027 move 3), the bridge does not drive
-# the agy CLI — it drives a separate agy_acp_server binary with its own OAuth
-# token. Both are large and the token handover is deliberate, so this does NOT
-# fetch 2.6 GB or seed a credential on its own: it checks the two are present
-# and, when they are not, says exactly how to put them there and defers. The
-# download URL and the token derivation are in docs/research/agy-cli.md.
-_agyshim_check_acp() {
+# Pinned ACP server artifact (ADR 0027 move 3). Version, URL and both sums are
+# bumped deliberately; a mismatch stops the install rather than trusting a
+# binary that changed under us. Derived 2026-09-13 from the registry index,
+# docs/research/agy-cli.md.
+readonly _AGYSHIM_ACP_VERSION="1.1.1"
+readonly _AGYSHIM_ACP_URL="https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip"
+readonly _AGYSHIM_ACP_ZIP_SHA="38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df"
+readonly _AGYSHIM_ACP_PAR_SHA="267affa691085fe5d78895e34dffe723d6528713e01bd37ed40feb7b43d1f4c7"
+
+# The ACP backend (ADR 0027 move 3) does not drive the agy CLI; it drives a
+# separate agy_acp_server binary with its own OAuth token. This installs both,
+# reproducibly, so `install.sh` provisions the acp backend end to end — no file
+# placed by hand. The download is ~650 MB and happens once; the token is DERIVED
+# from the CLI's own sign-in (same OAuth client), so no second interactive step
+# is added beyond the CLI sign-in the print backend already needs.
+_agyshim_acp() {
     [[ ${AGY_SHIM_BACKEND} == acp ]] || return 0
+    _agyshim_acp_server
+    _agyshim_acp_token
+}
+
+_agyshim_acp_token_path() {          # -> the token path under the service account's home
+    if [[ -n ${AGY_SHIM_ACP_TOKEN:-} ]]; then printf '%s' "$AGY_SHIM_ACP_TOKEN"; return; fi
     local user=${SERVICE_USER:-$(id -un)} home
-    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
-    [[ -n $home ]] || home=$HOME
-    local token=${AGY_SHIM_ACP_TOKEN/\$HOME/$home}
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6); [[ -n $home ]] || home=$HOME
+    printf '%s/.gemini/antigravity-acp/acp_token.json' "$home"
+}
 
+_agyshim_acp_server() {
+    local dest=${AGY_SHIM_ACP_SERVER} dir=${AGY_SHIM_ACP_SERVER%/*}
+    local user=${SERVICE_USER:-$(id -un)} grp=${SERVICE_GROUP:-${SERVICE_USER:-$(id -un)}}
+
+    if [[ -x $dest ]] && printf '%s  %s' "$_AGYSHIM_ACP_PAR_SHA" "$dest" | sha256sum -c --quiet - 2>/dev/null; then
+        log_skip "ACP server ${_AGYSHIM_ACP_VERSION} present at ${dest}"
+        return 0
+    fi
     if [[ $DRY_RUN == true ]]; then
-        log_info "[dry-run] backend=acp: would require ${AGY_SHIM_ACP_SERVER} and the token ${token}"
+        log_info "[dry-run] download the ACP server ${_AGYSHIM_ACP_VERSION} (~650 MB), verify both sums, install ${dest} and localharness_external beside it"
         return 0
     fi
 
-    if [[ ! -x ${AGY_SHIM_ACP_SERVER} ]]; then
-        log_error "backend=acp but the ACP server is not at ${AGY_SHIM_ACP_SERVER}"
-        log_error "  It is a ~1.9 GB extract of Google's official agy_acp_server (see"
-        log_error "  docs/research/agy-cli.md for the dl.google.com URL and the sha), placed"
-        log_error "  and made executable there, owned by ${user}."
-        defer_failure "bridge: backend=acp, ACP server binary missing at ${AGY_SHIM_ACP_SERVER}"
-        return 0
+    have_cmd unzip || { log_info "installing unzip (needed to extract the ACP server)"; DEBIAN_FRONTEND=noninteractive run apt-get install -y unzip; }
+    require_cmd curl
+    ensure_dir "$dir" 0755
+    local tmp; tmp=$(mktemp -d)
+    log_info "downloading the ACP server ${_AGYSHIM_ACP_VERSION} (~650 MB) — one time"
+    if ! curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-all-errors               --connect-timeout 10 --max-time 1800 -o "${tmp}/acp.zip" "$_AGYSHIM_ACP_URL"; then
+        rm -rf "$tmp"; die "could not download the ACP server from ${_AGYSHIM_ACP_URL}"
     fi
-    log_ok "ACP server present: ${AGY_SHIM_ACP_SERVER}"
+    printf '%s  %s' "$_AGYSHIM_ACP_ZIP_SHA" "${tmp}/acp.zip" | sha256sum -c --quiet - ||
+        { rm -rf "$tmp"; die "ACP server archive checksum mismatch (pinned ${_AGYSHIM_ACP_VERSION}); refusing a changed binary"; }
+    unzip -q -o "${tmp}/acp.zip" -d "$tmp" agy_acp_server.par localharness_external ||
+        { rm -rf "$tmp"; die "could not extract the ACP server archive"; }
+    printf '%s  %s' "$_AGYSHIM_ACP_PAR_SHA" "${tmp}/agy_acp_server.par" | sha256sum -c --quiet - ||
+        { rm -rf "$tmp"; die "extracted agy_acp_server.par checksum mismatch"; }
+    # Both together: the server runs localharness_external from beside itself.
+    run install -m 0755 -o "$user" -g "$grp" "${tmp}/agy_acp_server.par" "$dest"
+    run install -m 0755 -o "$user" -g "$grp" "${tmp}/localharness_external" "${dir}/localharness_external"
+    rm -rf "$tmp"
+    mark_changed
+    log_ok "ACP server ${_AGYSHIM_ACP_VERSION} installed at ${dest}"
+}
 
-    if [[ ! -s ${token} ]]; then
-        log_error "backend=acp but no OAuth token at ${token}"
-        log_error "  The server authenticates with its own token. Either sign in through its"
-        log_error "  OAuth flow, or hand it the agy CLI's refresh token (same Google client);"
-        log_error "  docs/research/agy-cli.md records the derivation. The file must be 0600,"
-        log_error "  owned by ${user}."
-        defer_failure "bridge: backend=acp, ACP token missing at ${token}"
+_agyshim_acp_token() {
+    local user=${SERVICE_USER:-$(id -un)} grp=${SERVICE_GROUP:-${SERVICE_USER:-$(id -un)}} home token cli
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6); [[ -n $home ]] || home=$HOME
+    token=$(_agyshim_acp_token_path)
+    cli="${home}/.gemini/antigravity-cli/antigravity-oauth-token"
+
+    if [[ -s $token ]]; then
+        log_skip "ACP token present at ${token}"
         return 0
     fi
-    log_ok "ACP token present for ${user}"
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] derive the ACP token at ${token} from the CLI sign-in"
+        return 0
+    fi
+    if [[ ! -s $cli ]]; then
+        log_error "backend=acp needs an OAuth token for the ACP server, and the agy CLI is not"
+        log_error "  signed in for ${user} yet (no ${cli}). Sign the CLI in once:"
+        log_error "    sudo -u ${user} -H ${AGY_SHIM_BINARY}"
+        log_error "  then re-run; the ACP token is derived from that sign-in, no second login."
+        defer_failure "bridge: backend=acp, ACP token missing and the CLI is not signed in"
+        return 0
+    fi
+
+    ensure_dir "$(dirname "$token")" 0700 "${user}:${grp}"
+    # Same OAuth client as the CLI, so the CLI's refresh token is one this
+    # client issued and the server may use it; the installed-app secret is
+    # shipped in the server binary. Reuses the ONE sign-in — see
+    # docs/research/agy-cli.md. Runs as the service account, writing 0600.
+    if ! runuser -u "$user" -- python3 "$(agyshim_acp_seed_path)" "$cli" "$AGY_SHIM_ACP_SERVER" "$token"; then
+        defer_failure "bridge: could not derive the ACP token at ${token}"
+        return 0
+    fi
+    mark_changed
+    log_ok "ACP token derived for ${user} at ${token}"
 }
 
 _agyshim_check_cli() {
@@ -158,6 +219,10 @@ _agyshim_install_script() {
     local tools_src="${SCRIPT_DIR}/bot/agy-shim/tools_mcp.py"
     [[ -f $tools_src ]] || die "the tools server is missing at ${tools_src}"
     write_file "$(agyshim_tools_script_path)" 0755 <<<"$(cat "$tools_src")"
+    # The ACP backend's token seeder, used only when AGY_SHIM_BACKEND=acp; kept
+    # beside the bridge so a `--backend acp` run has it without a second module.
+    local seed_src="${SCRIPT_DIR}/bot/agy-shim/acp_seed_token.py"
+    [[ -f $seed_src ]] && write_file "$(agyshim_acp_seed_path)" 0755 <<<"$(cat "$seed_src")"
     # The installed bot's version, so a host can say which bot it runs.
     write_file "${AGY_SHIM_LIB_DIR}/VERSION" 0644 <<<"$(bot_version)"
 }

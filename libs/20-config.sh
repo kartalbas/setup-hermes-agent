@@ -117,7 +117,10 @@ config_defaults() {
     # and its OAuth token in place — the agyshim module checks and says so.
     : "${AGY_SHIM_BACKEND:=print}"
     : "${AGY_SHIM_ACP_SERVER:=${AGY_SHIM_LIB_DIR}/agy_acp_server.par}"
-    : "${AGY_SHIM_ACP_TOKEN:=${HOME}/.gemini/antigravity-acp/acp_token.json}"
+    # Where the ACP server keeps its OAuth token. Left empty so the agyshim
+    # module resolves it under the SERVICE account's home (~/.gemini/...),
+    # not under whoever ran the installer. Set it only to override the path.
+    : "${AGY_SHIM_ACP_TOKEN:=}"
     # Characters of transcript one request may carry. A stateless request holds
     # the whole chat, and a bot that researches fills it with tool output: the
     # newest entries fit this, the rest are dropped with a note, so the question
