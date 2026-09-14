@@ -98,6 +98,34 @@ class TranscriptFraming(unittest.TestCase):
         self.assertLess(text.index("=== CONVERSATION SO FAR"), text.index(agy_shim.LIVE_HEAD))
         self.assertIn("BACKGROUND ONLY", text)
 
+    def test_a_past_tool_result_is_capped_but_human_content_and_the_live_result_are_whole(self):
+        # The news-bot regression (2026-09-14): untrimmed scraped pages made an
+        # ACP session slow to a minute a turn. Past tool output is capped;
+        # mails and the live result are not.
+        huge = "H" * 200_000
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "M" * 50_000},                    # a long mail: whole
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "web_search", "arguments": "{}"}}]},
+            {"role": "tool", "name": "web_search", "content": huge},        # past result: capped
+            {"role": "user", "content": "die eigentliche Frage"},
+        ]
+        system, prior, last = agy_shim.split_history(messages)
+        joined = "\n\n".join(prior)
+        self.assertIn("M" * 50_000, joined)                                # the mail survives whole
+        self.assertNotIn("H" * agy_shim.PAST_TOOL_RESULT_CAP + "H", joined)  # the page is cut
+        self.assertIn("characters elided from a past tool result", joined)
+        self.assertEqual(last, "die eigentliche Frage")
+
+    def test_the_live_tool_result_is_never_capped(self):
+        huge = "H" * 200_000
+        messages = [{"role": "user", "content": "frage"},
+                    {"role": "tool", "name": "web_search", "content": huge}]   # last = live
+        _, _, last = agy_shim.split_history(messages)
+        self.assertIn(huge, last)
+        self.assertNotIn("elided", last)
+
     def test_a_tool_result_turn_restates_the_request_it_serves(self):
         text = agy_shim.transcript_message(
             ["user: did the president promise a payment?"],

@@ -1105,6 +1105,14 @@ TRANSCRIPT_HEAD = ("=== CONVERSATION SO FAR (oldest first) ===\n"
 TRANSCRIPT_TAIL = "\n=== END CONVERSATION ==="
 LIVE_HEAD = "=== THE MESSAGE TO ANSWER NOW ===\n"
 
+# A PAST tool result is machine output already consumed — a scraped page is
+# 100k characters and a research turn produces dozens. Kept whole they make a
+# session's context grow until every turn takes a minute (news bot, 2026-09-14).
+# So a past tool result is capped to its opening; the LIVE result (the one the
+# model is answering right now) and ALL human content — mails, messages — stay
+# whole. This caps machines, never the operator.
+PAST_TOOL_RESULT_CAP = 6000
+
 # NOTHING IS CUT HERE ANY MORE (ADR 0027, move 1).
 #
 # What used to stand here: a 6,000-character cap on every single entry and a
@@ -1273,12 +1281,17 @@ def split_history(messages: list[dict]) -> tuple[str, list[str], str]:
         if not text:
             continue
         role = m.get("role", "user")
+        is_last = i == len(messages) - 1
         # A tool result is not a user speaking; labelling it as one invites the
-        # model to answer the result instead of using it.
+        # model to answer the result instead of using it. A PAST one is capped —
+        # already consumed research must not dominate the context — while the
+        # live result (is_last) is whole, being what the model answers now.
         if role == "tool":
+            if not is_last and len(text) > PAST_TOOL_RESULT_CAP:
+                text = text[:PAST_TOOL_RESULT_CAP] + f"\n… [{len(text) - PAST_TOOL_RESULT_CAP} characters elided from a past tool result]"
             text = f"tool result ({m.get('name') or m.get('tool_call_id') or '?'}): {text}"
             role = "user"
-        if i == len(messages) - 1:
+        if is_last:
             last = text
         elif role == "system":
             system_parts.append(text)
@@ -1584,6 +1597,12 @@ def startup_checks(args) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Even with past tool output capped, a long-running session accumulates. After
+# this many turns it is retired and the next request reseeds a fresh one from
+# the (now bounded) history — one slow reseed instead of an ever-slower session.
+ACP_SESSION_TURN_LIMIT = 40
+
+
 class AcpError(RuntimeError):
     pass
 
@@ -1786,10 +1805,25 @@ class AcpPool:
                 turn = self.client.prompt(sess.sid, text, self.args.timeout)
                 sess.seeded = True
                 sess.turns += 1
+            if sess.turns >= ACP_SESSION_TURN_LIMIT:
+                with self.lock:
+                    if self.sessions.get(key) is sess:
+                        del self.sessions[key]
+                log.info("acp [%s] retired session %s after %d turns; next request reseeds",
+                         key[:8], sess.sid[:8], sess.turns)
             content = "".join(turn.text).strip()
             decision = acp_decision(turn.calls)
-            log.info("acp [%s] session=%s turn=%d calls=%d %.1fs", key[:8], sess.sid[:8],
-                     sess.turns, len(turn.calls), time.time() - started)
+            # The tools server tells the model to end a tool turn with the word
+            # "pending" (bot/agy-shim/tools_mcp.py). When we captured the call
+            # that IS the decision and this text is discarded. But if the model
+            # emits "pending" with no call we could capture, it must not reach
+            # the user as the answer — suppress the bare marker.
+            if not decision and content.lower() == "pending":
+                log.warning("acp [%s] bare 'pending' with no captured tool call; suppressing the marker", key[:8])
+                content = ""
+            log.info("acp [%s] session=%s turn=%d calls=%d %.1fs%s", key[:8], sess.sid[:8],
+                     sess.turns, len(turn.calls), time.time() - started,
+                     " chars=%d" % len(content) if content else "")
             return content, {}, {"turns": sess.turns, "model": sess.model, "decision": decision}
         finally:
             self.slots.release()

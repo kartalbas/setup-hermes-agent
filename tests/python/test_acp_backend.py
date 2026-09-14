@@ -189,6 +189,23 @@ class PoolComplete(unittest.TestCase):
         self.assertTrue(sent2["prompt_text"].rstrip().endswith("zweite Frage"))
         self.assertEqual(meta["decision"], {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}})
 
+    def test_a_bare_pending_marker_is_not_delivered_to_the_user(self):
+        import tempfile
+        turn = agy_shim._Turn(); turn.text = ["pending"]     # marker leaked, no captured call
+        pool, _ = self._pool(tempfile.mkdtemp(), turn)
+        content, _, meta = pool.complete("k", [], "frage", system="Your name is **P**.",
+                                         model="gemini-3.8-flash-high", tools=[])
+        self.assertEqual(content, "")
+        self.assertIsNone(meta["decision"])
+
+    def test_a_real_answer_that_happens_to_contain_pending_is_kept(self):
+        import tempfile
+        turn = agy_shim._Turn(); turn.text = ["Die Zahlung ist noch pending."]
+        pool, _ = self._pool(tempfile.mkdtemp(), turn)
+        content, _, _ = pool.complete("k", [], "frage", system="Your name is **P**.",
+                                      model="gemini-3.8-flash-high", tools=[])
+        self.assertIn("pending", content)
+
     def test_stats_reports_the_acp_mode(self):
         import tempfile
         pool, _ = self._pool(tempfile.mkdtemp(), agy_shim._Turn())
