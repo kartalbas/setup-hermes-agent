@@ -1597,10 +1597,14 @@ def startup_checks(args) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Even with past tool output capped, a long-running session accumulates. After
-# this many turns it is retired and the next request reseeds a fresh one from
-# the (now bounded) history — one slow reseed instead of an ever-slower session.
+# Even with past tool output capped, a session accumulates context SERVER-SIDE:
+# a big LIVE tool result (a scraped page the model is answering now) enters it
+# whole and stays. So a session is retired on either bound below, and the next
+# request reseeds a fresh one from the history — where that result is now PAST
+# and capped. The size bound is what catches a single big result quickly; the
+# turn bound catches slow drift. One reseed instead of an ever-slower session.
 ACP_SESSION_TURN_LIMIT = 40
+ACP_SESSION_CHAR_LIMIT = 120000        # ~30k tokens sent into one session
 
 
 class AcpError(RuntimeError):
@@ -1759,11 +1763,11 @@ def acp_decision(calls: list[dict]) -> dict | None:
 
 
 class _AcpSession:
-    __slots__ = ("sid", "workdir", "model", "turns", "seeded", "lock")
+    __slots__ = ("sid", "workdir", "model", "turns", "seeded", "chars", "lock")
 
     def __init__(self, sid, workdir, model):
         self.sid, self.workdir, self.model = sid, workdir, model
-        self.turns, self.seeded = 0, False
+        self.turns, self.seeded, self.chars = 0, False, 0
         self.lock = threading.Lock()
 
 
@@ -1805,12 +1809,13 @@ class AcpPool:
                 turn = self.client.prompt(sess.sid, text, self.args.timeout)
                 sess.seeded = True
                 sess.turns += 1
-            if sess.turns >= ACP_SESSION_TURN_LIMIT:
+                sess.chars += len(text)
+            if sess.turns >= ACP_SESSION_TURN_LIMIT or sess.chars >= ACP_SESSION_CHAR_LIMIT:
                 with self.lock:
                     if self.sessions.get(key) is sess:
                         del self.sessions[key]
-                log.info("acp [%s] retired session %s after %d turns; next request reseeds",
-                         key[:8], sess.sid[:8], sess.turns)
+                log.info("acp [%s] retired session %s (%d turns, %d chars); next request reseeds bounded",
+                         key[:8], sess.sid[:8], sess.turns, sess.chars)
             content = "".join(turn.text).strip()
             decision = acp_decision(turn.calls)
             # The tools server tells the model to end a tool turn with the word

@@ -206,6 +206,25 @@ class PoolComplete(unittest.TestCase):
                                       model="gemini-3.8-flash-high", tools=[])
         self.assertIn("pending", content)
 
+    def test_a_session_is_retired_once_it_grows_too_large(self):
+        # A big LIVE tool result enters the session whole; the next request must
+        # then reseed a fresh one rather than keep answering in a bloated session.
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        turn = agy_shim._Turn(); turn.text = ["ok"]
+        pool, _ = self._pool(tmp, turn)
+        big_tool_result = "H" * (agy_shim.ACP_SESSION_CHAR_LIMIT + 1000)
+        pool.complete("k", [], big_tool_result, system="Your name is **P**.",
+                      model="gemini-3.8-flash-high", tools=[])
+        self.assertNotIn("k", pool.sessions)          # retired: next request reseeds
+
+    def test_a_small_turn_keeps_the_session(self):
+        import tempfile
+        pool, _ = self._pool(tempfile.mkdtemp(), agy_shim._Turn())
+        pool.complete("k", [], "kurze frage", system="Your name is **P**.",
+                      model="gemini-3.8-flash-high", tools=[])
+        self.assertIn("k", pool.sessions)             # kept: reused next time, no resend
+
     def test_stats_reports_the_acp_mode(self):
         import tempfile
         pool, _ = self._pool(tempfile.mkdtemp(), agy_shim._Turn())
