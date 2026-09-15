@@ -1,6 +1,6 @@
 # 0027 — The bridge becomes a transport, and context management moves out of it
 
-Date: 2026-09-12 · Status: **accepted; moves 1 and 2 shipped 2026-09-13 (`5c225c0`), move 3 (3b, the ACP backend) implemented 2026-09-14 behind `AGY_SHIM_BACKEND` (default still `print`); flipping production to `acp` is the operator's install step** · Supersedes part of ADR 0021, refines ADR 0024
+Date: 2026-09-12 · Status: **accepted; moves 1 and 2 shipped 2026-09-13 (`5c225c0`), move 3 (3b) implemented and trialled in production 2026-09-14, REVERTED to `print` on 2026-09-15 — the ACP code stays behind `AGY_SHIM_BACKEND` for a second attempt after the integration issues below are fixed** · Supersedes part of ADR 0021, refines ADR 0024
 
 **The yardstick, stated by the operator on 2026-09-13:** the quality of a real API,
 reached through the subscription CLI. No API key for any bot but the Secretary,
@@ -163,6 +163,43 @@ to change it on any update. It is not the kind of dependency the 9router
 discussion ruled out, because it is our own installation talking to its own
 local server with its own login, and nothing is impersonated. It is simply
 fragile in a way a published protocol is not, and the failure would be silent.
+
+## Production trial and revert, 2026-09-14/15
+
+The ACP backend was flipped on for all six bots on 2026-09-14. In isolation it
+was everything the measurements promised — a tool loop in 6 s + 1.5 s,
+persistent sessions, streaming. Against the real Hermes gateway over Teams it
+was not stable, and it was reverted to `print` on 2026-09-15 after two
+user-visible failures:
+
+1. **Undelivered answers.** The gateway logged `content_delivered=False …
+   final_len=N` on Teams sessions for both the news and tasks bots — the bot
+   produced an answer (163, 221 chars) that never reached the user. It appears
+   the ACP turn timing does not line up with the gateway's stream-consumer /
+   final-send logic (the same code path as its "wecom ack-timeout" RCA).
+
+2. **Empty responses and a leaking marker.** `agent.conversation_loop: Empty
+   response (no content or reasoning) — retry 1/3` recurred. The tools server
+   tells the model to end a tool turn with the word `pending`; over ACP the
+   model sometimes emitted `pending` (or nothing) without a tool call this
+   bridge captured, so the turn came back empty and the gateway retried. The
+   guard added here suppresses the bare marker, which turns a wrong answer into
+   an empty one — better, but still not a real answer.
+
+3. **Context continuity for context-heavy bots.** The tasks bot builds work
+   across many messages ("BIT Task: …", then a correction, then a due date).
+   With the session churning through empty/retried turns and the size-based
+   reseed, the thread was not carried reliably. The stateless print path,
+   which sends the whole (tool-capped) transcript every turn, holds that
+   context by construction.
+
+What the trial DID confirm, and keeps: past tool output must be capped to
+machine output only (the news-bot slowdown, fixed for both backends), and the
+speed of a warm session is real. What a second attempt must solve first: the
+gateway delivery path, the empty-turn/marker fragility, and a session model
+that never drops conversational context — likely by seeding the ACP session
+once and letting the gateway's own history be the source of truth on any doubt,
+never returning empty.
 
 ## What the plan buys
 
