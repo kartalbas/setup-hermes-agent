@@ -209,8 +209,11 @@ setup() {
 }
 
 @test "a bot's toolset may be a list, rendered as the platform's toolset list" {
-    [ "$(_teams_toolset_yaml hermes-telegram)" = $'platform_toolsets:\n  teams:\n    - hermes-telegram' ]
-    [ "$(_teams_toolset_yaml "web memory cronjob")" = $'platform_toolsets:\n  teams:\n    - web\n    - memory\n    - cronjob' ]
+    [ "$(_toolset_yaml teams hermes-telegram)" = $'platform_toolsets:\n  teams:\n    - hermes-telegram' ]
+    [ "$(_toolset_yaml teams "web memory cronjob")" = $'platform_toolsets:\n  teams:\n    - web\n    - memory\n    - cronjob' ]
+    [ "$(_toolset_yaml cron "memory todo")" = $'platform_toolsets:\n  cron:\n    - memory\n    - todo' ]
+    # an empty list stays a list: null would hand the platform the agent's full default
+    [ "$(_toolset_yaml cron "")" = $'platform_toolsets:\n  cron: []' ]
     BOTS="github" BOT_PREFIX=X TUNNEL_ZONE=example.com SCRIPT_DIR=$REPO_ROOT
     BOT_GITHUB_TOOLSET="web memory"
     [ "$(bot_field github TOOLSET)" = "web memory" ]
@@ -242,12 +245,85 @@ setup() {
     hermes_install_dir() { printf '%s' "$tmp"; }
     die() { printf 'die: %s\n' "$*"; exit 1; }
     ASSISTANT_GITHUB_ENABLED=true ASSISTANT_M365_ENABLED=false
-    ( _teams_toolset_check "web memory github no_mcp" )
-    bats_run _teams_toolset_check "web terminal"        # bats_run: the libs define their own `run`
+    ( _toolset_check "web memory github no_mcp" )
+    bats_run _toolset_check "web terminal"        # bats_run: the libs define their own `run`
     [ "$status" -ne 0 ] && [[ "$output" == *"'terminal'"* ]]
-    bats_run _teams_toolset_check "m365"
+    bats_run _toolset_check "m365"
     [ "$status" -ne 0 ]
     rm -rf "$tmp"
+}
+
+# ADR 0028: on the bridge the model searches the web itself. A bot whose every
+# endpoint is the bridge gets the agent's own web_search subtracted — through
+# its one-tool toolset `search` in agent.disabled_toolsets — while web_extract,
+# the page reader, stays. Everything else the operator disabled stays disabled.
+@test "a bot on the bridge with the CLI's search loses the agent's web_search, keeps web_extract" {
+    tmp=$(mktemp -d)
+    HERMES_CONFIG_HOME=$tmp DRY_RUN=false
+    printf 'agent:\n  disabled_toolsets:\n  - image_gen\n' >"${tmp}/config.yaml"
+    AGY_SHIM_ENABLED=true AGY_SHIM_HOST=127.0.0.1 AGY_SHIM_PORT=8787
+    LLM_ENDPOINT_COUNT=1 LLM_ENDPOINT_1_BASE_URL="http://127.0.0.1:8787/v1"
+    AGY_SHIM_BUILTIN_TOOLS=search_web
+    disabled() { python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["agent"]["disabled_toolsets"]))' "${tmp}/config.yaml"; }
+
+    _native_search_configure
+    [ "$(disabled)" = "image_gen search" ]
+    _native_search_configure                                # idempotent
+    [ "$(disabled)" = "image_gen search" ]
+
+    AGY_SHIM_BUILTIN_TOOLS=""                               # the CLI's search switched off: the agent's is back
+    _native_search_configure
+    [ "$(disabled)" = "image_gen" ]
+    AGY_SHIM_BUILTIN_TOOLS=search_web
+
+    LLM_ENDPOINT_1_BASE_URL="http://127.0.0.1:8790/v1"      # an API model has no search of its own
+    ! llm_chain_on_bridge
+    LLM_ENDPOINT_1_BASE_URL="http://127.0.0.1:8787/v1"
+    LLM_ENDPOINT_COUNT=2 LLM_ENDPOINT_2_BASE_URL="https://api.example.com/v1"
+    ! llm_chain_on_bridge                                   # nor does a fallback on an API
+    LLM_ENDPOINT_COUNT=1
+    llm_chain_on_bridge
+    AGY_SHIM_ENABLED=false
+    ! llm_chain_on_bridge
+    rm -rf "$tmp"
+}
+
+# The same list for every way into a bot: chat, mail, scheduled runs. Unset,
+# the agent hands mail and cron its full default — terminal and files.
+@test "chat, mail and scheduled runs get the bot's own toolset, not the agent's full default" {
+    grep -qE '^    _platform_toolset_configure cron$' "$REPO_ROOT/libs/80-channels.sh"
+    grep -qE '^    _platform_toolset_configure email$' "$REPO_ROOT/libs/80-channels.sh"
+    grep -qE '^_channel_teams_toolset\(\) \{ _platform_toolset_configure teams; \}' "$REPO_ROOT/libs/80-channels.sh"
+    DRY_RUN=true
+    yaml_merge() { cat; }
+    BOT_TOOLSET="web memory"
+    [ "$(_platform_toolset_configure cron)" = $'platform_toolsets:\n  cron:\n    - web\n    - memory' ]
+    [ "$(_platform_toolset_configure email)" = $'platform_toolsets:\n  email:\n    - web\n    - memory' ]
+    BOT_TOOLSET=""                                          # a single agent: the global setting
+    [ "$(_platform_toolset_configure cron)" = $'platform_toolsets:\n  cron:\n    - hermes-telegram' ]
+}
+
+@test "one bot's toolset never leaks into the next one's" {
+    # bot_role_toolset reads CHANNEL_TEAMS_TOOLSET as the operator's set for
+    # every bot; the pass used to write each bot's list into it, so news (after
+    # search) ran on search's list.
+    ! grep -qE '^\s+CHANNEL_TEAMS_TOOLSET=\$\(bot_field' "$REPO_ROOT/libs/80-channels.sh"
+    grep -qE '^\s+BOT_TOOLSET=\$\(bot_field "\$key" TOOLSET\)' "$REPO_ROOT/libs/80-channels.sh"
+    local key; declare -A got
+    for key in search news; do
+        BOT_TOOLSET=$(bot_field "$key" TOOLSET); got[$key]=$BOT_TOOLSET
+    done
+    [ "${got[search]}" = "web browser memory session_search clarify cronjob todo" ]
+    [ "${got[news]}" = "web memory session_search clarify cronjob todo" ]
+    [ "$CHANNEL_TEAMS_TOOLSET" = "$CHANNEL_TEAMS_TOOLSET_DEFAULT" ]
+}
+
+@test "the mail poll interval reaches the adapter through the environment, a minute by default" {
+    # The adapter reads EMAIL_POLL_INTERVAL from the environment only; the YAML
+    # key alone left every bot polling every 15 s.
+    grep -q '_env_upsert EMAIL_POLL_INTERVAL "${CHANNEL_EMAIL_POLL_INTERVAL:-60}"' "$REPO_ROOT/libs/80-channels.sh"
+    grep -q '^CHANNEL_EMAIL_POLL_INTERVAL=60$' "$REPO_ROOT/config/channels.conf.example"
+    grep -q 'CHANNEL_EMAIL_POLL_INTERVAL must be a number of seconds' "$REPO_ROOT/libs/20-config.sh"
 }
 
 @test "every persona says where scratch goes and that it is removed" {

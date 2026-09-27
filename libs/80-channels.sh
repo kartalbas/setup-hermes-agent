@@ -32,7 +32,11 @@ channels_apply() {
         CHANNEL_TEAMS_CLIENT_ID_VAR=$BOT_TEAMS_CLIENT_ID_VAR
         CHANNEL_TEAMS_CLIENT_SECRET_VAR=$BOT_TEAMS_CLIENT_SECRET_VAR
         CHANNEL_TEAMS_PORT=$BOT_PORT
-        CHANNEL_TEAMS_TOOLSET=$(bot_field "$key" TOOLSET)
+        # Its own variable, never CHANNEL_TEAMS_TOOLSET: bot_role_toolset reads
+        # that as the operator's "one set for every bot", so writing each bot's
+        # list into it handed the NEXT bot the previous one's tools — the news
+        # bot ran on the search bot's list, browser included, until 2026-09-28.
+        BOT_TOOLSET=$(bot_field "$key" TOOLSET)
         # Read from the global endpoints, so before bot_llm_apply replaces them.
         _DELEGATION_FRAGMENT=$(_delegation_fragment "$key")
         _delegation_key_env "$key"
@@ -40,6 +44,7 @@ channels_apply() {
         _channels_apply_one "$BOT_SERVICE"
         bot_llm_restore
         _DELEGATION_FRAGMENT=""
+        BOT_TOOLSET=""
         bot_context_end
     done < <(bots)
 }
@@ -389,6 +394,8 @@ _policy_configure() {
     _tool_search_configure
     _workdir_configure
     _command_allowlist_configure
+    _platform_toolset_configure cron
+    _native_search_configure
     _config_set cron.model_drift_guard "$AGENT_CRON_DRIFT_GUARD"
 
     if [[ -n ${CHANNELS_APPROVALS_DENY:-} ]]; then
@@ -563,6 +570,7 @@ _channel_email() {
 
     _config_set platforms.email.enabled          true
     _channel_deny_pairing email
+    _platform_toolset_configure email
     # Also in .env, because the adapter reads the environment FIRST:
     #   _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
     # Setting only the YAML left it on its default of tls, so the agent spoke
@@ -578,7 +586,15 @@ _channel_email() {
     _config_set platforms.email.imap_tls_verify  "$(is_true "$CHANNEL_EMAIL_TLS_VERIFY" && printf true || printf false)"
     _config_set platforms.email.smtp_tls_verify  "$(is_true "$CHANNEL_EMAIL_TLS_VERIFY" && printf true || printf false)"
     _config_set platforms.email.skip_attachments "$(is_true "${CHANNEL_EMAIL_SKIP_ATTACHMENTS:-true}" && printf true || printf false)"
-    _config_set platforms.email.poll_interval    "${CHANNEL_EMAIL_POLL_INTERVAL:-15}"
+    # The adapter reads the interval from the environment ONLY
+    # (_esecret_int("EMAIL_POLL_INTERVAL", 15)); the YAML key alone changed
+    # nothing, and every bot polled every 15 s whatever was configured. Each
+    # poll is a fresh IMAP login through the relay: five bots at 15 s were
+    # 20 logins a minute, 388k connections in a week, and Exchange throttled
+    # them into timeouts and "User is authenticated but not connected"
+    # (2026-09-21..27). One minute is a quarter of that.
+    _env_upsert EMAIL_POLL_INTERVAL "${CHANNEL_EMAIL_POLL_INTERVAL:-60}"
+    _config_set platforms.email.poll_interval    "${CHANNEL_EMAIL_POLL_INTERVAL:-60}"
     _config_set platforms.email.require_authenticated_sender \
         "$(is_true "${CHANNEL_EMAIL_REQUIRE_AUTHENTICATED_SENDER:-true}" && printf true || printf false)"
 }
@@ -763,25 +779,28 @@ _channel_teams() {
     log_info "  register that as the bot's messaging endpoint if you have not already"
 }
 
-# The toolset the agent may use on Teams. Verified against the installed
-# release's toolsets.py: a name that does not exist there leaves Teams without
-# tools and only a WARNING in the journal to say so.
+# The toolset a bot may use — on Teams and in its scheduled runs. Verified
+# against the installed release's toolsets.py: a name that does not exist there
+# leaves the platform without tools and only a WARNING in the journal to say so.
 # One composite (hermes-telegram, the core set) or a list of the agent's own
 # toolsets — web, memory, cronjob, … — which is how a bot runs WITHOUT a
 # terminal: name the toolsets it needs and leave `terminal` and `file` out.
 # MCP servers join every list on their own (the agent adds all enabled servers
 # unless a list names some, or `no_mcp`). Names are checked against the
 # installed registry; an MCP server name or `no_mcp` passes as well.
-_teams_toolset_yaml() {           # _teams_toolset_yaml "NAME [NAME...]" -> yaml
+_toolset_yaml() {                 # _toolset_yaml PLATFORM "NAME [NAME...]" -> yaml
     local IFS=$' \t\n' name
-    printf 'platform_toolsets:\n  teams:\n'
-    for name in $1; do printf '    - %s\n' "$name"; done
+    # An empty list stays a list: left null, the agent would fall back to its
+    # full default for the platform.
+    [[ -n ${2//[[:space:]]/} ]] || { printf 'platform_toolsets:\n  %s: []\n' "$1"; return 0; }
+    printf 'platform_toolsets:\n  %s:\n' "$1"
+    for name in $2; do printf '    - %s\n' "$name"; done
 }
 
-_teams_toolset_check() {          # _teams_toolset_check "NAME [NAME...]" — dies on an unknown name
+_toolset_check() {                # _toolset_check "NAME [NAME...]" — dies on an unknown name
     local IFS=$' \t\n' name reg
     reg="$(hermes_install_dir)/toolsets.py"
-    [[ -f $reg ]] || die "cannot verify the Teams toolset: ${reg} not found"
+    [[ -f $reg ]] || die "cannot verify the toolset: ${reg} not found"
     for name in $1; do
         case $name in
             no_mcp) continue ;;
@@ -795,10 +814,45 @@ _teams_toolset_check() {          # _teams_toolset_check "NAME [NAME...]" — di
     done
 }
 
-_channel_teams_toolset() {
-    local names=${CHANNEL_TEAMS_TOOLSET:?}
-    [[ $DRY_RUN == true ]] || _teams_toolset_check "$names"
-    yaml_merge <<<"$(_teams_toolset_yaml "$names")"
+# One list for every way into the bot: its chat, its mail and its scheduled
+# runs. A platform left unset gets the agent's full default for it — a terminal
+# and file access, for bots whose roles forbid both: the news bot's morning
+# briefing fetched RSS feeds with curl, one of them frozen since January 2025
+# (2026-09-27). BOT_TOOLSET is the bot's in a per-bot pass; a single agent
+# without bots uses CHANNEL_TEAMS_TOOLSET.
+_platform_toolset_configure() {   # _platform_toolset_configure PLATFORM
+    local names=${BOT_TOOLSET:-${CHANNEL_TEAMS_TOOLSET:?}}
+    [[ $DRY_RUN == true ]] || _toolset_check "$names"
+    yaml_merge <<<"$(_toolset_yaml "$1" "$names")"
+}
+
+_channel_teams_toolset() { _platform_toolset_configure teams; }
+
+# On the bridge the model searches the web itself (AGY_SHIM_BUILTIN_TOOLS,
+# ADR 0028), so the agent's own web_search is subtracted: its one-tool toolset
+# `search` goes into agent.disabled_toolsets, which the agent applies after
+# every platform list, cron's included. web_extract stays — reading a page the
+# operator names still runs through the agent. Two search tools, one of them a
+# keyless service that refused a third of the news bot's searches
+# (2026-09-21..27), is how a model ends up calling the wrong one. Union, never
+# replace: whatever else the operator disabled stays disabled.
+_native_search_configure() {
+    local rc=0
+    if llm_chain_on_bridge && agyshim_has_builtin search_web; then
+        yaml_list_ensure agent.disabled_toolsets search || rc=$?
+        case $rc in
+            0) mark_changed; log_ok "web search: the model's own; the agent's web_search is off" ;;
+            3) log_skip "web search: the model's own" ;;
+            *) die "could not write agent.disabled_toolsets" ;;
+        esac
+    else
+        yaml_list_drop agent.disabled_toolsets search || rc=$?
+        case $rc in
+            0) mark_changed; log_ok "web search: the agent's web_search is on again" ;;
+            3) ;;
+            *) die "could not write agent.disabled_toolsets" ;;
+        esac
+    fi
 }
 
 _channels_restart_if_changed() {

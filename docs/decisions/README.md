@@ -29,3 +29,5 @@ Status is `accepted`, `superseded by NNNN`, or `proposed`.
 | [0024](0024-callers-tools-as-native-mcp-tools.md) | The caller's tools reach the model as real tools, not as a text protocol | accepted |
 | [0025](0025-kubernetes-deployment.md) | Move the six bots onto the Kubernetes cluster | proposed |
 | [0026](0026-transcript-is-background-tools-follow-the-role.md) | The transcript is background, and a role's tools follow its text | accepted |
+| [0027](0027-the-bridge-becomes-a-transport.md) | The bridge becomes a transport, and context management moves out of it | accepted; ACP reverted to print |
+| [0028](0028-the-model-searches-the-web-itself.md) | On the bridge, the model searches the web itself | accepted |

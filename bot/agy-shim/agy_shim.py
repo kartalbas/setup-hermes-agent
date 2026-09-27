@@ -74,7 +74,8 @@ log = logging.getLogger("agy-shim")
 
 # What /healthz reports, so an installer or a chart can insist on a minimum
 # rather than discovering an old bridge at the first request.
-BRIDGE_VERSION = "2"
+# 3: the CLI's own read-only web tools (--builtin-tools, ADR 0028).
+BRIDGE_VERSION = "3"
 
 # The CLI's own wait ceiling; kept above the bridge's per-turn timeout so a
 # slow turn is reported by us (with context), not cut by the CLI (without).
@@ -92,6 +93,32 @@ DECISION_GRACE_SECONDS = 45
 TOOLS_SERVER_NAME = "tools"
 TOOLS_FILE = "tools.json"
 TOOLS_SERVER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools_mcp.py")
+
+# The CLI's own tools a bot may be given (ADR 0028): reading the web, nothing
+# else. The caller's tools stay the bot's hands; these only let the model look
+# something up inside its turn, the way a model with built-in search does.
+# Commands, files and the browser stay off whatever the configuration says.
+# Verified headless 2026-09-28: search_web runs without an allow rule;
+# read_url_content is auto-denied unless the CLI's settings allow read_url(…).
+BUILTIN_WEB_TOOLS = ("search_web", "read_url_content")
+
+
+def parse_builtin_tools(value: str) -> tuple[str, ...]:
+    """The configured built-ins, in order, each once. Anything outside the
+    read-only web pair is refused rather than passed on to the CLI."""
+    names = tuple(dict.fromkeys(n for n in re.split(r"[,\s]+", value or "") if n))
+    unknown = [n for n in names if n not in BUILTIN_WEB_TOOLS]
+    if unknown:
+        raise ValueError(f"not a read-only web tool of the CLI: {', '.join(unknown)} "
+                         f"(allowed: {', '.join(BUILTIN_WEB_TOOLS)})")
+    return names
+
+
+def builtins_phrase(builtins) -> str:
+    """How the prompt texts name the enabled built-ins: 'web search (search_web)'."""
+    words = {"search_web": "web search (search_web)",
+             "read_url_content": "reading a web page (read_url_content)"}
+    return " and ".join(words[b] for b in builtins if b in words)
 
 
 class TransientTurnError(RuntimeError):
@@ -111,8 +138,11 @@ class AgentProcess:
     """
 
     def __init__(self, binary: str, model: str, workdir: str, extra_args: list[str], agents_md: str = "",
-                 agent_def: str = "", tools_spec: list | None = None):
+                 agent_def: str = "", tools_spec: list | None = None, builtins: tuple = ()):
         self.model = model
+        # The CLI's own tools this process may use (ADR 0028); they are in the
+        # agent definition already, this is for the reminder and the log.
+        self.builtins = tuple(builtins)
         # Its own directory, and destroyed with it.
         #
         # This is not tidiness. In stream-json mode the CLI continues the most
@@ -124,8 +154,8 @@ class AgentProcess:
         self.workdir = tempfile.mkdtemp(prefix="agy-shim-", dir=workdir)
         # AGENTS.md in the working directory is read by the CLI as its
         # project instructions — system level, unlike anything we can put in a
-        # user turn. This is where the bot's identity and the tool protocol's
-        # "you have no tools" actually stick.
+        # user turn. This is where the bot's identity and what it may use
+        # actually stick.
         if agents_md:
             with open(os.path.join(self.workdir, "AGENTS.md"), "w", encoding="utf-8") as f:
                 f.write(agents_md)
@@ -138,7 +168,8 @@ class AgentProcess:
         if tools_spec:
             write_tools_file(self.workdir, tools_spec)
         # The agent definition: the caller's system prompt in the CLI's own
-        # system-prompt slot, its built-in tools switched off (see agent_file_text).
+        # system-prompt slot, its built-in tools switched off but for the
+        # read-only web ones configured (see agent_file_text).
         self.agent_mode = bool(agent_def)
         if agent_def:
             adir = os.path.join(self.workdir, ".agents", "agents")
@@ -247,15 +278,6 @@ class AgentProcess:
 
     _denied_shape_logged = False
 
-    # Sent once when the CLI reached for one of its own tools and was denied:
-    # the turn is lost, but the conversation is not, and a reminder recovers it
-    # far more often than not.
-    TOOL_REMINDER = (
-        "REMINDER: your built-in tools are disabled and that attempt was denied. "
-        "Do not run commands or read files. Answer now with exactly one JSON "
-        "object per the TOOL PROTOCOL — a tool_call from the listed functions, "
-        "or a message.")
-
     def turn(self, content: str, timeout: float, _retry: bool = True) -> dict:
         """Send one message, wait for its result. Caller must hold self.lock."""
         if not self.alive():
@@ -299,6 +321,7 @@ class AgentProcess:
                 su = ev.get("step_update") or {}
                 if su.get("step_type") == "tool" and su.get("state") == "ACTIVE":
                     self.tool_intents.append(su.get("tool_info") or {"name": su.get("tool_name"), "parameters": {}})
+                log_builtin_step(su)
                 broken = native_call_decision(su, getattr(self, "available_tools", set()))
                 if broken is not None:
                     # The wrong channel: the CLI rejected the call and the turn
@@ -374,7 +397,8 @@ class AgentProcess:
                         # system prompt apparently already out of mind.
                         log.warning("model reached for a denied built-in tool; re-sending the operating context once")
                         again = getattr(self, "full_prefix", "")
-                        return self.turn((again + "\n\n" if again else "") + self.TOOL_REMINDER,
+                        reminder = tool_reminder(getattr(self, "builtins", ()))
+                        return self.turn((again + "\n\n" if again else "") + reminder,
                                          max(30.0, deadline - time.time()), _retry=False)
                     raise RuntimeError(
                         "the model needed a tool it is not permitted to use, and "
@@ -460,6 +484,7 @@ class Pool:
         # does when its own configuration names our tools server (the installer
         # writes that). Checked once, here, so a turn never has to guess.
         log.info("caller tools reach the model as native MCP tools (%s)", TOOLS_SERVER_NAME)
+        log.info("the CLI's own tools: %s", ", ".join(args.builtin_tools) or "none")
         self.procs: dict[str, AgentProcess] = {}
         self.spares: dict[str, AgentProcess] = {}   # pre-warmed, stateless mode
         self.lock = threading.Lock()
@@ -501,11 +526,12 @@ class Pool:
                 log.info("process limit reached; retiring %s", oldest[0][:8])
                 self.procs.pop(oldest[0]).close()
 
+            builtins = self.args.builtin_tools
             proc = AgentProcess(self.args.binary, model,
                                 self.args.workdir, self.args.extra_args,
-                                agents_md=agents_md_text(system),
-                                agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                                tools_spec=tools)
+                                agents_md=agents_md_text(system, builtins),
+                                agent_def=agent_file_text(system, builtins) if self.args.agent_mode else "",
+                                tools_spec=tools, builtins=builtins)
             self.procs[key] = proc
 
         # In agent mode the system prompt is already in the CLI's own system
@@ -592,10 +618,11 @@ class Pool:
     def _spawn(self, model: str, system: str, tools: list | None) -> AgentProcess:
         """One CLI process ready to take a request for THIS caller: its system
         prompt in the agent definition, its functions in the tools file."""
+        builtins = self.args.builtin_tools
         return AgentProcess(self.args.binary, model, self.args.workdir, self.args.extra_args,
-                            agents_md="" if self.args.agent_mode else agents_md_text(system),
-                            agent_def=agent_file_text(system) if self.args.agent_mode else "",
-                            tools_spec=tools)
+                            agents_md="" if self.args.agent_mode else agents_md_text(system, builtins),
+                            agent_def=agent_file_text(system, builtins) if self.args.agent_mode else "",
+                            tools_spec=tools, builtins=builtins)
 
     def _take_spare(self, model: str, system: str, tools: list | None) -> AgentProcess:
         """A pre-warmed process for this caller, or a fresh one; either way the
@@ -671,7 +698,7 @@ class Pool:
                 proc.full_prefix = text
                 proc.identity = identity_name(system)
                 proc.one_shot = True
-                reminder = MCP_CALL_REMINDER if tool_names else ""
+                reminder = mcp_call_reminder(self.args.builtin_tools) if tool_names else ""
                 with proc.lock:
                     result = proc.turn(text + reminder, self.args.timeout)
             usage = result.get("usage", {}) or {}
@@ -732,6 +759,7 @@ class Pool:
             return {
                 "mode": ("stateless" if self.args.stateless else "stateful") + ("+agent" if self.args.agent_mode else "")
                         + "+native-tools",
+                "builtin_tools": list(self.args.builtin_tools),
                 "spares": len(self.spares),
                 "max_spares": self.args.max_spares,
                 "conversations": len(self.procs),
@@ -828,20 +856,22 @@ def flatten(content) -> str:
 # Tool calling
 #
 # The CLI behind this bridge is an agent, not a model API. Handed a request
-# that needs work it reaches for its OWN tools, is auto-denied because headless
-# mode cannot prompt for permission, and returns nothing at all — which the
-# caller sees as "the model provider failed".
+# that needs work it reaches for its OWN tools — a terminal, files — which
+# headless mode auto-denies, and the turn comes back empty: the caller sees
+# "the model provider failed".
 #
-# So it is told it has no tools, and given a contract instead: emit a decision
-# as JSON, and the caller will execute. That keeps the division of labour the
-# rest of this installation depends on — the model decides, the agent framework
-# acts, and the framework's approval rules still apply to every action. Letting
-# the CLI execute directly would be less work and would put every command
+# So its own tools are switched off, and the caller's functions are offered in
+# their place as the tools of an MCP server the CLI calls natively (ADR 0024);
+# a completed call is the decision, and the agent framework executes it. That
+# keeps the division of labour the rest of this installation depends on — the
+# model decides, the framework acts, and the framework's approval rules still
+# apply to every action. Letting the CLI execute would put every command
 # outside those rules.
 #
-# Measured before building on it: given this contract the CLI answers
-#   {"type":"tool_call","name":"list_dir","arguments":{"path":"/etc"}}
-# rather than trying to list the directory itself.
+# One exception (ADR 0028): reading the web. A search changes nothing on the
+# host, and inside the turn it gives the model what a model with built-in
+# search has — on the subscription, not through a third-party search service.
+# Nothing that acts is ever switched back on.
 # ---------------------------------------------------------------------------
 
 IDENTITY_FRAME_HEAD = (
@@ -880,41 +910,49 @@ def identity_line(name: str) -> str:
 AGENT_NAME = "hermes"
 
 
-def agent_file_text(system: str) -> str:
+def agent_file_text(system: str, builtins: tuple = ()) -> str:
     """The CLI agent definition that carries the caller's system prompt.
 
     `--agent <name>` loads `.agents/agents/<name>.md` from the workspace and
     compiles its body into the CLI's system prompt — the slot our text never
-    reached from a user message. `tools: []` and `commandExecutionPolicy: off`
-    remove the CLI's own tools, so nothing is left to reach for; the caller's
-    functions arrive through the TOOL PROTOCOL inside the body. Verified
-    2026-09-07: identity replaced, no tool intents, prompt 5.3k -> 2.3k tokens."""
+    reached from a user message. `tools:` lists the CLI's own tools the model
+    may use: none, or the read-only web ones configured (ADR 0028); with
+    `commandExecutionPolicy: off` nothing else is left to reach for. The
+    caller's functions never go in that list — naming an MCP tool there kills
+    the agent — they reach the model through the tools server. Verified
+    2026-09-07: identity replaced, no tool intents, prompt 5.3k -> 2.3k tokens;
+    2026-09-28: `tools: [search_web]` searches headless, commands stay refused
+    and the tools server stays callable, also after a search in the same turn."""
     body = IDENTITY_FRAME_HEAD + system + IDENTITY_FRAME_TAIL
     return ("---\n"
             f"name: {AGENT_NAME}\n"
             "description: The caller's assistant, defined entirely by the system prompt below\n"
-            "tools: []\n"
+            f"tools: [{', '.join(builtins)}]\n"
             "commandExecutionPolicy: off\n"
             "inheritCustomizations: false\n"
             "subagent: false\n"
             "---\n" + body + "\n")
 
 
-def agents_md_text(system: str) -> str:
-    """Project instructions for the CLI: who it is here, and that it has no tools."""
+def agents_md_text(system: str, builtins: tuple = ()) -> str:
+    """Project instructions for the CLI: who it is here, and what it may use."""
     name = identity_name(system)
     who = (f"You are **{name}**, a private assistant bot. When asked who you are, answer "
            f"\"{name}\" and nothing about the software underneath — never Antigravity, "
            "Gemini, Google, DeepMind, a coding assistant or a CLI.") if name else \
           ("You are the assistant defined by the caller's system prompt; take your name from "
            "it and never present yourself as Antigravity, Gemini, Google or a coding assistant.")
+    allowed = builtins_phrase(builtins)
+    own = (f"Of your built-in tools only {allowed} {'are' if len(builtins) > 1 else 'is'} "
+           "enabled; every other one is disabled and every attempt is denied. ") if allowed else \
+          "Your built-in tools are disabled and every attempt is denied. "
     return (
         "# Operating instructions\n\n"
         f"{who}\n\n"
         "You are not in a code project. There are no files to read, no commands to run, "
-        "no repository: your built-in tools are disabled and every attempt is denied. "
-        f"The caller executes functions for you: the tools of the `{TOOLS_SERVER_NAME}` server, called natively, "
-        "or — when the message carries a TOOL PROTOCOL instead — the single JSON object it asks for.\n\n"
+        f"no repository. {own}"
+        f"The caller executes functions for you: the tools of the `{TOOLS_SERVER_NAME}` server, "
+        "called natively.\n\n"
         "The first message of the conversation carries the SYSTEM PROMPT that defines your "
         "role and rules; it is the authority for everything except this identity note.\n"
     )
@@ -1018,6 +1056,19 @@ def tools_server_configured() -> bool:
     return True
 
 
+def read_url_rule_present() -> bool:
+    """Whether the CLI may read a page at all: without a read_url(…) rule in its
+    settings, headless mode auto-denies read_url_content and the turn comes back
+    empty (verified 2026-09-28). The installer writes the rule with the tool."""
+    _, settings_path = cli_config_paths()
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            allow = ((json.load(f) or {}).get("permissions") or {}).get("allow") or []
+    except (OSError, ValueError):
+        return False
+    return any(str(r).startswith("read_url(") for r in allow)
+
+
 def tool_functions(tools: list) -> list[dict]:
     """The function specs (name, description, parameters) out of OpenAI tool
     definitions, in the caller's order; entries without a name are dropped."""
@@ -1043,8 +1094,40 @@ def write_tools_file(workdir: str, tools: list) -> str:
     return path
 
 
-MCP_CALL_REMINDER = (f"\n\nREMINDER: the caller's functions are the tools of the `{TOOLS_SERVER_NAME}` server and nothing else. "
-                     "Call ONE of them, with every required argument, or answer in plain prose. Any other function call fails the turn.")
+def mcp_call_reminder(builtins=()) -> str:
+    """Appended to the retry after a malformed function call: which calls exist."""
+    allowed = builtins_phrase(builtins)
+    return (f"\n\nREMINDER: the caller's functions are the tools of the `{TOOLS_SERVER_NAME}` server"
+            + (f"; besides them you may use only your {allowed}" if allowed else " and nothing else")
+            + ". Call ONE of them, with every required argument, or answer in plain prose. "
+            "Any other function call fails the turn.")
+
+
+def tool_reminder(builtins=()) -> str:
+    """Sent once when the CLI reached for one of its own tools and was denied:
+    the turn is lost, but the conversation is not, and a reminder recovers it
+    far more often than not."""
+    allowed = builtins_phrase(builtins)
+    return ("REMINDER: that attempt used a built-in tool that is disabled here, and it was denied. "
+            f"Do not run commands or read files. Call the functions of the `{TOOLS_SERVER_NAME}` "
+            "server natively" + (f", use your {allowed}," if allowed else "")
+            + " or answer in plain prose.")
+
+
+def log_builtin_step(step_update: dict) -> None:
+    """The model's own lookups, into the journal. The caller never sees them —
+    they happen inside the turn and only shape the answer — so this is where
+    what a bot searched for can be read back (ADR 0028)."""
+    su = step_update or {}
+    if su.get("step_type") != "tool" or su.get("state") not in ("DONE", "ERROR"):
+        return
+    info = su.get("tool_info") or {}
+    name = info.get("name") or su.get("tool_name")
+    if name not in BUILTIN_WEB_TOOLS:
+        return
+    params = info.get("parameters") or {}
+    what = params.get("query") or params.get("Url") or json.dumps(params, ensure_ascii=False)
+    log.info("built-in %s %s: %s", name, "done" if su.get("state") == "DONE" else "failed", str(what)[:200])
 
 
 
@@ -1183,28 +1266,31 @@ def stateless_message(system: str, history: list[str], message: str,
     return "\n\n".join(parts)
 
 
-def tool_contract(tools: list, native: bool = True) -> str:
+def tool_contract(tools: list, builtins: tuple = ()) -> str:
     """Say whose the tools are and how they are used.
 
     The CLI has injected the caller's functions as real tools, so this names
     them once for routing and states the rules — call natively, one at a time,
     every required argument filled in, the result arrives as the next message.
-    No schemas and no JSON envelope: the CLI already has the schemas.
-
-    The `native` parameter survives only so a caller can ask for nothing; the
-    text protocol it used to select is gone with ADR 0027 move 2."""
+    No schemas and no JSON envelope: the CLI already has the schemas. The CLI's
+    own read-only web tools, when enabled (ADR 0028), are the one exception to
+    "these are all you have" — a contract that forbade the web would keep the
+    model from the search it was given."""
     fns = tool_functions(tools)
-    if not fns or not native:
+    if not fns:
         return ""
 
+    allowed = builtins_phrase(builtins)
+    only = f"and — apart from your own {allowed} — the ONLY" if allowed else "and the ONLY"
+    off = "commands, files or the browser" if allowed else "commands, files, the browser or the web"
     lines = [
         "TOOLS — read this before answering.",
         "",
-        f"The functions of the `{TOOLS_SERVER_NAME}` server are the caller's tools, and the ONLY",
+        f"The functions of the `{TOOLS_SERVER_NAME}` server are the caller's tools, {only}",
         "tools you have. Call them natively, one at a time, with every required argument",
         "filled in; the caller executes the call and its result arrives as the next message.",
-        "Never write a tool call as JSON text. Never try commands, files, the browser or the",
-        "web yourself — those are disabled. When no tool is needed, answer in plain prose.",
+        f"Never write a tool call as JSON text. Never try {off} yourself — those are disabled.",
+        "When no tool is needed, answer in plain prose.",
         "",
         "The caller's functions:",
     ]
@@ -1212,10 +1298,6 @@ def tool_contract(tools: list, native: bool = True) -> str:
         desc = " ".join((fn.get("description") or "").split())
         lines.append(f"- {fn['name']}: {desc}"[:300])
     return "\n".join(lines)
-
-
-
-
 
 
 def decision_to_calls(decision: dict) -> tuple[str, list]:
@@ -1324,6 +1406,7 @@ class Handler(BaseHTTPRequestHandler):
     aliases: dict = {}
     unknown_model: str = "reject"
     auth_token: str = ""            # empty = no check, which only loopback makes safe
+    builtins: tuple = ()            # the CLI's own read-only web tools the model may use
 
     @classmethod
     def resolve_model(cls, requested: str) -> str:
@@ -1440,7 +1523,7 @@ class Handler(BaseHTTPRequestHandler):
         # process starts and then cached — not re-sent every turn. That is the
         # whole reason this bridge is affordable.
         tools = body.get("tools") or []
-        contract = tool_contract(tools)
+        contract = tool_contract(tools, self.builtins)
         if contract:
             system = f"{contract}\n\n{system}" if system else contract
 
@@ -1626,8 +1709,12 @@ class AcpClient:
     lock, a reader thread that routes responses by id and everything else by
     session, and a fixed permission policy."""
 
-    def __init__(self, server_path: str):
+    def __init__(self, server_path: str, builtins: tuple = ()):
         self.server_path = server_path
+        # The server ignores the agent definition that switches the built-ins
+        # off in print mode; here the permission reply is the switch, and these
+        # are the only built-ins it answers with "allow" (ADR 0028).
+        self.builtins = tuple(builtins)
         self.proc: subprocess.Popen | None = None
         self.started = False
         self._wlock = threading.Lock()
@@ -1727,13 +1814,22 @@ class AcpClient:
         params = msg["params"]
         tc = params.get("toolCall") or {}
         title = tc.get("title") or ""
-        allow = title.startswith(TOOLS_SERVER_NAME + "_")
-        if allow:
+        caller_tool = title.startswith(TOOLS_SERVER_NAME + "_")
+        # A built-in asks as "Run search_web?" (kind search) or "Run
+        # read_url_content?" (kind fetch) — seen 2026-09-28. Matched whole, so
+        # nothing else that happens to start the same way gets through.
+        builtin = next((b for b in self.builtins if title == f"Run {b}?"), None)
+        allow = caller_tool or builtin is not None
+        if caller_tool:
             turn = self._turns.get(params.get("sessionId"))
             if turn is not None:
                 raw = tc.get("rawInput") or {}
                 args = raw.get("arguments") if isinstance(raw.get("arguments"), dict) else raw
                 turn.calls.append({"name": title[len(TOOLS_SERVER_NAME) + 1:], "arguments": args or {}})
+        elif builtin:
+            # The server runs it inside the turn; not a decision, only a log line.
+            raw = tc.get("rawInput") or {}
+            log.info("built-in %s allowed: %s", builtin, str(raw.get("query") or raw.get("Url") or raw)[:200])
         want = ("allow_once", "allow_always") if allow else ("reject_once", "reject_always")
         opt = next((o for o in (params.get("options") or []) if o.get("kind") in want), None)
         outcome = ({"outcome": "selected", "optionId": opt["optionId"]} if opt
@@ -1783,7 +1879,7 @@ class AcpPool:
         self.slots = threading.BoundedSemaphore(args.max_concurrent)
         self.restarts = 0
         self.procs: dict = {}          # main()'s shutdown loop over .procs then no-ops
-        self.client = AcpClient(args.acp_server)
+        self.client = AcpClient(args.acp_server, args.builtin_tools)
         self.client.start()
 
     def complete(self, key, history, message, system="", model="",
@@ -1843,7 +1939,7 @@ class AcpPool:
             log.warning("the ACP server had exited; restarting and dropping %d session(s) "
                         "(they reseed from history on next use)", len(self.sessions))
             self.sessions.clear()
-            self.client = AcpClient(self.args.acp_server)
+            self.client = AcpClient(self.args.acp_server, self.args.builtin_tools)
             self.client.start()
 
     def _session(self, key: str, model: str, tools: list) -> _AcpSession:
@@ -1890,6 +1986,7 @@ class AcpPool:
 
     def stats(self) -> dict:
         return {"mode": "acp", "sessions": len(self.sessions), "restarts": self.restarts,
+                "builtin_tools": list(self.args.builtin_tools),
                 "server": os.path.basename(self.args.acp_server)}
 
 
@@ -1945,11 +2042,20 @@ def main() -> int:
                    default=os.environ.get("AGY_SHIM_ACP_SERVER",
                                           "/usr/local/lib/hermes-provisioner/agy_acp_server.par"),
                    help="path to the official agy_acp_server binary (used only with --backend acp)")
+    p.add_argument("--builtin-tools",
+                   default=os.environ.get("AGY_SHIM_BUILTIN_TOOLS", "search_web"),
+                   help="the CLI's own tools the model may use, comma-separated: search_web, "
+                        "read_url_content, or empty for none. Read-only web access only (ADR 0028); "
+                        "read_url_content also needs a read_url(…) rule in the CLI's settings")
     args = p.parse_args()
     args.extra_args = args.extra_args.split() if args.extra_args else []
     args.models = [m.strip() for m in args.models.split(",") if m.strip()]
     if not args.models:
         p.error("--models must name at least one model")
+    try:
+        args.builtin_tools = parse_builtin_tools(args.builtin_tools)
+    except ValueError as exc:
+        p.error(f"--builtin-tools: {exc}")
     args.aliases = dict(
         pair.split("=", 1) for pair in args.model_aliases.split(",") if "=" in pair
     )
@@ -1995,6 +2101,11 @@ def main() -> int:
                   "there is no text fallback. Run the installer: it writes mcp_config.json and "
                   "the permissions.allow rule the CLI needs to call %s.", TOOLS_SERVER_NAME)
         return 1
+    # A warning, not a refusal: searching still works, only page reads would
+    # come back denied — and an empty turn is what the operator would see.
+    if args.backend == "print" and "read_url_content" in args.builtin_tools and not read_url_rule_present():
+        log.warning("read_url_content is enabled but the CLI's settings have no read_url(…) allow "
+                    "rule: every page read will be auto-denied — run the installer's agyshim module")
 
     if args.backend == "acp":
         Handler.pool = AcpPool(args)
@@ -2005,6 +2116,7 @@ def main() -> int:
     Handler.aliases = args.aliases
     Handler.unknown_model = args.unknown_model
     Handler.auth_token = token
+    Handler.builtins = args.builtin_tools
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True

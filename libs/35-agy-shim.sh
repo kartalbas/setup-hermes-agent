@@ -299,6 +299,7 @@ _agyshim_tools_server() {
     if [[ $DRY_RUN == true ]]; then
         log_info "[dry-run] register the MCP server '${name}' (${py} $(agyshim_tools_script_path)) in ${mcp_config}"
         log_info "[dry-run] allow mcp(${name}/*) in ${settings}"
+        agyshim_has_builtin read_url_content && log_info "[dry-run] allow read_url(*) in ${settings}"
         return 0
     fi
     ensure_dir "$config_dir" 0755 "${user}:${SERVICE_GROUP:-$user}"
@@ -328,6 +329,21 @@ _agyshim_tools_server() {
         esac
     else
         defer_failure "bridge: could not allow mcp(${name}/*) in ${settings}: ${out}"
+    fi
+
+    # The model's own page reads (ADR 0028) are auto-denied in headless mode
+    # without a read_url(…) rule (verified 2026-09-28). Written with the tool;
+    # when the tool is switched off again the rule is inert — the agent
+    # definition no longer names it, and over ACP the bridge refuses it.
+    agyshim_has_builtin read_url_content || return 0
+    if out=$(runuser -u "$user" -- "$py" -c "$(_agyshim_merge_program)" \
+                "$settings" allow "read_url(*)" - 2>&1); then
+        case $out in
+            changed) mark_changed; log_ok "the CLI may read web pages (allow read_url(*))" ;;
+            *)       log_skip "the CLI may read web pages" ;;
+        esac
+    else
+        defer_failure "bridge: could not allow read_url(*) in ${settings}: ${out}"
     fi
 }
 
@@ -403,6 +419,7 @@ ExecStart=${py} $(agyshim_script_path) \\
     --max-processes ${AGY_SHIM_MAX_PROCESSES} \\
     --idle-timeout ${AGY_SHIM_IDLE_TIMEOUT} \\
     --compact-at ${AGY_SHIM_COMPACT_AT} \\
+    --builtin-tools=$(agyshim_builtin_tools) \\
     --backend ${AGY_SHIM_BACKEND}$([[ ${AGY_SHIM_BACKEND} == acp ]] && printf ' \\\n    --acp-server %s' "$AGY_SHIM_ACP_SERVER") \\
     ${AGY_SHIM_MODEL_ALIASES:+\\
     --model-aliases ${AGY_SHIM_MODEL_ALIASES}}

@@ -371,6 +371,28 @@ memory session_search clarify cronjob todo`; every other role to the composite.
 `BOT_<KEY>_TOOLSET`, and `CHANNEL_TEAMS_TOOLSET` set to anything but
 `hermes-telegram`, override that.
 
+The list holds for **every way into the bot** — Teams, its mail, and its
+scheduled runs (`platform_toolsets.teams`, `.email`, `.cron`). A platform left
+unset gets the agent's full default for it, terminal and files included: until
+2026-09-28 a news briefing ran on cron with a shell and fetched RSS feeds with
+`curl`, one of them frozen since January 2025. Each bot gets exactly its own
+list; the run used to hand a bot the previous bot's list (news ran on search's,
+browser included).
+
+**Web search on the bridge is the model's own.** A bot whose every endpoint is
+the bridge searches with the CLI's built-in Google search (`search_web`, ADR
+0028) inside its turn, on the subscription. The agent's own `web_search` is then
+subtracted — its one-tool toolset `search` goes into `agent.disabled_toolsets`
+— because two search tools, one of them a keyless service that refused a third
+of the news bot's searches, is how a model ends up calling the wrong one.
+`web_extract` stays: reading a page the operator names still runs through the
+agent. A bot on an API model (the Secretary) keeps the agent's `web_search`.
+`AGY_SHIM_BUILTIN_TOOLS` decides: `search_web` (default), `search_web
+read_url_content` (page reads by the model too — they run from this host, so
+they reach what the host reaches; the run writes the CLI's `read_url(*)` rule),
+or empty (the agent's `web_search` again). Commands, files and the browser
+never come back: the bridge refuses any other name.
+
 **Which tools the model sees.** `AGENT_TOOL_SEARCH` — `off` (default) puts
 every MCP tool in front of the model by name; `auto`/`on` hides them behind the
 agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
@@ -401,6 +423,13 @@ two-line patch to the pinned agent's e-mail adapter (a configurable folder),
 which the run applies and re-applies after updates — see `60-hermes.sh`.
 Replies are sent from the mailbox's primary address; sending as the alias
 needs Exchange's "send from alias" setting.
+
+Each bot checks its folder every `CHANNEL_EMAIL_POLL_INTERVAL` seconds (60), and
+every check is a fresh IMAP login. The adapter reads the value from the bot's
+`.env` (`EMAIL_POLL_INTERVAL`), which the run writes; the YAML key alone does
+nothing — which is how five bots stayed at the adapter's 15 s whatever was
+configured, 20 logins a minute through the relay, until Exchange throttled them
+into timeouts and `User is authenticated but not connected` (2026-09-21..27).
 
 **A bot may run on its own model.** `BOT_<KEY>_LLM_MODEL` (with `_LLM_PROVIDER`,
 `_LLM_NAME`, `_LLM_BASE_URL`, `_LLM_TOKEN_VAR`, `_LLM_REASONING_FIELD`,
@@ -1248,6 +1277,15 @@ the next ones do not. `AGY_SHIM_MAX_SPARES` sets how many are held — one per
 bot is the point of it, each holds roughly 200 MB, and `0` switches it off. The
 count is in the bridge's `/stats`.
 
+**What a bot searched for.** The model's own web search (ADR 0028) happens
+inside its turn, so the agent's transcript shows the answer with its sources but
+not the searches behind it. The bridge writes each one to its journal; the
+configured CLI tools are in `/stats` (`builtin_tools`):
+
+```bash
+journalctl -u <service>-bridge | grep 'built-in'      # built-in search_web done: <query>
+```
+
 **Where the bots write.** Each bot's terminal starts in its profile's `work/`
 directory and its `TMPDIR` points to `work/tmp`; the shared persona says so and
 tells the bot to remove what it made. A tmpfiles rule
@@ -1718,10 +1756,12 @@ journalctl -u <service>-bridge | grep stateless | tail       # history=NNN sent=
 journalctl -u <bot-service> | grep 'conversation turn'       # history=NNN msg='…'
 ```
 
-Since bot 0.4.x the bridge caps the transcript (`AGY_SHIM_HISTORY_BUDGET`,
-120000 characters; `0` sends everything), labels it `BACKGROUND ONLY`, heads the
-live message with `=== THE MESSAGE TO ANSWER NOW ===`, and restates the user's
-request on a tool-result turn (ADR 0026). If `history=` keeps climbing into the
+The bridge labels the transcript `BACKGROUND ONLY`, heads the live message with
+`=== THE MESSAGE TO ANSWER NOW ===`, and restates the user's request on a
+tool-result turn (ADR 0026). It cuts nothing a person wrote (ADR 0027): only a
+PAST tool result is shortened to its opening 6000 characters, the live one and
+every mail or message stay whole — what bounds the rest is the bot's
+`session_reset` and the CLI's own compaction. If `history=` keeps climbing into the
 hundreds within a day, the cause upstream of that is usually the bot's toolset:
 a bot with a terminal researches with `curl | grep`, one page per turn — see
 "Which toolsets a bot gets" in §Day to day, and `/reset` in the chat to drop a

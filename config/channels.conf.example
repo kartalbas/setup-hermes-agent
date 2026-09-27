@@ -73,7 +73,10 @@ CHANNEL_EMAIL_TLS_VERIFY=true
 CHANNEL_EMAIL_ALLOWLIST_VAR="EMAIL_ALLOWED_SENDERS"
 CHANNEL_EMAIL_ALLOW_ALL=false
 # CHANNEL_EMAIL_HOME_ADDRESS is in the SITE VALUES block at the top.
-CHANNEL_EMAIL_POLL_INTERVAL=15
+# Seconds between mailbox checks, per bot. Every check is a fresh login: through
+# the Exchange relay, five bots at 15 s were throttled into timeouts. 60 = a
+# reply within about a minute, a quarter of the logins.
+CHANNEL_EMAIL_POLL_INTERVAL=60
 CHANNEL_EMAIL_SKIP_ATTACHMENTS=true
 CHANNEL_EMAIL_PROBE_LOGIN=true
 

@@ -90,7 +90,7 @@ PY
 
 @test "the tool contract tells the model its built-in tools are disabled, and the bridge reminds once" {
     grep -q 'those are disabled' "$SHIM"
-    grep -q 'TOOL_REMINDER' "$SHIM"
+    grep -q 'reminder = tool_reminder(getattr(self, "builtins", ()))' "$SHIM"
     grep -q '_retry=False' "$SHIM"
 }
 
@@ -118,7 +118,7 @@ md = m.agents_md_text("# Acme News\n\nYour name is **Acme News**.")
 assert "You are **Acme News**" in md and "never Antigravity" in md and "disabled" in md
 assert "take your name from" in m.agents_md_text("")
 PY
-    grep -q 'agents_md=agents_md_text(system)' "$SHIM"
+    grep -q 'agents_md=agents_md_text(system, builtins)' "$SHIM"
 }
 
 @test "stateless mode renders system, transcript, then the identity line right before the message" {
@@ -286,8 +286,8 @@ step = {"step_type": "tool", "state": "DONE", "tool_info": {"name": "call_mcp_to
         "parameters": {"ServerName": "tools", "ToolName": "web_search", "Arguments": {"query": "x"}}}}
 assert m.mcp_call_decision(step) == {"type": "tool_call", "name": "web_search", "arguments": {"query": "x"}}
 assert m.mcp_call_decision(dict(step, state="ACTIVE")) is None
-assert "`tools` server" in m.tool_contract(tools, native=True)
-assert '{"type":"tool_call"' not in m.tool_contract(tools, native=True)
+assert "`tools` server" in m.tool_contract(tools)
+assert '{"type":"tool_call"' not in m.tool_contract(tools)
 PY
     grep -q 'tools_spec=tools' "$SHIM"
     ! grep -q 'AGY_SHIM_NATIVE_TOOLS' "$SHIM"
@@ -310,11 +310,12 @@ class FakeProc:
 m.AgentProcess = FakeProc
 pool = types.SimpleNamespace(
     args=types.SimpleNamespace(binary="agy", workdir="/tmp", extra_args=[], agent_mode=True,
-                               max_processes=4, timeout=1),
+                               max_processes=4, timeout=1, builtin_tools=("search_web",)),
     native_tools=False, procs={}, spares={}, lock=__import__("threading").Lock(),
     _seed_message=m.Pool._seed_message)
 proc = m.Pool._get_or_start(pool, "k", ["user: hi"], system, "model-x", None)
 assert proc.kw["agent_def"].startswith("---"), "agent definition missing"
+assert "tools: [search_web]" in proc.kw["agent_def"] and proc.kw["builtins"] == ("search_web",)
 assert "Acme News" in proc.kw["agent_def"]
 assert "Acme News" not in seeded["text"], "the system prompt was replayed a second time"
 assert "user: hi" in seeded["text"]
@@ -434,7 +435,7 @@ class FakeProc:
 def pool(max_spares=3, agent_mode=True, native=True):
     p = types.SimpleNamespace(
         args=types.SimpleNamespace(binary="agy", workdir="/tmp", extra_args=[], agent_mode=agent_mode,
-                                   max_spares=max_spares, idle_timeout=900),
+                                   max_spares=max_spares, idle_timeout=900, builtin_tools=("search_web",)),
         native_tools=native, procs={}, spares={}, lock=threading.Lock())
     for name in ("_warm_key", "_spawn", "_take_spare", "_warm", "_reaper"):
         setattr(p, name, types.MethodType(getattr(m.Pool, name), p))
@@ -465,8 +466,9 @@ second = p._take_spare("m", SYS_A, TOOLS_A)
 assert second is warm, "a warm process for this bot was not reused"
 assert first is not second
 
-# the process carries this caller's own two files
+# the process carries this caller's own two files, and the CLI tools it may use
 assert "**A**" in first.kw["agent_def"] and first.kw["tools_spec"] == TOOLS_A
+assert "tools: [search_web]" in first.kw["agent_def"] and first.kw["builtins"] == ("search_web",)
 assert first.kw["agents_md"] == ""            # agent mode puts the prompt in the definition
 
 # a dead spare is discarded rather than handed out
@@ -556,4 +558,59 @@ get = src.split("    def do_GET(self):", 1)[1].split("    def do_POST(self):", 1
 assert get.index('/healthz') < get.index("self._authorized()"), "healthz must be answered before the check"
 assert "self._authorized()" in src.split("    def do_POST(self):", 1)[1][:200], "do_POST must check first"
 PY
+}
+
+# ADR 0028: the CLI's own read-only web tools. What the model may use inside its
+# turn is configuration, validated against the read-only pair, handed to the
+# bridge as it is, and a page read gets the allow rule headless mode needs.
+@test "the CLI's own web tools: validated, passed to the bridge as configured, page reads allowed with the tool" {
+    load helper
+    load_libs
+    silence_logs
+    SCRIPT_DIR=$REPO_ROOT DRY_RUN=true
+    config_defaults
+    [ "$AGY_SHIM_BUILTIN_TOOLS" = search_web ]
+    [ "$(agyshim_builtin_tools)" = search_web ]
+    AGY_SHIM_BUILTIN_TOOLS="search_web read_url_content, search_web"
+    [ "$(agyshim_builtin_tools)" = "search_web,read_url_content" ]
+    agyshim_has_builtin read_url_content
+    AGY_SHIM_BUILTIN_TOOLS=""
+    [ -z "$(agyshim_builtin_tools)" ]
+    ! agyshim_has_builtin search_web
+
+    _invalid=(); AGY_SHIM_BUILTIN_TOOLS="search_web run_command"; _check_agyshim_builtin_tools
+    [ "${#_invalid[@]}" -eq 1 ] && [[ ${_invalid[0]} == *"'run_command'"* ]]
+    _invalid=(); AGY_SHIM_BUILTIN_TOOLS="search_web,read_url_content"; _check_agyshim_builtin_tools
+    [ "${#_invalid[@]}" -eq 0 ]
+
+    # the unit passes exactly the configured list — an empty one too
+    write_file() { cat; }
+    AGY_SHIM_BUILTIN_TOOLS=search_web
+    unit=$(_agyshim_write_unit 2>/dev/null)
+    [[ $unit == *"--builtin-tools=search_web \\"* ]]
+    AGY_SHIM_BUILTIN_TOOLS=""
+    unit=$(_agyshim_write_unit 2>/dev/null)
+    [[ $unit == *"--builtin-tools= \\"* ]]
+
+    # the bridge reads the same flag, and refuses what acts
+    python3 - "$SHIM" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shim", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+src = open(sys.argv[1]).read()
+assert '"--builtin-tools"' in src and 'os.environ.get("AGY_SHIM_BUILTIN_TOOLS", "search_web")' in src
+assert m.parse_builtin_tools("") == ()
+try:
+    m.parse_builtin_tools("run_command"); raise SystemExit("run_command passed")
+except ValueError:
+    pass
+PY
+
+    # the page-read rule goes in with the tool, through the same additive merge
+    tmp=$(mktemp -d); prog=$(_agyshim_merge_program)
+    printf '{"permissions":{"allow":["mcp(tools/*)"]}}' >"${tmp}/settings.json"
+    [ "$(python3 -c "$prog" "${tmp}/settings.json" allow 'read_url(*)' -)" = changed ]
+    [ "$(python3 -c "$prog" "${tmp}/settings.json" allow 'read_url(*)' -)" = same ]
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["permissions"]["allow"]==["mcp(tools/*)","read_url(*)"], d' "${tmp}/settings.json"
+    rm -rf "$tmp"
+    grep -q 'agyshim_has_builtin read_url_content || return 0' "$REPO_ROOT/libs/35-agy-shim.sh"
 }

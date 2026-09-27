@@ -123,7 +123,7 @@ class PoolComplete(unittest.TestCase):
         import threading
         pool.args = types.SimpleNamespace(workdir=tmp, timeout=30, queue_timeout=5,
                                           max_concurrent=2, models=["gemini-3.8-flash-high"],
-                                          acp_server="/nonexistent")
+                                          acp_server="/nonexistent", builtin_tools=("search_web",))
         pool.lock = threading.Lock()
         pool.sessions = {}
         pool.slots = threading.BoundedSemaphore(2)
@@ -229,6 +229,7 @@ class PoolComplete(unittest.TestCase):
         import tempfile
         pool, _ = self._pool(tempfile.mkdtemp(), agy_shim._Turn())
         self.assertEqual(pool.stats()["mode"], "acp")
+        self.assertEqual(pool.stats()["builtin_tools"], ["search_web"])
 
 
 if __name__ == "__main__":

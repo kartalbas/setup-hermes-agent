@@ -153,7 +153,7 @@ class Decision(unittest.TestCase):
 
 class Contract(unittest.TestCase):
     def test_the_native_contract_names_the_functions_without_schemas_or_json_envelope(self):
-        text = agy_shim.tool_contract(TOOLS, native=True)
+        text = agy_shim.tool_contract(TOOLS)
         self.assertIn("web_search: Search the web.", text)
         self.assertIn("tasks_add: Create a task card.", text)
         self.assertIn("`tools` server", text)
@@ -174,8 +174,7 @@ class Contract(unittest.TestCase):
 
     def test_no_tools_no_contract(self):
         self.assertEqual(agy_shim.tool_contract([]), "")
-        self.assertEqual(agy_shim.tool_contract([], native=True), "")
-        self.assertEqual(agy_shim.tool_contract(TOOLS, native=False), "")
+        self.assertEqual(agy_shim.tool_contract([], ("search_web",)), "")
 
 
 class Detection(unittest.TestCase):

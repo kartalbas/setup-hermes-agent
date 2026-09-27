@@ -410,3 +410,46 @@ NOT create for you — one is 2 GB, the other is a credential:
 
 Both are one-time. The server process is then shared by every bot, so the
 2 GB and the token are a single fixed cost, not per bot.
+
+## The CLI's own web search, probed 2026-09-28 (ADR 0028)
+
+Why: the agent's `web_search` ran on keyless Firecrawl and 18 of 56 news-bot
+searches in a week came back `403 Forbidden`. The CLI has its own search on the
+subscription. Setup: a scratch workspace per run, the bridge's exact invocation
+(`--input-format stream-json --output-format stream-json --agent <probe>
+--add-dir <ws>`, `--disable-slash-commands`), the production HOME, and
+`~/.gemini/antigravity-cli/settings.json` left untouched. Model
+gemini-3.8-flash-high, seven turns in total.
+
+- **Built-in names in `tools:` work** [V] — unlike MCP tool names, which kill the
+  agent (see E8). `tools: [search_web, read_url_content]`: `init.agent = probe`,
+  `permission_mode = request-review`, `init.tools` still lists 57 (the list is
+  global, as before).
+- **`search_web` needs no allow rule headless** [V]: three `search_web` steps
+  (ACTIVE → DONE, `parameters.query`), no `denied_actions`, 25.6 s, 22.5k input
+  tokens, a correct and current answer with date and source. The model's own
+  sense of the year was stale (its second query said "2024") — the agent's
+  system prompt carries the date, the bare probe did not.
+- **`read_url_content` is auto-denied without a rule** [V]: step ERROR,
+  `denied_actions: [{"action": "read_url", "display_name": "ReadUrlContent"}]`,
+  empty response; stderr: *a tool required the "read_url" permission that
+  headless mode cannot prompt for … Add an allow-rule under permissions.allow in
+  settings.json (e.g. read_url(<target>))*. The binary carries `read_url(*)`.
+  Its changelog fixed "leaking a connection on every call, which could exhaust
+  the machine's available ports" — it fetches from the host itself [L].
+  Whether it reaches loopback/LAN addresses: **not tested** (needs the rule or
+  `--dangerously-skip-permissions`).
+- **Commands stay unreachable** [V]: asked to run `ls -la /` with the web pair
+  enabled, no tool step at all — "I have no access to a terminal". (The shared
+  settings.json holds `command(ls)`, `command(cat)`, … from interactive use; with
+  no command tool in the agent they are inert.)
+- **The tools server still works beside it** [V]: `tools: [search_web]` plus a
+  `tools.json` with one caller function → `call_mcp_tool` (tools/note_add) DONE
+  after one argument-less attempt, as always. Search and caller call in one
+  turn: `search_web` DONE, then `call_mcp_tool` DONE with the search result in
+  its arguments (12.9 s).
+- **Over ACP every built-in asks** [V]: `session/request_permission` with
+  `toolCall.title = "Run search_web?"`, `kind: search`, `rawInput: {query}`; and
+  `"Run read_url_content?"`, `kind: fetch`, `rawInput: {Url}`. Refused, the
+  model answers that web access was denied. The agent definition does not apply
+  there (as found 2026-09-13), so the permission reply is the only switch.

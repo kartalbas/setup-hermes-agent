@@ -90,9 +90,6 @@ config_defaults() {
     : "${AGY_SHIM_MODELS:=}"
     : "${AGY_SHIM_MODEL_ALIASES:=}"
     : "${AGY_SHIM_UNKNOWN_MODEL:=reject}"
-    # The caller's functions as REAL tools of the CLI (ADR 0024): auto turns
-    # them on once the CLI's configuration names the bridge's tools server,
-    # which this run writes. "off" keeps the text protocol.
     : "${AGY_SHIM_MAX_CONCURRENT:=3}"
     # CLI processes kept warm, one per (model, system prompt, toolset) — in
     # practice one per bot. Starting one costs about a fifth of a request
@@ -121,10 +118,13 @@ config_defaults() {
     # module resolves it under the SERVICE account's home (~/.gemini/...),
     # not under whoever ran the installer. Set it only to override the path.
     : "${AGY_SHIM_ACP_TOKEN:=}"
-    # Characters of transcript one request may carry. A stateless request holds
-    # the whole chat, and a bot that researches fills it with tool output: the
-    # newest entries fit this, the rest are dropped with a note, so the question
-    # at the end stays the loudest thing in the request. 0 = send everything.
+    # The CLI's own tools the model may use inside its turn (ADR 0028): read
+    # the web, nothing that acts. search_web is the subscription's own Google
+    # search; read_url_content reads a page FROM THIS HOST, so it reaches what
+    # the host reaches — off until that is judged acceptable, and with it the
+    # run writes the read_url(*) rule the CLI needs. Empty switches both off.
+    # A bot on the bridge then leaves the agent's own `web` toolset out.
+    : "${AGY_SHIM_BUILTIN_TOOLS:=search_web}"
 
     : "${MAILPROXY_ENABLED:=false}"
     : "${MAILPROXY_FLOW:=device}"
@@ -850,11 +850,53 @@ _check_agyshim_callers_carry_the_token() {
         log_info "${want} is not in the secrets file yet; the run mints it"
 }
 
+# The CLI's own tools a bot may use (ADR 0028): the read-only web pair and
+# nothing else. The bridge refuses anything more as well; here it is a sentence
+# at validation instead of a bridge that will not start.
+_check_agyshim_builtin_tools() {
+    local IFS=$' ,\t\n' t
+    for t in ${AGY_SHIM_BUILTIN_TOOLS:-}; do
+        case $t in
+            search_web|read_url_content) ;;
+            *) _bad "AGY_SHIM_BUILTIN_TOOLS: '${t}' is not one of the CLI's read-only web tools (search_web, read_url_content)" ;;
+        esac
+    done
+}
+
+# agyshim_builtin_tools -> the configured CLI tools, comma-separated, each once
+agyshim_builtin_tools() {
+    local IFS=$' ,\t\n' t
+    local -a out=()
+    for t in ${AGY_SHIM_BUILTIN_TOOLS:-}; do
+        [[ " ${out[*]-} " == *" ${t} "* ]] || out+=("$t")
+    done
+    IFS=,
+    printf '%s' "${out[*]-}"
+}
+
+agyshim_has_builtin() {           # agyshim_has_builtin NAME — is this CLI tool enabled?
+    [[ ",$(agyshim_builtin_tools)," == *",$1,"* ]]
+}
+
+# llm_chain_on_bridge — true when every endpoint of the current chain is the
+# bridge. Per bot that is the bot's own chain: bot_llm_apply swaps it in for the
+# duration of the bot's pass. One endpoint elsewhere (a fallback on an API)
+# makes it false, because that model has no search of its own.
+llm_chain_on_bridge() {
+    is_true "${AGY_SHIM_ENABLED:-false}" || return 1
+    (( ${LLM_ENDPOINT_COUNT:-0} > 0 )) || return 1
+    local here="${AGY_SHIM_HOST}:${AGY_SHIM_PORT}" n
+    for (( n = 1; n <= LLM_ENDPOINT_COUNT; n++ )); do
+        [[ $(endpoint_field "$n" BASE_URL) == *"${here}"* ]] || return 1
+    done
+}
+
 _validate_agyshim() {
     _validating agyshim || return 0
     is_true "${AGY_SHIM_ENABLED:-false}" || return 0
     _check_enum AGY_SHIM_UNKNOWN_MODEL "$AGY_SHIM_UNKNOWN_MODEL" reject default
     _check_enum AGY_SHIM_BACKEND "$AGY_SHIM_BACKEND" print acp
+    _check_agyshim_builtin_tools
     [[ $AGY_SHIM_BACKEND != acp ]] || _check_abs_path AGY_SHIM_ACP_SERVER "$AGY_SHIM_ACP_SERVER"
     [[ ${AGY_SHIM_MAX_SPARES:-} =~ ^[0-9]+$ ]] || _bad "AGY_SHIM_MAX_SPARES must be a number of processes (0 switches the warm pool off)"
     _check_agyshim_callers_carry_the_token
@@ -901,6 +943,10 @@ _validate_channels() {
                     local pv="CHANNEL_EMAIL_${u}_PASSWORD_VAR"
                     _require_secret_for "${!pv:-}" "the ${which} mailbox"
                 fi
+                # Every poll is a login; the adapter falls back to 15 s on
+                # anything it cannot parse, which is what throttled the relay.
+                [[ -z ${CHANNEL_EMAIL_POLL_INTERVAL:-} || ${CHANNEL_EMAIL_POLL_INTERVAL} =~ ^[0-9]+$ ]] ||
+                    _bad "CHANNEL_EMAIL_POLL_INTERVAL must be a number of seconds, got '${CHANNEL_EMAIL_POLL_INTERVAL}'"
                 ;;
             teams)
                 _require_secret_for "${CHANNEL_TEAMS_CLIENT_ID_VAR:-}" "teams"

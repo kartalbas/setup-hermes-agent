@@ -199,3 +199,43 @@ with open(tmp, "w") as fh:
 os.replace(tmp, target)
 PY
 }
+
+# yaml_list_drop KEY VALUE... — the counterpart: every VALUE gone from the list
+# at the dotted KEY, other entries kept, nothing created where nothing was. 0
+# when something was removed, 3 when none of them were there.
+yaml_list_drop() {
+    local key=$1; shift
+    local target py
+    target=$(yaml_config_path)
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] ensure ${key} does not contain: $*"
+        return 3
+    fi
+    py=$(_yaml_python) || die "no interpreter with PyYAML available to edit ${target}"
+    HERMES_YAML_TARGET=$target HERMES_YAML_KEY=$key "$py" - "$@" <<'PY'
+import os, sys, yaml
+target, key = os.environ["HERMES_YAML_TARGET"], os.environ["HERMES_YAML_KEY"]
+try:
+    with open(target) as fh:
+        cfg = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    sys.exit(3)
+node = cfg
+parts = key.split(".")
+for part in parts[:-1]:
+    node = node.get(part) if isinstance(node, dict) else None
+    if not isinstance(node, dict):
+        sys.exit(3)
+current = node.get(parts[-1])
+if not isinstance(current, list):
+    sys.exit(3)
+kept = [v for v in current if v not in sys.argv[1:]]
+if kept == current:
+    sys.exit(3)
+node[parts[-1]] = kept
+tmp = target + ".tmp"
+with open(tmp, "w") as fh:
+    yaml.safe_dump(cfg, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+os.replace(tmp, target)
+PY
+}
