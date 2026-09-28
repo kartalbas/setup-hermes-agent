@@ -257,6 +257,8 @@ fixing whether or not the move happens.
 - [x] The Tasks bot's web toolset has no vision and no file tools: decided 2026-09-28 — it stays lean; documents go to the Secretary, which files them and creates the tasks itself
 - [ ] Open: commands that need an approval cannot be approved in the web chat (they stay unexecuted); left as is for now (operator, 2026-09-28)
 - [ ] Idea, not decided: the same cropping on the bot's side for photos from Teams
+- [x] The chat installs as an app: own name ("<BOT_PREFIX> Chat") and icon (the title's initial), a button that opens Chrome's/Edge's install dialog or shows Safari's two steps — installed 2026-09-28 (page, manifest, icons and app.js verified through the tunnel)
+- [ ] The operator installs the app: on the PC (Chrome/Edge button), on the iPhone (Share → Home Screen), signs in once inside it
 - [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
 - [ ] LibreChat's data (chats, accounts) is outside the agent's backup — include its Mongo volume if it stays
 
