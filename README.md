@@ -985,20 +985,25 @@ once is not sent again with every later message.
 
 **The document scanner.** Next to the paperclip sits a scanner button
 (`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
-the page's edges live; "Capture" takes a page — straightened and cropped to its
-edges, several pages in a row — and "Done" puts them into one PDF and hands it
-to LibreChat's own upload, as if picked with the paperclip; the bot gets it as
-a file. A page without a clear edge is taken as it is and marked in amber: a
-darker background under the paper helps. It runs entirely in the browser
-(`bot/librechat/scanner/scan.js`). The image work runs in a Web Worker
-(`scan-worker.js`) with jscanify and the OpenCV.js build it ships (MIT, pinned
-by checksum, about 9 MB, fetched once when the scanner first opens), so the
-page never waits for it: "Capture" works as soon as the camera runs — uncropped
-until edge detection is ready — and the line at the top of the camera says
-what is loading or what failed. LibreChat is not rebuilt for it: the run
-mounts LibreChat's own page with one script tag more, derived from the pinned
-image on every run, and the scanner's files next to LibreChat's; an installed
-app picks the button up on its next start.
+the page's outline once a few frames agree on it; "Capture" then takes the page
+straightened and cropped to its edges. When no page is seen — a hard shadow
+across it, a page cut off by the frame — the shot opens as a still with four
+corners to drag, a loupe showing the corner under the finger, and "Use" cuts
+it there. Several pages in a row; "Done" puts them into one PDF and hands it to
+LibreChat's own upload, as if picked with the paperclip; the bot gets it as a
+file. It runs entirely in the browser (`bot/librechat/scanner/scan.js`). The
+image work runs in a Web Worker (`scan-worker.js`) on OpenCV.js 4.7.0 (Apache
+2.0, pinned by checksum, about 9 MB, fetched once when the scanner first
+opens), so the page never waits for it: "Capture" works as soon as the camera
+runs — uncropped until edge detection is ready — and the line at the top of
+the camera says what is loading or what failed. The page is found in several
+passes over each frame after text and folds are closed away — edges at three
+sensitivities, seven brightness levels, and the colour saturation when those
+see nothing — and only a convex four-cornered outline counts, so a light desk,
+wood grain or a folded letter do not hide it. LibreChat is not rebuilt for it:
+the run mounts LibreChat's own page with one script tag more, derived from the
+pinned image on every run, and the scanner's files next to LibreChat's; an
+installed app picks the button up on its next start.
 
 ```bash
 systemctl status <service>-librechat                      # up: the three containers are running

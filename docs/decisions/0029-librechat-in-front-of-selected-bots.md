@@ -73,7 +73,7 @@ general questions go to the Gemini app, not to a chat on the bridge.
 
 7. **A document scanner in the chat** (added 2026-09-28, the operator's choice
    over a scan step on the bot's side): a button next to the paperclip, the
-   camera with the page's edges drawn live (jscanify on OpenCV.js, MIT, pinned
+   camera with the page's edges drawn live (OpenCV.js 4.7.0, Apache 2.0, pinned
    by checksum, loaded on first use), each shot straightened and cropped, and
    the pages handed to LibreChat's own hidden file input as one PDF — the same
    path as a file picked with the paperclip, so item 6 carries it to the bot.
@@ -91,9 +91,22 @@ general questions go to the Gemini app, not to a chat on the bridge.
    "Cancel" answering. The worker polls for OpenCV instead, and its WASM start
    and its global `Module` stay out of the page. The scanner opens as a modal
    `<dialog>`; "Capture" works as soon as the camera runs, uncropped until the
-   worker is ready. The worker does jscanify's contour search itself and frees
-   every contour: this OpenCV build never frees a handle that is dropped, and
-   jscanify's own left about a thousand per frame on a busy desk.
+   worker is ready.
+   Finding the page (revised the same day, the operator's choice): jscanify's
+   single pass — Canny at fixed high thresholds, the largest contour — saw the
+   page on a dark desk only; on test scenes of a letter on light wood, folded,
+   turned, on a white or coloured desk it found 4 of 10, some of them wrong.
+   The worker now looks at each frame in several passes after a closing has
+   taken text and folds out — edges at three sensitivities with their gaps
+   closed, seven brightness levels, and the colour saturation when those see
+   nothing — and counts only a convex quadrilateral with plausible corners
+   that does not touch the frame's border: 9 of 10, within 3 px. jscanify is
+   gone; its repository still supplies the pinned OpenCV build. The outline
+   counts once two frames agree, and a shot without one opens a still with four
+   corners to drag instead of being taken uncropped — a hard shadow across
+   page and desk, which no global pass sees through, ends there. Every contour
+   is freed: this OpenCV build never frees a handle that is dropped, and
+   jscanify's search left about a thousand per frame on a busy desk.
 
 ## Consequences
 

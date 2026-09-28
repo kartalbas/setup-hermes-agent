@@ -320,33 +320,40 @@ _librechat_images() {
 # ---------------------------------------------------------------------------
 # The document scanner (bot/librechat/scanner/scan.js): a button next to the
 # paperclip; the camera shows the page's edges live, each shot is straightened
-# and cropped, and the pages go into LibreChat's own upload as one PDF.
+# and cropped — or, when no page was seen, cut at four corners dragged by
+# hand — and the pages go into LibreChat's own upload as one PDF.
 #
 # LibreChat is not rebuilt for it. Its server reads client/dist/index.html once
 # at start and serves client/dist as static files, so the run mounts two things
 # over the image: that page with one script tag more — derived from the pinned
 # image on every run, so an upgrade cannot leave an old page behind — and a
 # directory next to LibreChat's own files with the scanner, the worker it does
-# its image work in (scan-worker.js: OpenCV off the page's thread), and their
-# two libraries: jscanify (MIT) and the OpenCV.js build it ships, pinned by tag
-# and checksum. The service worker caches LibreChat's assets but not the page,
-# so an installed app picks the button up on its next start.
+# its image work in (scan-worker.js: OpenCV off the page's thread), and OpenCV.js
+# 4.7.0 (Apache 2.0) — the build from jscanify's repository, pinned by tag and
+# checksum; jscanify itself is no longer used. The service worker caches
+# LibreChat's assets but not the page, so an installed app picks the button up
+# on its next start.
 # ---------------------------------------------------------------------------
 readonly _LC_SCANNER_SRC="https://raw.githubusercontent.com/puffinsoft/jscanify/v1.4.0/src"
-readonly _LC_SCANNER_JSCANIFY_SHA="7463ca648de2c081a07ef556e79d5d6b7525f2a5e2ca55fefdcb69608b014ea3"
 readonly _LC_SCANNER_OPENCV_SHA="7beec9c6b373927a6d68b145bff380a7b5c7f1b4a8c32bf88d11e591e54930a6"
 
 readonly -a _LC_SCANNER_FILES=(scan.js scan-worker.js)   # the scanner's own, from the repo
 
 librechat_scanner_source() { printf '%s/bot/librechat/scanner' "$SCRIPT_DIR"; }
 
-# One version for the scanner's files and its two libraries: they are cached
-# for days, and a new script or a new pin must reach a browser that has the old.
+# One version for the scanner's files and OpenCV: they are cached for days, and
+# a new script or a new pin must reach a browser that has the old.
 librechat_scanner_version() {
     local f
     { for f in "${_LC_SCANNER_FILES[@]}"; do cat "$(librechat_scanner_source)/${f}"; done
-      printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "$_LC_SCANNER_OPENCV_SHA"; } |
+      printf '%s' "$_LC_SCANNER_OPENCV_SHA"; } |
         sha256sum | cut -c1-12
+}
+
+_librechat_scanner_serves() {     # _librechat_scanner_serves NAME — part of the scanner
+    local f
+    for f in "${_LC_SCANNER_FILES[@]}" opencv.js; do [[ $1 == "$f" ]] && return 0; done
+    return 1
 }
 
 # LibreChat's page with the scanner's script tag before </body>, once; the
@@ -399,8 +406,14 @@ _librechat_scanner() {
     for f in "${_LC_SCANNER_FILES[@]}"; do
         write_file "${dir}/${f}" 0644 <"$(librechat_scanner_source)/${f}"
     done
-    _librechat_fetch_pinned "${dir}/jscanify.js" "${_LC_SCANNER_SRC}/jscanify.js" "$_LC_SCANNER_JSCANIFY_SHA"
     _librechat_fetch_pinned "${dir}/opencv.js" "${_LC_SCANNER_SRC}/opencv.js" "$_LC_SCANNER_OPENCV_SHA"
+    # the directory holds what the scanner serves and nothing it no longer uses
+    for f in "$dir"/*; do
+        [[ -f $f ]] || continue
+        _librechat_scanner_serves "$(basename "$f")" && continue
+        run rm -f "$f"
+        mark_changed; log_ok "removed $(basename "$f") from the scanner (no longer used)"
+    done
     if [[ $DRY_RUN == true ]]; then
         log_info "[dry-run] derive ${LIBRECHAT_DIR}/index.html from ${LIBRECHAT_IMAGE} with the scanner's script tag"
         return 0
@@ -435,7 +448,7 @@ _librechat_verify() {
     log_ok "LibreChat answering on 127.0.0.1:${LIBRECHAT_PORT} -> $(librechat_url)"
     if is_true "${LIBRECHAT_SCANNER:-true}"; then
         local f missing=""
-        for f in "${_LC_SCANNER_FILES[@]}" jscanify.js opencv.js; do
+        for f in "${_LC_SCANNER_FILES[@]}" opencv.js; do
             [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-scan/${f}") == 200 ]] || missing+=" ${f}"
         done
         if [[ -n $missing ]]; then
