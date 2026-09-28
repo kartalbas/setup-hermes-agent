@@ -324,6 +324,7 @@ config_defaults() {
     : "${LIBRECHAT_ENTRA_ASSIGNMENT:=true}"   # Entra admits only the group (needs Entra ID P1); false: LibreChat checks the group claim alone
     : "${LIBRECHAT_WELCOME:=Pick a bot above. Every chat is a context of its own.}"
     : "${LIBRECHAT_SCANNER:=true}"         # a document scanner next to the paperclip: live page edges, a cropped PDF
+    : "${LIBRECHAT_APP_COLOR:=#10a37f}"    # the app icon's ground, behind the title's initial
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
     # Derived without a literal: config_defaults runs before AND after the
@@ -945,6 +946,8 @@ _validate_librechat() {
         [[ ${!v} =~ ^[0-9]+$ ]] || _bad "${v} must be a port number, got '${!v}'"
     done
     _check_abs_path LIBRECHAT_DIR "$LIBRECHAT_DIR"
+    [[ $LIBRECHAT_APP_COLOR =~ ^#[0-9A-Fa-f]{6}$ ]] ||
+        _bad "LIBRECHAT_APP_COLOR must be a colour like #10a37f, got '${LIBRECHAT_APP_COLOR}'"
     local a IFS=$' ,\t\n'
     for a in ${LIBRECHAT_ENTRA_MEMBERS:-}; do
         [[ $a == *@*.* ]] || _bad "LIBRECHAT_ENTRA_MEMBERS: '${a}' is not an address"

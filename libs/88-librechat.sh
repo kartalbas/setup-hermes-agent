@@ -29,8 +29,10 @@ librechat_apply() {
 
     local before=$CHANGE_COUNT
     _librechat_secrets
-    _librechat_images                 # first: the scanner derives LibreChat's page from the image
+    _librechat_images                 # first: LibreChat's page is derived from the image
     _librechat_scanner
+    _librechat_app
+    _librechat_page
     _librechat_files
     _librechat_write_unit
     converge_unit "$(librechat_unit_name).service" "$before"
@@ -125,10 +127,14 @@ services:
       - uploads:/app/uploads
       - images:/app/client/public/images
 EOF
-    # The scanner: LibreChat's page with one script tag more, and the scanner's
-    # files where LibreChat serves its own (see _librechat_scanner).
-    is_true "${LIBRECHAT_SCANNER:-true}" && cat <<EOF
+    # LibreChat's page as the app — its name, its tags (_librechat_page) — and
+    # the app's files and, with its switch, the scanner's, where LibreChat
+    # serves its own.
+    cat <<EOF
       - ./index.html:/app/client/dist/index.html:ro
+      - ./app:/app/client/dist/hermes-app:ro
+EOF
+    is_true "${LIBRECHAT_SCANNER:-true}" && cat <<EOF
       - ./scanner:/app/client/dist/hermes-scan:ro
 EOF
     cat <<EOF
@@ -323,16 +329,11 @@ _librechat_images() {
 # and cropped — or, when no page was seen, cut at four corners dragged by
 # hand — and the pages go into LibreChat's own upload as one PDF.
 #
-# LibreChat is not rebuilt for it. Its server reads client/dist/index.html once
-# at start and serves client/dist as static files, so the run mounts two things
-# over the image: that page with one script tag more — derived from the pinned
-# image on every run, so an upgrade cannot leave an old page behind — and a
-# directory next to LibreChat's own files with the scanner, the worker it does
-# its image work in (scan-worker.js: OpenCV off the page's thread), and OpenCV.js
-# 4.7.0 (Apache 2.0) — the build from jscanify's repository, pinned by tag and
-# checksum; jscanify itself is no longer used. The service worker caches
-# LibreChat's assets but not the page, so an installed app picks the button up
-# on its next start.
+# LibreChat is not rebuilt for it: its page gets the scanner's script tag
+# (_librechat_page), and a directory next to LibreChat's own files holds the
+# scanner, the worker it does its image work in (scan-worker.js: OpenCV off the
+# page's thread), and OpenCV.js 4.7.0 (Apache 2.0) — the build from jscanify's
+# repository, pinned by tag and checksum; jscanify itself is no longer used.
 # ---------------------------------------------------------------------------
 readonly _LC_SCANNER_SRC="https://raw.githubusercontent.com/puffinsoft/jscanify/v1.4.0/src"
 readonly _LC_SCANNER_OPENCV_SHA="7beec9c6b373927a6d68b145bff380a7b5c7f1b4a8c32bf88d11e591e54930a6"
@@ -354,21 +355,6 @@ _librechat_scanner_serves() {     # _librechat_scanner_serves NAME — part of t
     local f
     for f in "${_LC_SCANNER_FILES[@]}" opencv.js; do [[ $1 == "$f" ]] && return 0; done
     return 1
-}
-
-# LibreChat's page with the scanner's script tag before </body>, once; the
-# query carries the script's own checksum, so a new scanner is fetched fresh.
-librechat_index_with_scanner() {  # librechat_index_with_scanner VERSION < index.html -> index.html
-    python3 -c '
-import sys
-page, version = sys.stdin.read(), sys.argv[1]
-tag = "<script defer src=\"./hermes-scan/scan.js?v=%s\"></script>" % version
-if "hermes-scan/scan.js" in page:
-    sys.exit("the page already carries a scanner tag; it must come from the image, not from an earlier run")
-if page.count("</body>") != 1:
-    sys.exit("LibreChat'"'"'s page has no single </body>; the image changed — review the scanner")
-sys.stdout.write(page.replace("</body>", tag + "</body>"))
-' "$1"
 }
 
 _librechat_fetch_pinned() {       # _librechat_fetch_pinned DEST URL SHA256
@@ -394,8 +380,8 @@ _librechat_fetch_pinned() {       # _librechat_fetch_pinned DEST URL SHA256
 _librechat_scanner() {
     local dir="${LIBRECHAT_DIR}/scanner"
     if ! is_true "${LIBRECHAT_SCANNER:-true}"; then
-        if [[ -e $dir || -e ${LIBRECHAT_DIR}/index.html ]]; then
-            run rm -rf "$dir" "${LIBRECHAT_DIR}/index.html"
+        if [[ -e $dir ]]; then
+            run rm -rf "$dir"
             mark_changed; log_ok "document scanner removed"
         fi
         return 0
@@ -414,15 +400,212 @@ _librechat_scanner() {
         run rm -f "$f"
         mark_changed; log_ok "removed $(basename "$f") from the scanner (no longer used)"
     done
+}
+
+# ---------------------------------------------------------------------------
+# The web chat as an app (bot/librechat/app/app.js). LibreChat is installable —
+# a manifest, a service worker — but as "LibreChat" with LibreChat's icon;
+# Chrome and Edge show the install only as a small icon in the address bar,
+# and Safari has none at all. The run gives the app the chat's name and an icon
+# — the title's initial on LIBRECHAT_APP_COLOR, drawn with Pillow from the
+# agent's venv, or LibreChat's icons where there is none — and a button on the
+# page that installs it, or in Safari shows the two steps. The manifest lives
+# next to app.js under a versioned address: LibreChat's service worker keeps
+# its own manifest in its cache, so a changed file at the old address would
+# never reach a browser that has it.
+# ---------------------------------------------------------------------------
+readonly -a _LC_APP_FILES=(app.js)                # the app's own, from the repo
+readonly -a _LC_APP_ICONS=(icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon.png favicon-32.png favicon-16.png)
+
+librechat_app_source() { printf '%s/bot/librechat/app' "$SCRIPT_DIR"; }
+
+# The initial the icon shows: the title's first letter or digit.
+librechat_app_letter() {
+    python3 -c 'import sys; print(next((c for c in sys.argv[1] if c.isalnum()), "?").upper())' "$(librechat_title)"
+}
+
+# The python that draws the icons: the agent's, which has Pillow.
+_librechat_icon_python() {
+    local py; py="$(hermes_install_dir 2>/dev/null)/venv/bin/python3"
+    [[ -x $py ]] && "$py" -c 'import PIL' 2>/dev/null && printf '%s' "$py"
+    return 0
+}
+librechat_app_own_icons() { [[ -n $(_librechat_icon_python) ]]; }
+
+# The icons, drawn large and shrunk into DIR; prints the names that changed.
+_librechat_icon_script() { cat <<'PY'
+import io, os, sys
+from PIL import Image, ImageDraw, ImageFont
+out, letter, colour = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def font(px):
+    for face in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+        try:
+            return ImageFont.truetype(face, px)
+        except OSError:
+            pass
+    return ImageFont.load_default(size=px)
+
+def icon(size, full, share, alpha=True):
+    s = size * 4
+    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    if full:                      # full bleed: the platform cuts its own shape
+        d.rectangle((0, 0, s, s), fill=colour)
+    else:
+        d.rounded_rectangle((0, 0, s - 1, s - 1), radius=round(s * 0.22), fill=colour)
+    f = font(round(s * share))
+    left, top, right, bottom = d.textbbox((0, 0), letter, font=f)
+    d.text(((s - (right - left)) / 2 - left, (s - (bottom - top)) / 2 - top), letter, font=f, fill="white")
+    im = im.resize((size, size), Image.LANCZOS)
+    return im if alpha else im.convert("RGB")
+
+ICONS = {
+    "icon-192.png": icon(192, False, 0.62),
+    "icon-512.png": icon(512, False, 0.62),
+    "icon-maskable-512.png": icon(512, True, 0.44),              # the letter inside the middle 80%
+    "apple-touch-icon.png": icon(180, True, 0.56, alpha=False),  # iOS rounds it, and shows alpha as black
+    "favicon-32.png": icon(32, False, 0.7),
+    "favicon-16.png": icon(16, False, 0.78),
+}
+changed = []
+for name, im in ICONS.items():
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    path = os.path.join(out, name)
+    if os.path.exists(path) and open(path, "rb").read() == buf.getvalue():
+        continue
+    with open(path + ".tmp", "wb") as fh:
+        fh.write(buf.getvalue())
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+    changed.append(name)
+print(" ".join(changed))
+PY
+}
+
+# One version for the app's files: the script, the name, the colour, the drawing.
+librechat_app_version() {
+    { cat "$(librechat_app_source)/app.js"; printf '%s\n%s\n' "$(librechat_title)" "$LIBRECHAT_APP_COLOR"
+      _librechat_icon_script; } | sha256sum | cut -c1-12
+}
+
+# The app's manifest: the chat's name, its icons (or LibreChat's), the whole host.
+librechat_manifest_json() {       # librechat_manifest_json VERSION OWN_ICONS(true|false)
+    python3 - "$(librechat_title)" "$1" "$2" <<'PY'
+import json, sys
+title, version, own = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+if own:
+    icons = [{"src": f"/hermes-app/{name}?v={version}", "sizes": size, "type": "image/png", "purpose": purpose}
+             for name, size, purpose in (("icon-192.png", "192x192", "any"), ("icon-512.png", "512x512", "any"),
+                                         ("icon-maskable-512.png", "512x512", "maskable"))]
+else:
+    icons = [{"src": "/assets/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+             {"src": "/assets/maskable-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]
+print(json.dumps({"id": "/", "name": title, "short_name": title, "description": title,
+                  "start_url": "/", "scope": "/", "display": "standalone",
+                  "background_color": "#171717", "theme_color": "#171717", "icons": icons},
+                 indent=2, ensure_ascii=False))
+PY
+}
+
+_librechat_app_serves() {         # _librechat_app_serves NAME — part of the app
+    local f
+    for f in "${_LC_APP_FILES[@]}" manifest.webmanifest; do [[ $1 == "$f" ]] && return 0; done
+    if librechat_app_own_icons; then
+        for f in "${_LC_APP_ICONS[@]}"; do [[ $1 == "$f" ]] && return 0; done
+    fi
+    return 1
+}
+
+_librechat_app() {
+    local dir="${LIBRECHAT_DIR}/app" f own=false manifest
+    ensure_dir "$LIBRECHAT_DIR" 0755
+    ensure_dir "$dir" 0755
+    for f in "${_LC_APP_FILES[@]}"; do
+        write_file "${dir}/${f}" 0644 <"$(librechat_app_source)/${f}"
+    done
+    if librechat_app_own_icons; then
+        own=true
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] draw the app's icons: '$(librechat_app_letter)' on ${LIBRECHAT_APP_COLOR}, into ${dir}"
+        else
+            local changed
+            changed=$("$(_librechat_icon_python)" - "$dir" "$(librechat_app_letter)" "$LIBRECHAT_APP_COLOR" \
+                      < <(_librechat_icon_script)) || die "could not draw the app's icons"
+            if [[ -n $changed ]]; then mark_changed; log_ok "app icons drawn: ${changed}"
+            else log_skip "app icons unchanged"; fi
+        fi
+    else
+        log_warn "no Pillow in the agent's venv: the app keeps LibreChat's icons"
+    fi
+    manifest=$(librechat_manifest_json "$(librechat_app_version)" "$own") || die "could not write the app's manifest"
+    write_file "${dir}/manifest.webmanifest" 0644 <<<"$manifest"
+    for f in "$dir"/*; do                 # nothing the app no longer uses
+        [[ -f $f ]] || continue
+        _librechat_app_serves "$(basename "$f")" && continue
+        run rm -f "$f"
+        mark_changed; log_ok "removed $(basename "$f") from the app (no longer used)"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# LibreChat's page. Its server reads client/dist/index.html once at start and
+# serves client/dist as static files, so the run mounts the page over the
+# image's: derived from the pinned image on every run, so an upgrade cannot
+# leave an old page behind, with the chat's name as title and application
+# name, the app's manifest and icons, and the app's and the scanner's script
+# tags, each with its version. Every change finds its place exactly once, or
+# the run stops: a new image is reviewed here. The service worker caches
+# LibreChat's assets but not the page, so an installed app picks it up on its
+# next start.
+# ---------------------------------------------------------------------------
+librechat_page_html() {           # librechat_page_html APP_VERSION SCAN_VERSION|"" OWN_ICONS < index.html -> index.html
+    python3 -c '
+import html, sys
+page = sys.stdin.read()
+title, app, scan, own = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+name = html.escape(title, quote=True)
+if "hermes-app/" in page or "hermes-scan/" in page:
+    sys.exit("the page already carries the app or the scanner; it must come from the image, not from an earlier run")
+
+def once(old, new):
+    global page
+    if page.count(old) != 1:
+        sys.exit("the page from the image has not exactly one %r: the image changed, review the page" % old)
+    page = page.replace(old, new)
+
+once("<title>LibreChat</title>", "<title>" + name + "</title>")
+once("<link rel=\"manifest\" href=\"./manifest.webmanifest\" crossorigin=\"use-credentials\">",
+     "<link rel=\"manifest\" href=\"./hermes-app/manifest.webmanifest?v=" + app + "\" crossorigin=\"use-credentials\">")
+if own:
+    once("href=\"assets/apple-touch-icon-180x180.png\"", "href=\"hermes-app/apple-touch-icon.png?v=" + app + "\"")
+    once("href=\"assets/favicon-32x32.png\"", "href=\"hermes-app/favicon-32.png?v=" + app + "\"")
+    once("href=\"assets/favicon-16x16.png\"", "href=\"hermes-app/favicon-16.png?v=" + app + "\"")
+once("</head>", "<meta name=\"application-name\" content=\"" + name + "\" />"
+                "<meta name=\"apple-mobile-web-app-title\" content=\"" + name + "\" /></head>")
+tags = "<script defer src=\"./hermes-app/app.js?v=" + app + "\"></script>"
+if scan:
+    tags += "<script defer src=\"./hermes-scan/scan.js?v=" + scan + "\"></script>"
+once("</body>", tags + "</body>")
+sys.stdout.write(page)
+' "$(librechat_title)" "$1" "$2" "$3"
+}
+
+_librechat_page() {
+    local scan="" own=false
+    is_true "${LIBRECHAT_SCANNER:-true}" && scan=$(librechat_scanner_version)
+    librechat_app_own_icons && own=true
     if [[ $DRY_RUN == true ]]; then
-        log_info "[dry-run] derive ${LIBRECHAT_DIR}/index.html from ${LIBRECHAT_IMAGE} with the scanner's script tag"
+        log_info "[dry-run] derive ${LIBRECHAT_DIR}/index.html from ${LIBRECHAT_IMAGE}: \"$(librechat_title)\", the app${scan:+ and the scanner}"
         return 0
     fi
-    local page version
+    local page derived
     page=$(docker run --rm --entrypoint cat "$LIBRECHAT_IMAGE" /app/client/dist/index.html) ||
         die "could not read LibreChat's page from ${LIBRECHAT_IMAGE}"
-    version=$(librechat_scanner_version)
-    write_file "${LIBRECHAT_DIR}/index.html" 0644 <<<"$(librechat_index_with_scanner "$version" <<<"$page")"
+    derived=$(librechat_page_html "$(librechat_app_version)" "$scan" "$own" <<<"$page") ||
+        die "LibreChat's page does not take the app's changes (the lines above say where); review the page"
+    write_file "${LIBRECHAT_DIR}/index.html" 0644 <<<"$derived"
 }
 
 _librechat_verify() {
@@ -446,14 +629,31 @@ _librechat_verify() {
         die "LibreChat rejected librechat.yaml; the lines above say why"
     fi
     log_ok "LibreChat answering on 127.0.0.1:${LIBRECHAT_PORT} -> $(librechat_url)"
+    local f missing="" page
+    page=$(fetch "http://127.0.0.1:${LIBRECHAT_PORT}/" 2>/dev/null || true)
+    for f in "${_LC_APP_FILES[@]}" manifest.webmanifest; do
+        [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-app/${f}") == 200 ]] || missing+=" ${f}"
+    done
+    if librechat_app_own_icons; then
+        for f in "${_LC_APP_ICONS[@]}"; do
+            [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-app/${f}") == 200 ]] || missing+=" ${f}"
+        done
+    fi
+    if [[ -n $missing ]]; then
+        log_warn "  the app's files are not served:${missing}; the chat works without them"
+    elif [[ $page != *"hermes-app/app.js"* || $page != *"hermes-app/manifest.webmanifest"* ]]; then
+        log_warn "  LibreChat's page does not carry the app's tags; the chat works without them"
+    else
+        log_ok "  installable as \"$(librechat_title)\", with a button that installs it"
+    fi
     if is_true "${LIBRECHAT_SCANNER:-true}"; then
-        local f missing=""
+        missing=""
         for f in "${_LC_SCANNER_FILES[@]}" opencv.js; do
             [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-scan/${f}") == 200 ]] || missing+=" ${f}"
         done
         if [[ -n $missing ]]; then
             log_warn "  the document scanner's files are not served:${missing}; the chat works without it"
-        elif ! fetch "http://127.0.0.1:${LIBRECHAT_PORT}/" 2>/dev/null | grep -q "hermes-scan/scan.js"; then
+        elif [[ $page != *"hermes-scan/scan.js"* ]]; then
             log_warn "  LibreChat's page does not carry the scanner's tag; the chat works without it"
         else
             log_ok "  document scanner served next to the paperclip"

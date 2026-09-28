@@ -51,3 +51,15 @@ make_secrets_file() {
 silence_logs() {
     LOG_LEVEL=error
 }
+
+# The agent's own interpreter, where it is installed: its venv has what the
+# carried patches and the app's icons use (pypdfium2, Pillow).
+agent_python() {                  # agent_python [MODULES] — HPY: the agent's venv python, or the test is skipped
+    local dir
+    HPY=""
+    for dir in "$(hermes_install_dir 2>/dev/null)" /usr/local/lib/hermes-agent "${HOME}/.hermes/hermes-agent"; do
+        [[ -n $dir && -x ${dir}/venv/bin/python3 ]] && { HPY="${dir}/venv/bin/python3"; break; }
+    done
+    [[ -n $HPY ]] || skip "the agent is not installed here"
+    "$HPY" -c "import ${1:-PIL}" 2>/dev/null || skip "the agent's venv has no ${1:-PIL}"
+}

@@ -214,18 +214,9 @@ PY
 # A scanned PDF from the web chat: its pages without text go to the model as
 # pictures (patch 6, on top of patch 5). Run with the agent's own interpreter,
 # which has pypdfium2 and Pillow.
-agent_python() {                  # HPY: the agent's venv python — or the test is skipped
-    local dir
-    HPY=""
-    for dir in "$(hermes_install_dir 2>/dev/null)" /usr/local/lib/hermes-agent "${HOME}/.hermes/hermes-agent"; do
-        [[ -n $dir && -x ${dir}/venv/bin/python3 ]] && { HPY="${dir}/venv/bin/python3"; break; }
-    done
-    [[ -n $HPY ]] || skip "the agent is not installed here"
-    "$HPY" -c 'import pypdfium2, PIL' 2>/dev/null || skip "the agent's venv has no pypdfium2 or Pillow"
-}
 
 @test "the scan-pictures patch hands a scan's pages to the model as pictures, keeps a text PDF's note, and marks a mixed one's scanned pages" {
-    agent_python
+    agent_python pypdfium2,PIL
     tmp=$(mktemp -d)
     cat >"${tmp}/api_server.py" <<'PY'
 import os

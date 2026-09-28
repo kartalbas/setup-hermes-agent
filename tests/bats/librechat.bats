@@ -82,6 +82,8 @@ EOF
     BOT_SECRETARY_CHANNELS="teams web"
     LIBRECHAT_HOSTNAME=chat.other.org; _invalid=(); _validate_librechat
     [[ "${_invalid[*]}" == *"not in the tunnel's zone"* ]]; LIBRECHAT_HOSTNAME=chat.example.com
+    LIBRECHAT_APP_COLOR=green; _invalid=(); _validate_librechat
+    [[ "${_invalid[*]}" == *"LIBRECHAT_APP_COLOR must be a colour"* ]]; LIBRECHAT_APP_COLOR="#10a37f"
     LIBRECHAT_ENTRA_MEMBERS="someone"; _invalid=(); _validate_librechat
     [[ "${_invalid[*]}" == *"'someone' is not an address"* ]]
     LIBRECHAT_ENABLED=false; _invalid=(); _validate_librechat
@@ -233,30 +235,152 @@ PY
     grep -qx '    librechat_uninstall' "$REPO_ROOT/libs/99-uninstall.sh"
 }
 
-# The document scanner: LibreChat is not rebuilt; its page gets one script tag
-# and its static directory one more folder, both mounted, both with the switch.
-@test "the scanner rides on LibreChat's own page and files, and goes with its switch" {
+# The app and the scanner: LibreChat is not rebuilt; its page is derived from
+# the image, and its static directory gets a folder for each, all mounted.
+@test "the app and the scanner ride on LibreChat's own page and files, the scanner with its switch" {
     out=$(librechat_compose_text)
     python3 -c '
 import sys, yaml
 d = yaml.safe_load(sys.stdin)
 v = d["services"]["api"]["volumes"]
-assert "./index.html:/app/client/dist/index.html:ro" in v and "./scanner:/app/client/dist/hermes-scan:ro" in v, v
+for m in ("./index.html:/app/client/dist/index.html:ro", "./app:/app/client/dist/hermes-app:ro",
+          "./scanner:/app/client/dist/hermes-scan:ro"):
+    assert m in v, (m, v)
 assert set(d["volumes"]) == {"mongo", "meili", "uploads", "images"}, d["volumes"]' <<<"$out"
     LIBRECHAT_SCANNER=false
     out=$(librechat_compose_text)
-    [[ $out != *"hermes-scan"* && $out != *"index.html"* ]]
+    [[ $out != *"hermes-scan"* && $out == *"index.html:/app/client"* && $out == *"hermes-app"* ]]
     python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' <<<"$out"
 }
 
-@test "the scanner's tag goes into LibreChat's page once, before </body>, with the script's checksum" {
-    page='<html><head></head><body><div id="root"></div></body></html>'
-    out=$(librechat_index_with_scanner abc123 <<<"$page")
-    [[ $out == *'<div id="root"></div><script defer src="./hermes-scan/scan.js?v=abc123"></script></body>'* ]]
-    bats_run librechat_index_with_scanner abc123 <<<"$out"
-    [ "$status" -ne 0 ]                                  # never twice: the page must come from the image
-    bats_run librechat_index_with_scanner abc123 <<<"<html></html>"
-    [ "$status" -ne 0 ] && [[ $output == *"review the scanner"* ]]
+# LibreChat's page as the pinned image has it, as far as the app and the scanner touch it.
+image_page() {
+    cat <<'HTML'
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta name="theme-color" content="#171717" />
+    <title>LibreChat</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon-180x180.png" />
+    <link rel="manifest" href="./manifest.webmanifest" crossorigin="use-credentials">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+HTML
+}
+
+@test "LibreChat's page becomes the app: its name, its manifest and icons, the app's and the scanner's tags, each once" {
+    LIBRECHAT_TITLE='Acme & Co "Chat"'
+    out=$(librechat_page_html app123 scan456 true <<<"$(image_page)")
+    [[ $out == *'<title>Acme &amp; Co &quot;Chat&quot;</title>'* ]]
+    [[ $out == *'<meta name="application-name" content="Acme &amp; Co &quot;Chat&quot;" />'* ]]
+    [[ $out == *'<meta name="apple-mobile-web-app-title" content="Acme &amp; Co &quot;Chat&quot;" />'* ]]
+    [[ $out == *'<link rel="manifest" href="./hermes-app/manifest.webmanifest?v=app123" crossorigin="use-credentials">'* ]]
+    [[ $out == *'href="hermes-app/apple-touch-icon.png?v=app123"'* && $out == *'href="hermes-app/favicon-16.png?v=app123"'* ]]
+    [[ $out == *'<script defer src="./hermes-app/app.js?v=app123"></script><script defer src="./hermes-scan/scan.js?v=scan456"></script></body>'* ]]
+    [[ $out != *"assets/apple-touch-icon"* && $out != *'href="./manifest.webmanifest"'* ]]
+    # no scanner, no icons of its own: LibreChat's icons stay, and no scanner tag
+    out=$(librechat_page_html app123 "" false <<<"$(image_page)")
+    [[ $out == *'href="assets/apple-touch-icon-180x180.png"'* && $out != *"hermes-scan"* ]]
+    [[ $out == *'<script defer src="./hermes-app/app.js?v=app123"></script></body>'* ]]
+    # never twice: the page must come from the image
+    bats_run librechat_page_html app123 "" false <<<"$out"
+    [ "$status" -ne 0 ]
+    # a page that changed stops the run; nothing is guessed
+    bats_run librechat_page_html app123 "" false <<<"<html><head><title>Other</title></head><body></body></html>"
+    [ "$status" -ne 0 ] && [[ $output == *"review the page"* ]]
+}
+
+@test "the run derives the page from the image, and keeps the old one rather than write one it could not derive" {
+    IFS=$'\n\t'                                          # as in install.sh
+    LIBRECHAT_DIR=$(mktemp -d); DRY_RUN=false
+    docker() { image_page; }
+    _librechat_page
+    grep -q "hermes-scan/scan.js?v=$(librechat_scanner_version)\"" "${LIBRECHAT_DIR}/index.html"
+    grep -q "hermes-app/app.js?v=$(librechat_app_version)\"" "${LIBRECHAT_DIR}/index.html"
+    docker() { printf '<html><body></body></html>'; }   # an image whose page changed
+    printf 'kept' >"${LIBRECHAT_DIR}/index.html"
+    bats_run _librechat_page
+    [ "$status" -ne 0 ] && [ "$(cat "${LIBRECHAT_DIR}/index.html")" = kept ]
+    rm -rf "$LIBRECHAT_DIR"
+}
+
+@test "the app's manifest: the chat's name, the whole host, its own icons with the version, or LibreChat's" {
+    LIBRECHAT_TITLE="Acme Chat"
+    librechat_manifest_json v1 true | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+assert m["name"] == m["short_name"] == "Acme Chat" and m["display"] == "standalone", m
+assert m["id"] == m["start_url"] == m["scope"] == "/", m
+icons = {(i["sizes"], i["purpose"]): i["src"] for i in m["icons"]}
+assert icons == {("192x192", "any"): "/hermes-app/icon-192.png?v=v1", ("512x512", "any"): "/hermes-app/icon-512.png?v=v1",
+                 ("512x512", "maskable"): "/hermes-app/icon-maskable-512.png?v=v1"}, icons'
+    librechat_manifest_json v1 false | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+assert [i["src"] for i in m["icons"]] == ["/assets/icon-192x192.png", "/assets/maskable-icon.png"], m["icons"]'
+}
+
+@test "the run puts the app's script and manifest next to LibreChat's files, and nothing the app no longer uses" {
+    IFS=$'\n\t'                                          # as in install.sh
+    LIBRECHAT_DIR=$(mktemp -d); DRY_RUN=false
+    mkdir -p "${LIBRECHAT_DIR}/app"
+    printf 'old' >"${LIBRECHAT_DIR}/app/icon-192.png"   # icons of an earlier run, and no Pillow now
+    _librechat_app
+    cmp -s "${LIBRECHAT_DIR}/app/app.js" <(printf '%s' "$(cat "$(librechat_app_source)/app.js")")
+    [ ! -e "${LIBRECHAT_DIR}/app/icon-192.png" ]
+    python3 -c 'import json, sys; m = json.load(open(sys.argv[1])); assert m["icons"][0]["src"].startswith("/assets/"), m' \
+        "${LIBRECHAT_DIR}/app/manifest.webmanifest"
+    rm -rf "$LIBRECHAT_DIR"
+}
+
+@test "the app's icons: the title's initial on the colour, every size, maskable and Apple's full bleed, drawn once" {
+    agent_python PIL
+    LIBRECHAT_TITLE="  acme chat"
+    [ "$(librechat_app_letter)" = A ]
+    dir=$(mktemp -d)
+    out=$("$HPY" - "$dir" S "#10a37f" < <(_librechat_icon_script))
+    [ "$out" = "icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon.png favicon-32.png favicon-16.png" ]
+    [ -z "$("$HPY" - "$dir" S "#10a37f" < <(_librechat_icon_script))" ]   # the same again: nothing rewritten
+    "$HPY" - "$dir" <<'PY'
+import os, sys
+from PIL import Image
+d = sys.argv[1]
+for name, size in {"icon-192.png": 192, "icon-512.png": 512, "icon-maskable-512.png": 512,
+                   "apple-touch-icon.png": 180, "favicon-32.png": 32, "favicon-16.png": 16}.items():
+    assert Image.open(os.path.join(d, name)).size == (size, size), name
+assert Image.open(os.path.join(d, "apple-touch-icon.png")).mode == "RGB"          # no alpha: iOS shows it black
+ground = (0x10, 0xA3, 0x7F)
+mask = Image.open(os.path.join(d, "icon-maskable-512.png")).convert("RGBA")
+assert mask.getpixel((0, 0)) == ground + (255,), mask.getpixel((0, 0))             # full bleed
+icon = Image.open(os.path.join(d, "icon-512.png")).convert("RGBA")
+assert icon.getpixel((0, 0))[3] == 0 and icon.getpixel((256, 12))[:3] == ground     # corners cut, the ground coloured
+assert any(c == (255, 255, 255) for _, c in icon.crop((150, 150, 362, 362)).convert("RGB").getcolors(1 << 16))
+PY
+    rm -rf "$dir"
+}
+
+@test "the app's version covers its script, its name, its colour and the drawing" {
+    v1=$(librechat_app_version)
+    [[ $v1 =~ ^[0-9a-f]{12}$ ]]
+    [ "$(LIBRECHAT_TITLE="Other Chat" librechat_app_version)" != "$v1" ]
+    [ "$(LIBRECHAT_APP_COLOR="#000000" librechat_app_version)" != "$v1" ]
+    src=$(mktemp -d); mkdir -p "${src}/bot/librechat/app"
+    cp "$(librechat_app_source)/app.js" "${src}/bot/librechat/app/"
+    [ "$(SCRIPT_DIR=$src librechat_app_version)" = "$v1" ]
+    printf '\n' >>"${src}/bot/librechat/app/app.js"
+    [ "$(SCRIPT_DIR=$src librechat_app_version)" != "$v1" ]
+    rm -rf "$src"
+}
+
+@test "the app's button, driven through: Chrome's own dialog, the iPhone's two steps, gone once dismissed, never in the app" {
+    command -v node >/dev/null || skip "node is not installed"
+    node --check "$REPO_ROOT/bot/librechat/app/app.js"
+    timeout 60 node "$REPO_ROOT/tests/bats/app-ui.js" "$REPO_ROOT/bot/librechat/app/app.js"
 }
 
 @test "the scanner's OpenCV is installed only with its pinned checksum" {
@@ -322,11 +446,10 @@ PY
     grep -q 'importScripts("opencv.js" + query)' "$(librechat_scanner_source)/scan-worker.js"
 }
 
-@test "the installer puts every file of the scanner's own next to OpenCV, drops what it no longer uses, and the page asks for this version" {
+@test "the installer puts every file of the scanner's own next to OpenCV and drops what it no longer uses" {
     IFS=$'\n\t'                                          # as in install.sh
     LIBRECHAT_DIR=$(mktemp -d); DRY_RUN=false
     _librechat_fetch_pinned() { :; }
-    docker() { printf '<html><body><div id="root"></div></body></html>'; }
     mkdir -p "${LIBRECHAT_DIR}/scanner"
     printf 'cv' >"${LIBRECHAT_DIR}/scanner/opencv.js"
     printf 'old' >"${LIBRECHAT_DIR}/scanner/jscanify.js"      # an earlier scanner's library
@@ -335,7 +458,6 @@ PY
     for f in scan.js scan-worker.js; do
         cmp -s "${LIBRECHAT_DIR}/scanner/${f}" <(printf '%s' "$(cat "$(librechat_scanner_source)/${f}")")
     done
-    grep -q "hermes-scan/scan.js?v=$(librechat_scanner_version)\"" "${LIBRECHAT_DIR}/index.html"
     rm -rf "$LIBRECHAT_DIR"
 }
 

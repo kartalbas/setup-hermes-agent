@@ -992,6 +992,17 @@ bot's tools make it: the Secretary reads and files documents and makes the
 tasks they call for; the Tasks bot, lean by design, has no file or vision
 tools — send documents to the Secretary.
 
+**The chat as an app.** The web chat installs like an app, under its own
+name (`LIBRECHAT_TITLE`, by default "<BOT_PREFIX> Chat") and with its own icon:
+the title's initial on `LIBRECHAT_APP_COLOR`, drawn by the run with Pillow from
+the agent's venv (LibreChat's icons where there is none). A button at the top
+of the page installs it: in Chrome and Edge it opens the browser's own dialog;
+in Safari — iPhone, iPad and Mac have no install button of their own — it shows
+the two steps (Share → "Add to Home Screen"; File → "Add to Dock"). Opened as
+the app, installed, or dismissed with ✕, it stays away. It is the same chat,
+only in a window of its own and on the home screen; every update of the host
+reaches it on its next start, with no store in between.
+
 **The document scanner.** Next to the paperclip sits a scanner button
 (`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
 each sheet's outline once a few frames agree on it — one letter, or several

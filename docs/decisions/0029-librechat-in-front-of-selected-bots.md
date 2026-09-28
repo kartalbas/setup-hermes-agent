@@ -130,6 +130,24 @@ general questions go to the Gemini app, not to a chat on the bridge.
    again, delete. "New document" puts a break in the strip, and "Done" hands
    one PDF per document to the file input at once.
 
+8. **The chat as an app** (added 2026-09-28, the operator's choice over a
+   guide alone or a native Android wrapper; an iOS app would need a paid
+   developer account). LibreChat is installable — manifest, service worker,
+   icons — but as "LibreChat"; Chrome and Edge show the install only as a
+   small icon in the address bar, and Safari has no install button on any
+   device. The run derives LibreChat's page from the pinned image every time
+   (the scanner's tag moved there too): the chat's title as title,
+   application name and Apple's home-screen name; a manifest of its own —
+   the chat's name, the whole host as scope, `id` "/" — and icons of its own,
+   the title's initial on `LIBRECHAT_APP_COLOR`, drawn with Pillow from the
+   agent's venv; and `app.js`, a button that opens the browser's install
+   dialog (`beforeinstallprompt`) or, in Safari, shows the two steps. The
+   manifest and icons live under `hermes-app/` with a version in the query:
+   LibreChat's service worker precaches its own `manifest.webmanifest`, so a
+   file changed at that address would never reach a browser that has it. A
+   page the image no longer matches stops the run instead of being guessed at;
+   before, a failed derivation would have written an empty page.
+
 ## Consequences
 
 - Chats become the unit of context the operator manages: new chat, rename,
