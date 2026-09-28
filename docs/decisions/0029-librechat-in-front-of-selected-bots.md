@@ -107,6 +107,18 @@ general questions go to the Gemini app, not to a chat on the bridge.
    page and desk, which no global pass sees through, ends there. Every contour
    is freed: this OpenCV build never frees a handle that is dropped, and
    jscanify's search left about a thousand per frame on a busy desk.
+   Editing and several documents (the operator's choices, the same day): the
+   cut lay inside the page — the preview's corners come from a smaller copy of
+   an older frame, and the inner edge of an outline can win — so a shot is
+   measured again on itself at twice the preview's resolution (the detector's
+   sizes and edge thresholds scale with the frame) and cut with a margin of 2%
+   of the page's shorter side. Several sheets in one shot are several pages:
+   beside the largest, every sheet that lies inside none of the others and is
+   brighter than a band around it, as paper is on a desk. A tap on a page opens
+   it instead of deleting it: turn, crop again on the kept shot, a "Document"
+   filter (the page divided by its own paper, so a shadow goes), move, take
+   again, delete. "New document" puts a break in the strip, and "Done" hands
+   one PDF per document to the file input at once.
 
 ## Consequences
 

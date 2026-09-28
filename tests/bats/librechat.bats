@@ -398,19 +398,20 @@ function answer(id) { const m = posted.find((p) => p.id === id); if (!m) fail("n
 
   const quad = [{ x: 150, y: 80 }, { x: 480, y: 110 }, { x: 450, y: 420 }, { x: 120, y: 390 }];
   scope.onmessage({ data: { id: 1, type: "detect", image: page(640, 480, quad) } });
-  const c = answer(1).corners;
-  if (!c) fail("no page found: " + JSON.stringify(answer(1)));
+  const pages = answer(1).pages || [];
+  if (pages.length !== 1) fail("one page, not " + JSON.stringify(answer(1)));
+  const c = pages[0];
   const want = { topLeftCorner: quad[0], topRightCorner: quad[1], bottomRightCorner: quad[2], bottomLeftCorner: quad[3] };
   for (const k of Object.keys(want)) {
     if (Math.abs(c[k].x - want[k].x) > 6 || Math.abs(c[k].y - want[k].y) > 6) fail(k + " " + JSON.stringify(c[k]));
   }
-  scope.onmessage({ data: { id: 2, type: "extract", image: page(640, 480, quad), corners: c, width: 300, height: 400 } });
-  const img = answer(2).image;
+  scope.onmessage({ data: { id: 2, type: "extract", image: page(640, 480, quad), cuts: [{ corners: c, width: 300, height: 400 }], filter: "colour" } });
+  const img = (answer(2).images || [])[0];
   if (!img || img.width !== 300 || img.height !== 400 || img.data.length !== 300 * 400 * 4) fail("extract: " + JSON.stringify(answer(2)).slice(0, 200));
   let sum = 0; for (let i = 0; i < img.data.length; i += 4) sum += img.data[i];
   if (sum / (300 * 400) < 200) fail("the straightened page is not the page");
   scope.onmessage({ data: { id: 3, type: "detect", image: page(640, 480, []) } });
-  if (answer(3).corners !== null) fail("a blank frame has a page: " + JSON.stringify(answer(3)));
+  if (!answer(3).pages || answer(3).pages.length) fail("a blank frame has a page: " + JSON.stringify(answer(3)));
   process.exit(0);
 })();
 JS
@@ -445,27 +446,86 @@ function busy(w, h) {             // a page on a desk full of small things: a th
 JS
 }
 
-@test "the scanner finds the page on a light desk, through wood grain and folds, turned, in a soft shadow, on colour" {
+@test "the scanner finds every sheet — on a light desk, through grain and folds, turned, in soft shadow, on colour, side by side — at both sizes" {
     scanner_libs
-    timeout 120 node - "$REPO_ROOT/bot/librechat/scanner/scan-worker.js" "$LIBS" "$REPO_ROOT/tests/bats/scanner-scenes.js" <<'JS'
+    timeout 300 node - "$REPO_ROOT/bot/librechat/scanner/scan-worker.js" "$LIBS" "$REPO_ROOT/tests/bats/scanner-scenes.js" <<'JS'
 const [worker, libs, scenes] = process.argv.slice(2);
 const cv = require(libs + "/opencv.js");
-const { findCorners } = require(worker);
+const { findPages } = require(worker);
 const { SCENES, scene } = require(scenes);
 const KEYS = ["topLeftCorner", "topRightCorner", "bottomRightCorner", "bottomLeftCorner"];
+function off(c, quad, s) { return Math.max(...KEYS.map((k, i) => Math.hypot(c[k].x - quad[i][0] * s, c[k].y - quad[i][1] * s))); }
 (function wait() {
   if (typeof cv.Mat !== "function") return setTimeout(wait, 20);
   const bad = [];
-  for (const [name, spec] of Object.entries(SCENES)) {
-    const c = findCorners(cv, scene(cv, spec));
-    const off = c && Math.max(...KEYS.map((k, i) => Math.hypot(c[k].x - spec.quad[i][0], c[k].y - spec.quad[i][1])));
-    // unseen is allowed only where no pass can see it; a wrong page never
-    if (c ? off > 6 : !spec.hard) bad.push(name + ": " + (c ? "corners off by " + off.toFixed(0) + " px" : "no page"));
+  for (const s of [1, 2]) {                     // the live preview, and a shot measured again at twice its size
+    for (const [name, spec] of Object.entries(SCENES)) {
+      const pages = findPages(cv, scene(cv, spec, s));
+      // a found sheet that is none of the scene's is wrong, always
+      for (const c of pages) {
+        const best = Math.min(...spec.sheets.map((q) => off(c, q, s)));
+        if (best > 6 * s) bad.push(`${name} at ${s}x: a sheet off by ${best.toFixed(0)} px`);
+      }
+      // unseen is allowed only where no pass can see it
+      if (!spec.hard && pages.length !== spec.sheets.length) bad.push(`${name} at ${s}x: ${pages.length} of ${spec.sheets.length} sheets`);
+    }
   }
   if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
   process.exit(0);
 })();
 JS
+}
+
+@test "the scanner's Document filter makes the paper white in light and shadow alike, and the ink dark" {
+    scanner_libs
+    timeout 120 node - "$REPO_ROOT/bot/librechat/scanner/scan-worker.js" "$LIBS" "$REPO_ROOT/tests/bats/scanner-scenes.js" <<'JS'
+const [worker, libs, scenes] = process.argv.slice(2);
+const cv = require(libs + "/opencv.js");
+const { findCorners, extract } = require(worker);
+const { SCENES, scene } = require(scenes);
+function region(im, x0, y0, x1, y1) {            // paper: the 95th percentile of a region, ink: the 5th
+  const v = [];
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) v.push(im.data[4 * (y * im.width + x)]);
+  v.sort((a, b) => a - b);
+  return { paper: v[Math.floor(v.length * 0.95)], ink: v[Math.floor(v.length * 0.05)] };
+}
+(function wait() {
+  if (typeof cv.Mat !== "function") return setTimeout(wait, 20);
+  const img = scene(cv, SCENES["light desk, soft shadow"], 2), c = findCorners(cv, img);
+  const [colour, doc] = ["colour", "document"].map((f) => extract(cv, img, [{ corners: c, width: 600, height: 850 }], f)[0]);
+  const lit = [350, 100, 590, 400], shade = [10, 600, 250, 840];   // top right in the light, bottom left in the shadow
+  const was = region(colour, ...shade), lightNow = region(doc, ...lit), shadeNow = region(doc, ...shade);
+  const bad = [];
+  if (was.paper > 180) bad.push("the scene has no shadow to take out: " + JSON.stringify(was));
+  if (lightNow.paper < 245 || shadeNow.paper < 245) bad.push("paper not white: " + JSON.stringify({ lightNow, shadeNow }));
+  if (lightNow.ink > 60 || shadeNow.ink > 60) bad.push("ink not dark: " + JSON.stringify({ lightNow, shadeNow }));
+  if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  process.exit(0);
+})();
+JS
+}
+
+@test "a cut gets its margin on every edge, sheets are read in rows, and the strip makes documents" {
+    command -v node >/dev/null || skip "node is not installed"
+    node -e '
+const s = require(process.argv[1]);
+const K = ["topLeftCorner", "topRightCorner", "bottomRightCorner", "bottomLeftCorner"];
+function at(c) { return K.map((k) => Math.round(c[k].x) + "," + Math.round(c[k].y)).join(" "); }
+function check(what, got, want) { if (got !== want) { console.error(what + ": " + got + " != " + want); process.exit(1); } }
+const page = { topLeftCorner: { x: 100, y: 100 }, topRightCorner: { x: 300, y: 100 },
+               bottomRightCorner: { x: 300, y: 400 }, bottomLeftCorner: { x: 100, y: 400 } };
+check("margin", at(s.withMargin(page, 0.02, 1000, 1000)), "96,96 304,96 304,404 96,404");   // 2% of the shorter side
+check("kept in the frame", at(s.expanded(page, 150, 1000, 1000)), "0,0 450,0 450,550 0,550");
+const q = (x, y) => ({ topLeftCorner: { x, y }, topRightCorner: { x: x + 100, y },
+                       bottomRightCorner: { x: x + 100, y: y + 200 }, bottomLeftCorner: { x, y: y + 200 } });
+check("reading order", s.readingOrder([q(400, 10), q(10, 300), q(200, 20), q(5, 5)]).map((c) => c.topLeftCorner.x).join(" "), "5 200 400 10");
+const B = s.BREAK, a = { n: "a" }, b = { n: "b" }, c = { n: "c" }, names = (l) => l.map((x) => (x === B ? "|" : x.n)).join("");
+check("breaks that separate nothing", names(s.tidy([B, a, B, B, b, B])), "a|b");
+check("documents", JSON.stringify(s.documents([a, B, b, c]).map((d) => d.map((x) => x.n))), JSON.stringify([["a"], ["b", "c"]]));
+check("earlier, across a break", names(s.moved([a, B, b, c], b, -1)), "ab|c");
+check("later, emptying a document", names(s.moved([a, B, b], a, 1)), "ab");
+check("second of two PDFs", s.scanFileName(new Date(2026, 8, 28, 14, 5), 2), "Scan 2026-09-28 14-05 (2).pdf");
+' "$REPO_ROOT/bot/librechat/scanner/scan.js"
 }
 
 @test "corners dragged by hand are ordered around their centre, starting top left" {
@@ -479,4 +539,9 @@ if (!K.every((k, i) => c[k] === page[i])) process.exit(2);
 const d = ordered([{ x: 60, y: 0 }, { x: 120, y: 60 }, { x: 60, y: 120 }, { x: 0, y: 60 }]);   // turned 45 degrees
 if (new Set(K.map((k) => d[k])).size !== 4) process.exit(3);
 ' "$REPO_ROOT/bot/librechat/scanner/scan.js"
+}
+
+@test "the scanner's screen, driven through: one sheet, two, a new document, the corners, a page edited, taken again, deleted, two PDFs handed over" {
+    command -v node >/dev/null || skip "node is not installed"
+    timeout 60 node "$REPO_ROOT/tests/bats/scanner-ui.js" "$REPO_ROOT/bot/librechat/scanner/scan.js"
 }

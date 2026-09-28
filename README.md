@@ -985,13 +985,20 @@ once is not sent again with every later message.
 
 **The document scanner.** Next to the paperclip sits a scanner button
 (`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
-the page's outline once a few frames agree on it; "Capture" then takes the page
-straightened and cropped to its edges. When no page is seen — a hard shadow
-across it, a page cut off by the frame — the shot opens as a still with four
-corners to drag, a loupe showing the corner under the finger, and "Use" cuts
-it there. Several pages in a row; "Done" puts them into one PDF and hands it to
-LibreChat's own upload, as if picked with the paperclip; the bot gets it as a
-file. It runs entirely in the browser (`bot/librechat/scanner/scan.js`). The
+each sheet's outline once a few frames agree on it — one letter, or several
+receipts side by side. "Capture" measures the shot again on itself, at twice
+the preview's resolution, so a hand that moved does not shift the cut, and
+takes every sheet in it straightened and cropped, with a margin of 2% of the
+page's shorter side: rather a strip of desk than a cut-off line. When no sheet
+is seen — a hard shadow across it, a page cut off by the frame — the shot opens
+as a still with four corners to drag, a loupe showing the corner under the
+finger, and "Use" cuts it there. A tap on a page in the strip opens it: turn
+it, crop it again, "Document" (the paper made white wherever it lies, shadow or
+not, the ink dark) or colour, move it earlier or later, take it again, delete
+it. "New document" starts the next PDF; "Done" hands one PDF per document to
+LibreChat's own upload at once, as if picked with the paperclip, and the bot
+gets each as a file. It runs entirely in the browser
+(`bot/librechat/scanner/scan.js`). The
 image work runs in a Web Worker (`scan-worker.js`) on OpenCV.js 4.7.0 (Apache
 2.0, pinned by checksum, about 9 MB, fetched once when the scanner first
 opens), so the page never waits for it: "Capture" works as soon as the camera
