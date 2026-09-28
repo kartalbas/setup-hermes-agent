@@ -196,7 +196,8 @@ DASHBOARD_PROXY_PASSWORD_VAR="DASHBOARD_PASSWORD"
 TERMINAL_BACKEND="local"
 
 # --- docker -------------------------------------------------------------
-# Nothing needs the container runtime once the sandbox is gone.
+# The sandbox is gone; LibreChat (LIBRECHAT_ENABLED below) is the one thing
+# that still needs the engine. true installs it for LibreChat alone.
 DOCKER_MANAGE=false
 DOCKER_LOG_MAX_SIZE="10m"
 DOCKER_LOG_MAX_FILE=3
@@ -314,11 +315,12 @@ BOT_PREFIX="Acme"                      # display names: "Acme Secretary", …
 TEAMS_APP_DEVELOPER="Acme"             # shown under the app name in the Teams app card (default: GIT_USER_NAME)
 BOT_SERVICE_PREFIX="acme"              # units acme-<key>.service, Azure bots acme-<key>
 BOT_PORT_BASE=3978                     # webhook ports 3978, 3979, … (BOT_<KEY>_PORT overrides)
+BOT_WEB_PORT_BASE=8642                 # the `web` channel's API ports on loopback, 8642, 8643, … (BOT_<KEY>_WEB_PORT overrides)
 AGENT_SESSION_RESET="none"             # none | daily@HOUR | idle@MINUTES; per bot: BOT_<KEY>_SESSION_RESET
 AGENT_CRON_DRIFT_GUARD=false        # true: the agent skips unpinned reminders after a provider/model change (spend guard); false: they fire
 AGENT_TOOL_SEARCH="off"             # off: MCP tools inline (the bridge needs the real names) | auto/on: behind tool_search; per bot: BOT_<KEY>_TOOL_SEARCH
 
-BOT_SECRETARY_CHANNELS="teams email"   # reads INBOX — everything not routed to another bot
+BOT_SECRETARY_CHANNELS="teams email"   # reads INBOX — everything not routed to another bot; add `web` for LibreChat
 BOT_SECRETARY_MAIL_ALIAS="secretary@example.com"
 BOT_SECRETARY_MAIL_CATCH_ALL=true
 # More bots on the SAME mailbox: give each an alias (added to the mailbox in
@@ -432,6 +434,24 @@ SITE_ENABLED=true
 SITE_OWNER="Acme Ltd"
 SITE_CONTACT="agent@example.com"
 # SITE_HOSTNAME=assistant.<TUNNEL_ZONE>, SITE_PORT=8081
+
+# LibreChat — a web chat (and phone app, as a PWA) in front of the bots whose
+# BOT_<KEY>_CHANNELS name `web` (ADR 0029). Each such bot is one entry in the
+# picker, every chat window its own session with that bot; Teams, mail and cron
+# stay as they are. Runs in containers on loopback (DOCKER_MANAGE=true), reached
+# only through the tunnel at LIBRECHAT_HOSTNAME, signed in with Entra: the
+# azure module makes the app and a security group, and only that group gets in.
+LIBRECHAT_ENABLED=false
+# LIBRECHAT_HOSTNAME=chat.<TUNNEL_ZONE>
+# LIBRECHAT_TITLE="Acme Chat"                    # empty: "<BOT_PREFIX> Chat"
+# LIBRECHAT_ENTRA_GROUP="acme-bots"              # empty: "<BOT_SERVICE_PREFIX>-bots"
+# LIBRECHAT_ENTRA_MEMBERS="you@example.com"      # kept in the group by the run; others are added in Entra
+# LIBRECHAT_ENTRA_ASSIGNMENT=true                # Entra admits only the group (needs Entra ID P1); false: LibreChat's group-claim check alone
+# LIBRECHAT_WELCOME="Pick a bot above. Every chat is a context of its own."
+# LIBRECHAT_PORT=3080  LIBRECHAT_MONGO_PORT=27018  LIBRECHAT_MEILI_PORT=7701  LIBRECHAT_DIR=/opt/hermes-librechat
+# LIBRECHAT_IMAGE=ghcr.io/danny-avila/librechat:v0.8.7
+# LIBRECHAT_MONGO_IMAGE=mongo:8.0.20
+# LIBRECHAT_MEILI_IMAGE=getmeili/meilisearch:v1.35.1
 
 # ---------------------------------------------------------------------------
 # The assistant, GitHub side (README 1.13): github/github-mcp-server, pinned,

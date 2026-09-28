@@ -168,6 +168,7 @@ modules_for() {                   # modules_for PATH… -> "a,b" or "all"
             bot/ops/*|libs/66-*)                add ops ;;
             bot/teams-app/*|bot/assets/*|libs/47-*|bot/VERSION) add azure ;;
             bot/site/*|libs/87-*)               add site ;;
+            libs/88-*)                          add librechat ;;
             libs/80-*)                          add channels ;;
             libs/70-*)                          add service ;;
             libs/85-*)                          add dashboard ;;

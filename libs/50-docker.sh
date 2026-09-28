@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 #
-# Container engine, used as the agent's terminal sandbox.
+# Container engine, used as the agent's terminal sandbox and for LibreChat.
 #
 # Ordered before the agent is installed and started. If the engine arrives
 # afterwards, the gateway spends its first window executing tool calls directly
@@ -11,8 +11,8 @@ docker_apply() {
         log_skip "docker unmanaged (DOCKER_MANAGE=false)"
         return 0
     fi
-    if [[ $TERMINAL_BACKEND != docker ]]; then
-        log_skip "docker not needed (TERMINAL_BACKEND=${TERMINAL_BACKEND})"
+    if [[ $TERMINAL_BACKEND != docker ]] && ! is_true "${LIBRECHAT_ENABLED:-false}"; then
+        log_skip "docker not needed (TERMINAL_BACKEND=${TERMINAL_BACKEND}, LIBRECHAT_ENABLED=false)"
         return 0
     fi
 
@@ -183,6 +183,7 @@ _docker_verify() {
 # block on a cold image pull, which reads as the agent hanging.
 # ---------------------------------------------------------------------------
 _docker_prepull_sandbox_image() {
+    [[ $TERMINAL_BACKEND == docker ]] || return 0     # the engine is here for LibreChat alone
     is_true "$TERMINAL_IMAGE_PREPULL" || { log_skip "sandbox image pre-pull disabled"; return 0; }
     [[ -n $TERMINAL_DOCKER_IMAGE ]] || { log_debug "no sandbox image configured"; return 0; }
 

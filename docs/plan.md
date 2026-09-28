@@ -240,3 +240,12 @@ fixing whether or not the move happens.
 - [x] **Mail poll interval** — the adapter reads `EMAIL_POLL_INTERVAL` from `.env` only, so every bot polled every 15 s (20 logins a minute, Exchange throttled the relay). Written to `.env` now, default 60 s
 - [ ] Watch the relay for 24–48 h after the interval change: timeouts / "authenticated but not connected" should stop
 - [ ] ADR 0027 still reads as if answers went undelivered on ACP; `content_delivered=False` is a duplicate-risk diagnostic and the message is delivered — correct the record
+
+## 12 · LibreChat test with Secretary and Tasks (ADR 0029), 2026-09-28
+
+- [x] `web` channel (the agent's API server on loopback, key, toolset), the `librechat` module (containers on loopback, unit, tunnel host), the Entra app, group and assignment — built and tested
+- [ ] Installed on the host and verified: containers up, `chat.<zone>` answering, the Entra app and group in place, both bots' API servers answering
+- [ ] The operator signs in at `chat.<zone>`, installs the PWA, and tries Tasks and the Secretary in several chats
+- [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
+- [ ] LibreChat's data (chats, accounts) is outside the agent's backup — include its Mongo volume if it stays
+

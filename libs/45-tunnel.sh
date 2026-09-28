@@ -151,6 +151,7 @@ tunnel_hostnames() {
         printf '%s\n' "$TUNNEL_HOSTNAME"
     fi
     is_true "${SITE_ENABLED:-false}" && printf '%s\n' "$SITE_HOSTNAME"
+    is_true "${LIBRECHAT_ENABLED:-false}" && printf '%s\n' "$LIBRECHAT_HOSTNAME"
     return 0
 }
 
@@ -176,6 +177,10 @@ tunnel_ingress_rules() {
     # The public pages: the whole hostname, every path.
     is_true "${SITE_ENABLED:-false}" &&
         jq -nc --arg host "$SITE_HOSTNAME" --arg svc "http://127.0.0.1:${SITE_PORT}" '{hostname: $host, service: $svc}'
+    # LibreChat (ADR 0029): the whole hostname too — its own sign-in (Entra)
+    # guards every path, so the tunnel does not have to pick paths for it.
+    is_true "${LIBRECHAT_ENABLED:-false}" &&
+        jq -nc --arg host "$LIBRECHAT_HOSTNAME" --arg svc "http://127.0.0.1:${LIBRECHAT_PORT}" '{hostname: $host, service: $svc}'
     jq -nc '{service: "http_status:404"}'
 }
 

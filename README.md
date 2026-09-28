@@ -922,6 +922,64 @@ or move them in the Planner app, then delete the old plan.
 buckets (`status`, `tenants`) and what is due (`due`, `digest`); the Admin bot's
 snapshot carries `tasksctl status`.
 
+## 1.16 · LibreChat — chosen bots in the browser and on the phone
+
+Teams gives each bot one long chat. LibreChat (ADR 0029) gives the bots you
+pick a web chat with a list of chats, each its own context: one window for
+the tax return, one for a customer, a third started fresh — and back to any of
+them later. On the phone it installs as an app (a PWA: open the page, then
+"Add to Home screen"). Teams, mail and cron stay exactly as they are; digests
+and reminders still arrive in Teams, because a web page cannot send by itself.
+
+A bot takes part by adding `web` to its channels:
+
+```bash
+# config/hermes.conf
+BOT_SECRETARY_CHANNELS="teams email web"
+BOT_TASKS_CHANNELS="teams email web"
+LIBRECHAT_ENABLED=true
+DOCKER_MANAGE=true                          # LibreChat runs in containers
+LIBRECHAT_ENTRA_MEMBERS="you@example.com"   # kept in the sign-in group by the run
+# LIBRECHAT_HOSTNAME=chat.<TUNNEL_ZONE>
+```
+
+What the run does with that, all of it repeatable:
+
+- **the web channel** — each `web` bot's own agent starts its OpenAI-compatible
+  API server on loopback (`BOT_WEB_PORT_BASE` 8642, +1 per bot), with a key the
+  run mints into the secrets file and the bot's own toolset; a bot that drops
+  `web` loses the key and the listener again;
+- **the sign-in** (azure module) — an Entra app for LibreChat with the redirect
+  `/oauth/openid/callback` on the chat host, a security group
+  `<BOT_SERVICE_PREFIX>-bots`, the members you listed, and the group assigned to
+  the app with "assignment required": Entra lets group members in and nobody
+  else (group assignment needs Entra ID P1; `LIBRECHAT_ENTRA_ASSIGNMENT=false`
+  leaves the check to LibreChat, which reads the group from the ID token as
+  well). Colleagues are added to the group in Entra, by you;
+- **LibreChat** — LibreChat, MongoDB and Meilisearch as containers on the host
+  network, every one bound to 127.0.0.1 and nothing published, under the unit
+  `<service>-librechat`; pinned images (`LIBRECHAT_IMAGE` and friends); the
+  tunnel publishes `chat.<zone>` to it like the bots' webhooks. Local accounts
+  and registration are off; the first Entra sign-in of a group member creates
+  the account.
+
+In the chat, the bots are the entries in the picker at the top, and that is
+all there is to pick: LibreChat's own tools (its web search, code, file search,
+agents, memory) are switched off — the bots bring theirs. Each LibreChat chat
+is its own session on the bot's side (the chat's id travels as
+`X-Hermes-Session-Id`), with the whole tool history of that chat. Editing an
+earlier message or regenerating an answer in LibreChat does not rewrite what
+the bot remembers of that chat; start a new chat for a new line of thought.
+Every signed-in person sees every web bot, and a bot's memory is the bot's,
+not the person's.
+
+```bash
+systemctl status <service>-librechat                      # up: the three containers are running
+cd /opt/hermes-librechat && docker compose ps             # which of them
+docker compose logs --tail 50 api                         # LibreChat's own log
+curl -s http://127.0.0.1:8642/health                      # a web bot's API server
+```
+
 ---
 
 # PART 2 — Fill the configuration

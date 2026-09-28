@@ -28,6 +28,9 @@ channels_apply() {
         CHANNEL_WHATSAPP_ENABLED=false
         CHANNEL_TEAMS_ENABLED=$(bot_has_channel "$key" teams && printf true || printf false)
         CHANNEL_EMAIL_ENABLED=$(bot_has_channel "$key" email && printf true || printf false)
+        CHANNEL_WEB_ENABLED=$(bot_has_channel "$key" web && printf true || printf false)
+        CHANNEL_WEB_PORT=$(bot_field "$key" WEB_PORT)
+        CHANNEL_WEB_KEY_VAR=$(bot_field "$key" WEB_KEY_VAR)
         CHANNEL_EMAIL_FOLDER=$(bot_field "$key" MAIL_FOLDER)
         CHANNEL_TEAMS_CLIENT_ID_VAR=$BOT_TEAMS_CLIENT_ID_VAR
         CHANNEL_TEAMS_CLIENT_SECRET_VAR=$BOT_TEAMS_CLIENT_SECRET_VAR
@@ -116,6 +119,7 @@ _channels_apply_one() {
     _channel_email    || failed+=(email)
     _channel_whatsapp || failed+=(whatsapp)
     _channel_teams    || failed+=(teams)
+    _channel_web      || failed+=(web)
 
     _channels_restart_if_changed "$unit"
 
@@ -229,6 +233,26 @@ _env_upsert() {
     [[ -n ${SERVICE_USER:-} ]] && chown "${SERVICE_USER}:${SERVICE_GROUP}" "$file"
     mark_changed
     log_ok "set ${key}"
+}
+
+_env_remove() {                   # _env_remove KEY... — gone from .env; nothing written when none were there
+    local file key present=()
+    file=$(_env_file)
+    [[ -f $file ]] || return 0
+    for key in "$@"; do grep -q "^${key}=" "$file" 2>/dev/null && present+=("$key"); done
+    (( ${#present[@]} )) || return 0
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] remove ${present[*]} from ${file}"
+        return 0
+    fi
+    local tmp pattern
+    pattern=$(printf '^%s=|' "${present[@]}"); pattern=${pattern%|}
+    tmp=$(mktemp "${file}.XXXXXX"); chmod 0600 "$tmp"
+    grep -Ev "$pattern" "$file" >"$tmp" || true
+    mv -f "$tmp" "$file"
+    [[ -n ${SERVICE_USER:-} ]] && chown "${SERVICE_USER}:${SERVICE_GROUP}" "$file"
+    mark_changed
+    log_ok "removed ${present[*]}"
 }
 
 _config_set() {
@@ -853,6 +877,45 @@ _native_search_configure() {
             *) die "could not write agent.disabled_toolsets" ;;
         esac
     fi
+}
+
+# ---------------------------------------------------------------------------
+# The web channel (ADR 0029): the agent's own OpenAI-compatible API server, on
+# loopback, one port per bot, for LibreChat in front of it. The agent starts
+# the listener as soon as API_SERVER_KEY is set in the profile's .env (it
+# refuses one without a key), so the key IS the switch: a bot without the
+# channel has it removed. The key is minted into the secrets file, where the
+# librechat module reads it again. The model name the server advertises is
+# the bot's key, so a request naming it is answered by the bot's own model.
+# The platform gets the bot's toolset like every other way in; unset, the
+# agent would give it the full default set, terminal and files included.
+# ---------------------------------------------------------------------------
+_channel_web() {
+    [[ -n ${BOT_KEY:-} ]] || return 0             # a channel of bots; a single agent's .env is left alone
+    if ! is_true "${CHANNEL_WEB_ENABLED:-false}"; then
+        _env_remove API_SERVER_KEY API_SERVER_HOST API_SERVER_PORT API_SERVER_MODEL_NAME
+        return 0
+    fi
+    local var=${CHANNEL_WEB_KEY_VAR:?}
+    if ! secret_nonempty "$var"; then
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would mint ${var} and write it to ${SECRETS_FILE}"
+        else
+            local minted; minted=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)
+            [[ ${#minted} -ge 32 ]] || die "could not mint ${var}"
+            log_redact_register "$minted"
+            _secrets_append "$var" "$minted"
+            mark_changed; log_ok "${var} minted and written to the secrets file"
+        fi
+    fi
+    if secret_nonempty "$var"; then
+        _env_upsert API_SERVER_KEY "$(secret_get "$var")"
+    fi
+    _env_upsert API_SERVER_HOST 127.0.0.1
+    _env_upsert API_SERVER_PORT "${CHANNEL_WEB_PORT:?}"
+    _env_upsert API_SERVER_MODEL_NAME "${BOT_KEY:-hermes-agent}"
+    _platform_toolset_configure api_server
+    log_info "web            127.0.0.1:${CHANNEL_WEB_PORT} (the agent's API server, for LibreChat)"
 }
 
 _channels_restart_if_changed() {

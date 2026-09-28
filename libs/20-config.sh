@@ -303,6 +303,26 @@ config_defaults() {
     : "${BOT_PREFIX:=}"                    # display names are "<prefix> <Name>"
     : "${BOT_SERVICE_PREFIX:=agent}"       # units <prefix>-<key>.service, Azure bots <prefix>-<key>
     : "${BOT_PORT_BASE:=3978}"             # webhook ports: base, base+1, … unless a bot names its own
+    : "${BOT_WEB_PORT_BASE:=8642}"         # the `web` channel's API ports on loopback: base, base+1, …
+    # --- LibreChat: a web chat in front of the bots with the `web` channel (ADR 0029) ---
+    # One page on loopback behind the tunnel, Entra sign-in for one group. The
+    # title and the group name are derived when used (librechat_title,
+    # librechat_group): here the prefixes are not loaded yet on the first pass.
+    : "${LIBRECHAT_ENABLED:=false}"
+    [[ -n ${TUNNEL_ZONE:-} ]] && : "${LIBRECHAT_HOSTNAME:=chat.${TUNNEL_ZONE}}"
+    : "${LIBRECHAT_HOSTNAME:=}"
+    : "${LIBRECHAT_PORT:=3080}"
+    : "${LIBRECHAT_MONGO_PORT:=27018}"
+    : "${LIBRECHAT_MEILI_PORT:=7701}"
+    : "${LIBRECHAT_IMAGE:=ghcr.io/danny-avila/librechat:v0.8.7}"    # the last release that is not a candidate
+    : "${LIBRECHAT_MONGO_IMAGE:=mongo:8.0.20}"                       # what that release's compose file pins
+    : "${LIBRECHAT_MEILI_IMAGE:=getmeili/meilisearch:v1.35.1}"
+    : "${LIBRECHAT_DIR:=/opt/hermes-librechat}"
+    : "${LIBRECHAT_TITLE:=}"               # empty: "<BOT_PREFIX> Chat"
+    : "${LIBRECHAT_ENTRA_GROUP:=}"         # empty: "<BOT_SERVICE_PREFIX>-bots"
+    : "${LIBRECHAT_ENTRA_MEMBERS:=}"       # addresses the run keeps in that group; others are added in Entra
+    : "${LIBRECHAT_ENTRA_ASSIGNMENT:=true}"   # Entra admits only the group (needs Entra ID P1); false: LibreChat checks the group claim alone
+    : "${LIBRECHAT_WELCOME:=Pick a bot above. Every chat is a context of its own.}"
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
     # Derived without a literal: config_defaults runs before AND after the
@@ -702,6 +722,7 @@ config_validate() {
     _validate_mailproxy
     _validate_agyshim
     _validate_channels
+    _validate_librechat
     _validate_dashboard
     _validate_tunnel
     _validate_backup
@@ -888,6 +909,44 @@ llm_chain_on_bridge() {
     local here="${AGY_SHIM_HOST}:${AGY_SHIM_PORT}" n
     for (( n = 1; n <= LLM_ENDPOINT_COUNT; n++ )); do
         [[ $(endpoint_field "$n" BASE_URL) == *"${here}"* ]] || return 1
+    done
+}
+
+# --- LibreChat (ADR 0029) -----------------------------------------------------
+librechat_title() { printf '%s' "${LIBRECHAT_TITLE:-${BOT_PREFIX:+${BOT_PREFIX} }Chat}"; }
+librechat_group() { printf '%s' "${LIBRECHAT_ENTRA_GROUP:-${BOT_SERVICE_PREFIX}-bots}"; }
+librechat_url()   { printf 'https://%s' "$LIBRECHAT_HOSTNAME"; }
+librechat_redirect_uri() { printf '%s/oauth/openid/callback' "$(librechat_url)"; }
+
+web_bots() {                      # the bots with the `web` channel, one per line
+    local k
+    while IFS= read -r k; do
+        [[ -n $k ]] && bot_has_channel "$k" web && printf '%s\n' "$k"
+    done < <(bots)
+    return 0
+}
+
+_validate_librechat() {
+    is_true "${LIBRECHAT_ENABLED:-false}" || return 0
+    [[ -n $LIBRECHAT_HOSTNAME ]] || _bad "LIBRECHAT_HOSTNAME is empty (set TUNNEL_ZONE, or name the host)"
+    [[ ${TUNNEL_MODE:-none} != none ]] ||
+        _bad "LibreChat is reached through the tunnel: LIBRECHAT_ENABLED=true needs TUNNEL_MODE=api or assisted"
+    [[ -z ${TUNNEL_ZONE:-} || $LIBRECHAT_HOSTNAME == *".${TUNNEL_ZONE}" ]] ||
+        _bad "LIBRECHAT_HOSTNAME '${LIBRECHAT_HOSTNAME}' is not in the tunnel's zone ${TUNNEL_ZONE}"
+    is_true "${AZURE_MANAGE:-false}" ||
+        _bad "LibreChat signs in with Entra, and the azure module creates that app: LIBRECHAT_ENABLED=true needs AZURE_MANAGE=true"
+    is_true "${DOCKER_MANAGE:-false}" ||
+        _bad "LibreChat runs in containers: LIBRECHAT_ENABLED=true needs DOCKER_MANAGE=true"
+    [[ -n $(web_bots) ]] ||
+        _bad "LIBRECHAT_ENABLED=true, but no bot has the web channel (BOT_<KEY>_CHANNELS=\"… web\")"
+    local v
+    for v in LIBRECHAT_PORT LIBRECHAT_MONGO_PORT LIBRECHAT_MEILI_PORT; do
+        [[ ${!v} =~ ^[0-9]+$ ]] || _bad "${v} must be a port number, got '${!v}'"
+    done
+    _check_abs_path LIBRECHAT_DIR "$LIBRECHAT_DIR"
+    local a IFS=$' ,\t\n'
+    for a in ${LIBRECHAT_ENTRA_MEMBERS:-}; do
+        [[ $a == *@*.* ]] || _bad "LIBRECHAT_ENTRA_MEMBERS: '${a}' is not an address"
     done
 }
 
@@ -1109,6 +1168,8 @@ bot_field() {
         CHANNELS)      printf 'teams' ;;
         MCP)           printf '' ;;
         PORT)          printf '%s' $(( BOT_PORT_BASE + $(bot_index "$key") )) ;;
+        WEB_PORT)      printf '%s' $(( BOT_WEB_PORT_BASE + $(bot_index "$key") )) ;;   # the `web` channel: the agent's API server on loopback
+        WEB_KEY_VAR)   printf 'HERMES_WEB_%s_KEY' "$(bot_upper "$key")" ;;          # its key in the secrets file, minted by the run
         HOSTNAME)      printf '%s.%s' "$key" "${TUNNEL_ZONE:-}" ;;
         SERVICE)       printf '%s-%s' "$BOT_SERVICE_PREFIX" "$key" ;;
         AZURE_NAME)    printf '%s-%s' "$BOT_SERVICE_PREFIX" "$key" ;;
@@ -1224,7 +1285,15 @@ _bots_validate() {
         [[ -f $(bot_role_file "$k") ]] || _bad "bot ${k}: no role file bot/roles/$(bot_field "$k" ROLE).md"
         local IFS=$' \t\n'
         for c in $(bot_field "$k" CHANNELS); do
-            case $c in teams) ;; email) emails=$((emails + 1)) ;; *) _bad "bot ${k}: unknown channel '${c}' (teams, email)" ;; esac
+            case $c in
+                teams) ;;
+                email) emails=$((emails + 1)) ;;
+                web)   # the agent's API server on loopback, one port per bot
+                       p=$(bot_field "$k" WEB_PORT)
+                       for other in ${ports+"${ports[@]}"}; do [[ $other == "$p" ]] && _bad "bots: port ${p} is used twice"; done
+                       ports+=("$p") ;;
+                *) _bad "bot ${k}: unknown channel '${c}' (teams, email, web)" ;;
+            esac
         done
         for m in $(bot_field "$k" MCP); do
             case $m in m365)   is_true "${ASSISTANT_M365_ENABLED:-false}"   || _bad "bot ${k}: MCP m365 needs ASSISTANT_M365_ENABLED=true" ;;

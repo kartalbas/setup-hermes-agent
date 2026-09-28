@@ -38,6 +38,8 @@ azure_apply() {
         _az_teams_app_package
         bot_context_end
     done < <(bots)
+
+    _az_librechat
 }
 
 az_bot_endpoint() { printf 'https://%s%s' "$BOT_HOSTNAME" "$TUNNEL_INGRESS_PATH"; }
@@ -680,4 +682,192 @@ _az_tasks_group_ensure() {
     _az_group_owner_ensure "$gid" "$owner_id" "$ASSISTANT_TASKS_ASSIGNEE"
     is_true "${ASSISTANT_TASKS_TEAM:-false}" && _az_tasks_team_ensure "$gid"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# LibreChat's sign-in (ADR 0029): an Entra app for the web chat, the security
+# group whose members may use it, and the assignment that makes Entra admit
+# that group and nobody else. The app's client id and secret and the group's
+# id are written back to the secrets file, like the bots'. The addresses in
+# LIBRECHAT_ENTRA_MEMBERS are kept in the group; anyone else is added in Entra
+# by a person. The app also puts the user's groups into the ID token, so
+# LibreChat checks the same membership again on its side.
+#
+# State goes into _LC_* variables, not onto stdout: a function that changes
+# something must not run in a subshell, or its mark_changed is lost.
+# ---------------------------------------------------------------------------
+readonly _AZ_DEFAULT_ACCESS_ROLE=00000000-0000-0000-0000-000000000000
+
+_az_librechat() {
+    is_true "${LIBRECHAT_ENABLED:-false}" || return 0
+    log_info "librechat      $(librechat_url) — sign-in for the group '$(librechat_group)'"
+    if [[ $DRY_RUN == true ]] && ! az account show >/dev/null 2>&1; then
+        log_info "[dry-run] would ensure the LibreChat app, its group, the members and the assignment"
+        return 0
+    fi
+    _LC_APP_ID="" _LC_APP_OBJ="" _LC_SP_ID="" _LC_GROUP_ID=""
+    _az_librechat_app_ensure
+    [[ -n $_LC_APP_ID ]] || return 0              # a dry run that would create it
+    _az_librechat_sp_ensure
+    _az_delegated_scopes_ensure "$_LC_APP_ID" "$_AZ_GRAPH_API" "Microsoft Graph (LibreChat sign-in)" "openid profile email User.Read"
+    _az_librechat_group_ensure
+    _az_librechat_members_ensure
+    _az_librechat_assignment_ensure
+    _az_librechat_secret_ensure
+}
+
+# The parts of the app this run owns, as Graph takes them.
+_az_librechat_app_want() {
+    jq -nc --arg uri "$(librechat_redirect_uri)" --arg n "$(librechat_title)" '{
+        displayName: $n,
+        web: {redirectUris: [$uri]},
+        groupMembershipClaims: "SecurityGroup",
+        optionalClaims: {idToken: [{name: "email", essential: false}]}}'
+}
+
+_az_librechat_app_ensure() {
+    local name; name=$(librechat_title)
+    if secret_nonempty LIBRECHAT_CLIENT_ID; then
+        _LC_APP_ID=$(secret_get LIBRECHAT_CLIENT_ID)
+        _LC_APP_OBJ=$(az ad app show --id "$_LC_APP_ID" --query id -o tsv 2>/dev/null) && [[ -n $_LC_APP_OBJ ]] ||
+            die "the Entra app ${_LC_APP_ID:0:8}… named by LIBRECHAT_CLIENT_ID does not exist; remove that line from ${SECRETS_FILE} to have one created"
+    else
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would create the Entra app '${name}' and write LIBRECHAT_CLIENT_ID to ${SECRETS_FILE}"
+            return 0
+        fi
+        # Graph's POST, not `az ad app create`: that one returns an existing app
+        # of the same name instead of creating one (see _az_bot_app_ensure).
+        local created
+        created=$(az rest --method POST --url "$(_az_graph /applications)" \
+                    --body "$(jq -nc --arg n "$name" '{displayName: $n, signInAudience: "AzureADMyOrg"}')" -o json) ||
+            die "could not create the Entra app for LibreChat"
+        _LC_APP_ID=$(jq -r .appId <<<"$created"); _LC_APP_OBJ=$(jq -r .id <<<"$created")
+        _secrets_append LIBRECHAT_CLIENT_ID "$_LC_APP_ID"
+        mark_changed; log_ok "Entra app '${name}' created (${_LC_APP_ID:0:8}…), LIBRECHAT_CLIENT_ID written"
+    fi
+
+    local have want same
+    have=$(az rest --method GET --url "$(_az_graph "/applications/${_LC_APP_OBJ}")" \
+             --url-parameters "\$select=displayName,web,groupMembershipClaims,optionalClaims" -o json) ||
+        die "could not read the LibreChat app"
+    want=$(_az_librechat_app_want)
+    same=$(jq -r --argjson w "$want" '
+        [.displayName, .web.redirectUris, .groupMembershipClaims, [.optionalClaims.idToken[]?.name]]
+        == [$w.displayName, $w.web.redirectUris, $w.groupMembershipClaims, [$w.optionalClaims.idToken[].name]]' <<<"$have")
+    if [[ $same == true ]]; then
+        log_skip "Entra app '${name}': redirect, group claim and email claim in place"
+    else
+        run az rest --method PATCH --url "$(_az_graph "/applications/${_LC_APP_OBJ}")" --body "$want" -o none ||
+            die "could not update the LibreChat app"
+        mark_changed; log_ok "Entra app '${name}': redirect $(librechat_redirect_uri), group and email claims"
+    fi
+}
+
+_az_librechat_sp_ensure() {
+    _LC_SP_ID=$(az ad sp show --id "$_LC_APP_ID" --query id -o tsv 2>/dev/null || true)
+    [[ -n $_LC_SP_ID ]] && return 0
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] would create the service principal for LibreChat"
+        return 0
+    fi
+    _LC_SP_ID=$(az ad sp create --id "$_LC_APP_ID" --query id -o tsv) && [[ -n $_LC_SP_ID ]] ||
+        die "could not create the service principal for LibreChat"
+    mark_changed; log_ok "service principal created for LibreChat (${_LC_APP_ID:0:8}…)"
+}
+
+_az_librechat_group_ensure() {
+    local name; name=$(librechat_group)
+    if secret_nonempty LIBRECHAT_GROUP_ID; then
+        _LC_GROUP_ID=$(secret_get LIBRECHAT_GROUP_ID)
+        az rest --method GET --url "$(_az_graph "/groups/${_LC_GROUP_ID}")" -o none 2>/dev/null ||
+            die "the group ${_LC_GROUP_ID:0:8}… recorded as LIBRECHAT_GROUP_ID no longer exists; remove that line from ${SECRETS_FILE} to have it found or created again"
+        log_skip "group '${name}' (${_LC_GROUP_ID:0:8}…)"
+        return 0
+    fi
+    _LC_GROUP_ID=$(az rest --method GET --url "$(_az_graph /groups)" \
+        --url-parameters "\$filter=displayName eq '${name//\'/\'\'}'" "\$select=id" \
+        --query 'value[0].id' -o tsv 2>/dev/null || true)
+    if [[ -z $_LC_GROUP_ID ]]; then
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] would create the security group '${name}' and write LIBRECHAT_GROUP_ID"
+            return 0
+        fi
+        _LC_GROUP_ID=$(az rest --method POST --url "$(_az_graph /groups)" --body "$(jq -nc --arg n "$name" \
+                         --arg nick "$(tr -cd 'a-zA-Z0-9-' <<<"$name")" '{displayName: $n, mailNickname: $nick,
+                         mailEnabled: false, securityEnabled: true,
+                         description: "May sign in to the bots web chat (LibreChat)"}')" --query id -o tsv) &&
+            [[ -n $_LC_GROUP_ID ]] || die "could not create the group '${name}'"
+        mark_changed; log_ok "security group '${name}' created (${_LC_GROUP_ID:0:8}…)"
+    else
+        log_ok "group '${name}' found (${_LC_GROUP_ID:0:8}…)"
+    fi
+    [[ $DRY_RUN == true ]] || _secrets_set LIBRECHAT_GROUP_ID "$_LC_GROUP_ID"
+}
+
+_az_librechat_members_ensure() {
+    [[ -n $_LC_GROUP_ID ]] || return 0
+    local a uid IFS=$' ,\t\n'
+    for a in ${LIBRECHAT_ENTRA_MEMBERS:-}; do
+        uid=$(az ad user show --id "$a" --query id -o tsv 2>/dev/null) && [[ -n $uid ]] ||
+            die "LIBRECHAT_ENTRA_MEMBERS: no user '${a}' in this tenant"
+        if [[ $(az ad group member check --group "$_LC_GROUP_ID" --member-id "$uid" --query value -o tsv 2>/dev/null) == true ]]; then
+            log_skip "member of '$(librechat_group)': ${a}"
+        else
+            run az ad group member add --group "$_LC_GROUP_ID" --member-id "$uid" -o none
+            mark_changed; log_ok "added to '$(librechat_group)': ${a}"
+        fi
+    done
+}
+
+_az_librechat_assignment_ensure() {
+    [[ -n $_LC_SP_ID ]] || return 0
+    if ! is_true "${LIBRECHAT_ENTRA_ASSIGNMENT:-true}"; then
+        _az_librechat_assignment_required false       # LibreChat's group-claim check is the gate then
+        return 0
+    fi
+    [[ -n $_LC_GROUP_ID ]] || return 0
+    local have
+    have=$(az rest --method GET --url "$(_az_graph "/servicePrincipals/${_LC_SP_ID}/appRoleAssignedTo")" \
+             --query "length(value[?principalId=='${_LC_GROUP_ID}'])" -o tsv 2>/dev/null || printf 0)
+    if [[ ${have:-0} == 0 ]]; then
+        run az rest --method POST --url "$(_az_graph "/servicePrincipals/${_LC_SP_ID}/appRoleAssignedTo")" \
+            --body "$(jq -nc --arg p "$_LC_GROUP_ID" --arg r "$_LC_SP_ID" --arg a "$_AZ_DEFAULT_ACCESS_ROLE" \
+                        '{principalId: $p, resourceId: $r, appRoleId: $a}')" -o none ||
+            die "could not assign the group to the LibreChat app (assigning a group needs Entra ID P1; LIBRECHAT_ENTRA_ASSIGNMENT=false leaves the check to LibreChat alone)"
+        mark_changed; log_ok "group '$(librechat_group)' assigned to the LibreChat app"
+    else
+        log_skip "group '$(librechat_group)' assigned to the LibreChat app"
+    fi
+    _az_librechat_assignment_required true
+}
+
+_az_librechat_assignment_required() {      # true|false: does Entra admit only assigned principals?
+    local have
+    have=$(az rest --method GET --url "$(_az_graph "/servicePrincipals/${_LC_SP_ID}")" \
+             --query appRoleAssignmentRequired -o tsv 2>/dev/null || true)
+    if [[ ${have,,} == "$1" ]]; then
+        log_skip "LibreChat app: assignment required = $1"
+        return 0
+    fi
+    run az rest --method PATCH --url "$(_az_graph "/servicePrincipals/${_LC_SP_ID}")" \
+        --body "{\"appRoleAssignmentRequired\": $1}" -o none || die "could not set assignment required on the LibreChat app"
+    mark_changed; log_ok "LibreChat app: assignment required = $1"
+}
+
+_az_librechat_secret_ensure() {
+    if secret_nonempty LIBRECHAT_CLIENT_SECRET; then
+        log_skip "LIBRECHAT_CLIENT_SECRET present"
+        return 0
+    fi
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] would issue a client secret for LibreChat and write LIBRECHAT_CLIENT_SECRET"
+        return 0
+    fi
+    local secret
+    secret=$(az ad app credential reset --id "$_LC_APP_ID" --append --display-name "librechat $(date +%F)" \
+               --years 2 --query password -o tsv) && [[ -n $secret ]] || die "could not issue a client secret for LibreChat"
+    log_redact_register "$secret"
+    _secrets_append LIBRECHAT_CLIENT_SECRET "$secret"
+    mark_changed; log_ok "LIBRECHAT_CLIENT_SECRET written to the secrets file"
 }

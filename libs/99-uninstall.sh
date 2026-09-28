@@ -36,6 +36,7 @@ uninstall_apply() {
     mailproxy_uninstall
     assistant_uninstall
     site_uninstall
+    librechat_uninstall
     # Called although they do nothing today: the rule "every module's teardown
     # runs" is one a test can check, and "every module's teardown runs unless
     # it happens to be empty" is not. Three of these were already orphaned.
