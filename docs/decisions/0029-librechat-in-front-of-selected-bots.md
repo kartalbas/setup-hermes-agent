@@ -70,6 +70,16 @@ general questions go to the Gemini app, not to a chat on the bridge.
    up to 25 MB, shrinks photos to 3072 px, does not resend earlier files, and
    shows each bot's real context window (`tokenConfig`, from the bot's
    `LLM_CONTEXT_WINDOW`) instead of its ~32k guess for an unknown model name.
+   A scan has no text layer (added the same day, after the first scans were
+   filed): `read_file` answers "needs OCR", and `pdftotext`, which the agent's
+   own page check uses, is not on the host. The Secretary filed both scans
+   correctly, but only after two minutes of missing tools and two approvals
+   nobody could give in the web chat. A sixth patch, on top of the fifth,
+   renders every page without text (pypdfium2 and Pillow, already in the
+   agent's venv; at most 20 pages, 2000 px) into a cached picture and names the
+   pictures and `vision_analyze` in the note — the step the Secretary found
+   last comes first. The operator chose this over OCR on the host: no new
+   package, and the model sees the layout of a payment slip, not lines of text.
 
 7. **A document scanner in the chat** (added 2026-09-28, the operator's choice
    over a scan step on the bot's side): a button next to the paperclip, the

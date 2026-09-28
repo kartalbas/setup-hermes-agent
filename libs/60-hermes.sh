@@ -34,6 +34,7 @@ hermes_apply() {
         _hermes_patch_help
         _hermes_patch_clarify_choices
         _hermes_patch_web_files
+        _hermes_patch_scan_pictures
         return 0
     fi
 
@@ -43,6 +44,7 @@ hermes_apply() {
     _hermes_patch_help
     _hermes_patch_clarify_choices
     _hermes_patch_web_files
+    _hermes_patch_scan_pictures
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -642,14 +644,180 @@ _hermes_patch_web_files() {
     case $rc in
         0)
             mark_changed; log_ok "API server patched: photos and documents from the web chat arrive as files"
-            # Loaded at start: every bot with the web channel restarts once.
-            local key
-            while IFS= read -r key; do
-                [[ -n $key ]] && bot_has_channel "$key" web && restart_later "$(bot_field "$key" SERVICE).service"
-            done < <(bots)
+            _hermes_restart_web_bots
             ;;
         3) log_skip "web-files patch present" ;;
         *) die "could not patch the API server for files from the web chat" ;;
+    esac
+}
+
+# The API server is loaded at start: every bot with the web channel restarts once.
+_hermes_restart_web_bots() {
+    local key
+    while IFS= read -r key; do
+        [[ -n $key ]] && bot_has_channel "$key" web && restart_later "$(bot_field "$key" SERVICE).service"
+    done < <(bots)
+}
+
+# ---------------------------------------------------------------------------
+# Carried patch 6: a scan's pages as pictures (ADR 0029), on top of patch 5.
+#
+# A scanned PDF — the web chat's scanner makes nothing else — has no text
+# layer: read_file answers "needs OCR", and pdftotext, which the agent's own
+# page check relies on, is not on the host. The Secretary went round the
+# terminal, missing tools and two approvals nobody could give in the web chat
+# before it rendered the pages itself and looked at them — the right answer,
+# after two minutes. With the patch, every page of a PDF that carries no text
+# is rendered (pypdfium2 and Pillow, in the agent's own venv) into a picture at
+# most 2000 pixels long, cached like a photo, and the note names the pictures
+# and vision_analyze — so the first step is the right one. A scan gets a note
+# of its own instead of the gateway's "extract the text yourself"; a PDF with
+# some scanned pages keeps the gateway's note and gets the pictures of those
+# pages. At most its first 20 pages; one that cannot be read keeps the
+# gateway's note alone. Idempotent by its marker; re-applied after updates,
+# after patch 5, whose note it extends.
+# ---------------------------------------------------------------------------
+hermes_patch_scan_pictures_file() {   # hermes_patch_scan_pictures_file FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+MARK = "setup-hermes-agent: a scan's pages as pictures"
+if MARK in s:
+    sys.exit(3)
+if "setup-hermes-agent: files through the web channel" not in s:
+    sys.exit("the web-files patch is not applied; a scan's pages as pictures extends its note — review the patch")
+
+
+def once(old, new):
+    global s
+    if s.count(old) != 1:
+        sys.exit("an anchor of the scan-pictures patch was not found exactly once "
+                 f"({old.strip().splitlines()[0][:60]!r}); the API server changed — review the patch")
+    s = s.replace(old, new)
+
+
+helpers = '''# ''' + MARK + '''
+# A page that carries no text is a picture of text: it goes to the model as one.
+_WEB_SCANS: Dict[str, Any] = {}
+_WEB_SCAN_MAX_PAGES = 20
+_WEB_SCAN_LONG_SIDE = 2000
+_WEB_SCAN_TEXT_CHARS = 20
+
+
+def _web_scan_pictures(path, name):
+    """The pages of a PDF that carry no text, rendered and cached as pictures:
+    (paths, page numbers, page count); None when it cannot be read as a PDF."""
+    try:
+        import io as _io
+        import pypdfium2 as _pdfium
+        from gateway.platforms.base import cache_media_bytes
+        pdf = _pdfium.PdfDocument(path)
+    except Exception:
+        return None
+    try:
+        total = len(pdf)
+        stem = os.path.splitext(os.path.basename(str(name)))[0] or "page"
+        paths, numbers = [], []
+        for index in range(min(total, _WEB_SCAN_MAX_PAGES)):
+            page = pdf[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    chars = len(textpage.get_text_range().strip())
+                finally:
+                    textpage.close()
+                if chars >= _WEB_SCAN_TEXT_CHARS:
+                    continue
+                width, height = page.get_size()
+                bitmap = page.render(scale=min(200 / 72, _WEB_SCAN_LONG_SIDE / max(width, height, 1)))
+                try:
+                    picture = bitmap.to_pil().convert("RGB")
+                finally:
+                    bitmap.close()
+                buf = _io.BytesIO()
+                picture.save(buf, "JPEG", quality=85)
+                cached = cache_media_bytes(buf.getvalue(), filename=f"{stem}-page-{index + 1}.jpg",
+                                           mime_type="image/jpeg")
+                if cached is not None:
+                    paths.append(cached.path)
+                    numbers.append(index + 1)
+            finally:
+                page.close()
+        return paths, numbers, total
+    except Exception:
+        return None
+    finally:
+        pdf.close()
+
+
+def _web_scan_note(note, cached, paths, numbers, total):
+    """The note for a PDF whose pages, some or all, are pictures of text."""
+    looked = min(total, _WEB_SCAN_MAX_PAGES)
+    more = f" Only its first {looked} of {total} pages were looked at." if total > looked else ""
+    pictures = ", ".join(str(p) for p in paths)
+    if len(numbers) == looked:
+        return (f"[The user sent a scanned document: '{cached.display_name}'. It is saved at: {cached.path}. "
+                f"It has no text layer, so there is no text to extract; its pages are saved as pictures: "
+                f"{pictures}. Read them with vision_analyze before answering, instead of asking the user "
+                f"what it says.{more}]")
+    one = len(numbers) == 1
+    which = ", ".join(str(n) for n in numbers)
+    return (f"{note} [{'Page' if one else 'Pages'} {which} of it {'has' if one else 'have'} no text layer; "
+            f"{'it is' if one else 'they are'} saved as {'a picture' if one else 'pictures'}: {pictures}. "
+            f"Read {'it' if one else 'them'} with vision_analyze.{more}]")
+
+
+'''
+once("def _web_attachment_note(data: bytes, filename: str, mime: str) -> str:\n",
+     helpers + "def _web_attachment_note(data: bytes, filename: str, mime: str) -> str:\n")
+
+once('''    try:
+        from gateway.run import _build_document_context_note
+        return _build_document_context_note(cached.display_name, cached.path, cached.media_type,
+                                            content_inlined=False)
+    except Exception:
+        return f"[The user sent a document: '{cached.display_name}'. It is saved at: {cached.path}.]"
+''', '''    try:
+        from gateway.run import _build_document_context_note
+        note = _build_document_context_note(cached.display_name, cached.path, cached.media_type,
+                                            content_inlined=False)
+    except Exception:
+        note = f"[The user sent a document: '{cached.display_name}'. It is saved at: {cached.path}.]"
+    # ''' + MARK + ''': the pages without text, as pictures
+    if cached.media_type == "application/pdf" or str(cached.path).lower().endswith(".pdf"):
+        scan = _WEB_SCANS.get(key)
+        if scan is None or not all(os.path.exists(p) for p in scan[0]):
+            scan = _web_scan_pictures(cached.path, cached.display_name)
+            if scan is not None:
+                _WEB_SCANS[key] = scan
+        if scan and scan[0]:
+            return _web_scan_note(note, cached, *scan)
+    return note
+''')
+
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_scan_pictures() {
+    local f; f=$(hermes_api_server_path)
+    [[ -f $f ]] || { log_warn "API server not found at ${f}; scan-pictures patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q "setup-hermes-agent: a scan's pages as pictures" "$f"; then log_skip "scan-pictures patch present"
+        else log_info "[dry-run] would patch ${f} so a scanned PDF's pages reach the bot as pictures"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_scan_pictures_file "$f" || rc=$?
+    case $rc in
+        0)
+            mark_changed; log_ok "API server patched: a scanned PDF's pages reach the bot as pictures"
+            _hermes_restart_web_bots
+            ;;
+        3) log_skip "scan-pictures patch present" ;;
+        *) die "could not patch the API server for scanned PDFs" ;;
     esac
 }
 

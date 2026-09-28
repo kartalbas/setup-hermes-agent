@@ -981,7 +981,13 @@ server (`_hermes_patch_web_files` in `60-hermes.sh`, re-applied after updates)
 caches each one exactly like a Teams attachment and tells the bot where it is —
 so the Secretary reads a PDF or files a photographed receipt from the web as it
 does from Teams, and a photo stays visible to the model as well. A file sent
-once is not sent again with every later message. 
+once is not sent again with every later message. A scanned PDF — every one the
+scanner makes — has no text to extract: a second patch
+(`_hermes_patch_scan_pictures`) renders each page without text into a picture
+and tells the bot to read the pictures with `vision_analyze`, so it looks at
+the scan straight away instead of trying tools that are not on the host. A PDF
+with text keeps the gateway's own note; a mixed one gets pictures of its
+scanned pages. At most the first 20 pages.
 
 **The document scanner.** Next to the paperclip sits a scanner button
 (`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
