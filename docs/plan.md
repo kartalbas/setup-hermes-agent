@@ -262,3 +262,8 @@ fixing whether or not the move happens.
 - [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
 - [ ] LibreChat's data (chats, accounts) is outside the agent's backup — include its Mongo volume if it stays
 
+
+## 13 · This host's settings in a private repository, 2026-09-28
+
+- [x] `configs [save]` (libs/95-configs.sh, README 2.4): what git keeps out of the checkout — config/*.conf, config/credentials/, *.secrets, secrets.env — per host in the operator's private config repository (`CONFIGS_REPO`, in the site config), cloned and pushed as the invoking user, never as root; restored with 0600 for secrets and keys, only onto paths git ignores
+- [x] Saved from this host and verified on GitHub: the five files byte-identical under `setup-hermes-agent/hosts/<host>/`; restore and a second save change nothing; the config repository's README names the folder
