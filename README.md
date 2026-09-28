@@ -981,9 +981,21 @@ server (`_hermes_patch_web_files` in `60-hermes.sh`, re-applied after updates)
 caches each one exactly like a Teams attachment and tells the bot where it is —
 so the Secretary reads a PDF or files a photographed receipt from the web as it
 does from Teams, and a photo stays visible to the model as well. A file sent
-once is not sent again with every later message. For a clean PDF of a paper
-document, the phone's own scanner (Files or Notes on the iPhone, Google Drive on
-Android) finds the edges and straightens the page before you upload it.
+once is not sent again with every later message. 
+
+**The document scanner.** Next to the paperclip sits a scanner button
+(`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
+the page's edges live; "Capture" takes a page — straightened and cropped to its
+edges, several pages in a row — and "Done" puts them into one PDF and hands it
+to LibreChat's own upload, as if picked with the paperclip; the bot gets it as
+a file. A page without a clear edge is taken as it is and marked in amber: a
+darker background under the paper helps. It runs entirely in the browser
+(`bot/librechat/scanner/scan.js`, with jscanify and the OpenCV.js build it
+ships, MIT, pinned by checksum, loaded only when the scanner opens — about
+9 MB once). LibreChat is not rebuilt for it: the run mounts LibreChat's own
+page with one script tag more, derived from the pinned image on every run, and
+the scanner's files next to LibreChat's; an installed app picks the button up
+on its next start.
 
 ```bash
 systemctl status <service>-librechat                      # up: the three containers are running

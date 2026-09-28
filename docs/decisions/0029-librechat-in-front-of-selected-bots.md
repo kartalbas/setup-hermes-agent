@@ -71,6 +71,20 @@ general questions go to the Gemini app, not to a chat on the bridge.
    shows each bot's real context window (`tokenConfig`, from the bot's
    `LLM_CONTEXT_WINDOW`) instead of its ~32k guess for an unknown model name.
 
+7. **A document scanner in the chat** (added 2026-09-28, the operator's choice
+   over a scan step on the bot's side): a button next to the paperclip, the
+   camera with the page's edges drawn live (jscanify on OpenCV.js, MIT, pinned
+   by checksum, loaded on first use), each shot straightened and cropped, and
+   the pages handed to LibreChat's own hidden file input as one PDF — the same
+   path as a file picked with the paperclip, so item 6 carries it to the bot.
+   LibreChat is not rebuilt: its server reads `client/dist/index.html` once
+   and serves `client/dist` statically, so the run mounts the page with one
+   script tag more (derived from the pinned image each run) and the scanner's
+   directory beside it. No CSP stands in the way (LibreChat sends none), and
+   the service worker caches assets, not the page. The DOM hooks it relies on
+   — `#attach-file-menu-button` and the file input beside it — are checked
+   again on every LibreChat upgrade; without them the PDF is downloaded instead.
+
 ## Consequences
 
 - Chats become the unit of context the operator manages: new chat, rename,

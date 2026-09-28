@@ -232,3 +232,72 @@ PY
     grep -qE '^ +libs/88-\*\) +add librechat ;;' "$REPO_ROOT/bot/ops/opsctl"
     grep -qx '    librechat_uninstall' "$REPO_ROOT/libs/99-uninstall.sh"
 }
+
+# The document scanner: LibreChat is not rebuilt; its page gets one script tag
+# and its static directory one more folder, both mounted, both with the switch.
+@test "the scanner rides on LibreChat's own page and files, and goes with its switch" {
+    out=$(librechat_compose_text)
+    python3 -c '
+import sys, yaml
+d = yaml.safe_load(sys.stdin)
+v = d["services"]["api"]["volumes"]
+assert "./index.html:/app/client/dist/index.html:ro" in v and "./scanner:/app/client/dist/hermes-scan:ro" in v, v
+assert set(d["volumes"]) == {"mongo", "meili", "uploads", "images"}, d["volumes"]' <<<"$out"
+    LIBRECHAT_SCANNER=false
+    out=$(librechat_compose_text)
+    [[ $out != *"hermes-scan"* && $out != *"index.html"* ]]
+    python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' <<<"$out"
+}
+
+@test "the scanner's tag goes into LibreChat's page once, before </body>, with the script's checksum" {
+    page='<html><head></head><body><div id="root"></div></body></html>'
+    out=$(librechat_index_with_scanner abc123 <<<"$page")
+    [[ $out == *'<div id="root"></div><script defer src="./hermes-scan/scan.js?v=abc123"></script></body>'* ]]
+    bats_run librechat_index_with_scanner abc123 <<<"$out"
+    [ "$status" -ne 0 ]                                  # never twice: the page must come from the image
+    bats_run librechat_index_with_scanner abc123 <<<"<html></html>"
+    [ "$status" -ne 0 ] && [[ $output == *"review the scanner"* ]]
+}
+
+@test "the scanner's libraries are installed only with their pinned checksums" {
+    [[ $_LC_SCANNER_SRC == "https://raw.githubusercontent.com/puffinsoft/jscanify/v1.4.0/src" ]]
+    [[ $_LC_SCANNER_OPENCV_SHA =~ ^[0-9a-f]{64}$ && $_LC_SCANNER_JSCANIFY_SHA =~ ^[0-9a-f]{64}$ ]]
+    src=$(mktemp -d); DRY_RUN=false   # not "tmp": the function under test has a local of that name
+    printf 'library' >"${src}/source"
+    fetch() { cat "${src}/source"; }
+    _librechat_fetch_pinned "${src}/lib.js" https://example.com/lib.js "$(sha256sum "${src}/source" | cut -d' ' -f1)"
+    [ "$(cat "${src}/lib.js")" = library ]
+    bats_run _librechat_fetch_pinned "${src}/other.js" https://example.com/lib.js "$(printf '%064d' 0)"
+    [ "$status" -ne 0 ] && [ ! -e "${src}/other.js" ]
+    [ -z "$(find "$src" -name 'other.js.*')" ]           # no half file left behind
+    rm -rf "$src"
+}
+
+@test "the scanner's PDF: one page per shot, as wide as A4, a cross-reference table that points right" {
+    command -v node >/dev/null || skip "node is not installed"
+    tmp=$(mktemp -d)
+    node -e '
+const s = require(process.argv[1]);
+const jpg = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=", "base64");
+const pdf = s.buildPdf([{jpeg: new Uint8Array(jpg), width: 1654, height: 2339}, {jpeg: new Uint8Array(jpg), width: 2400, height: 1600}]);
+require("fs").writeFileSync(process.argv[2], Buffer.from(pdf));
+if (s.scanFileName(new Date(2026, 8, 28, 14, 5)) !== "Scan 2026-09-28 14-05.pdf") process.exit(3);
+let threw = false; try { s.buildPdf([]); } catch (e) { threw = true; } if (!threw) process.exit(4);
+' "$REPO_ROOT/bot/librechat/scanner/scan.js" "${tmp}/scan.pdf"
+    python3 - "${tmp}/scan.pdf" <<'PY'
+import re, sys
+b = open(sys.argv[1], "rb").read()
+assert b.startswith(b"%PDF-1.4") and b.rstrip().endswith(b"%%EOF")
+start = int(re.search(rb"startxref\n(\d+)\n", b).group(1))
+assert b[start:start + 4] == b"xref", b[start:start + 20]
+count = int(re.search(rb"xref\n0 (\d+)\n", b[start:]).group(1))
+offsets = re.findall(rb"(\d{10}) 00000 n \n", b[start:])
+assert len(offsets) == count - 1
+for n, off in enumerate(offsets, 1):
+    assert b[int(off):].startswith(b"%d 0 obj" % n), n
+assert b.count(b"/Type /Page ") == 2
+assert b"/MediaBox [0 0 595.28 841.81]" in b and b"/MediaBox [0 0 595.28 396.85]" in b
+assert b.count(b"/Filter /DCTDecode") == 2
+PY
+    rm -rf "$tmp"
+}

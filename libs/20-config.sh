@@ -323,6 +323,7 @@ config_defaults() {
     : "${LIBRECHAT_ENTRA_MEMBERS:=}"       # addresses the run keeps in that group; others are added in Entra
     : "${LIBRECHAT_ENTRA_ASSIGNMENT:=true}"   # Entra admits only the group (needs Entra ID P1); false: LibreChat checks the group claim alone
     : "${LIBRECHAT_WELCOME:=Pick a bot above. Every chat is a context of its own.}"
+    : "${LIBRECHAT_SCANNER:=true}"         # a document scanner next to the paperclip: live page edges, a cropped PDF
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
     # Derived without a literal: config_defaults runs before AND after the

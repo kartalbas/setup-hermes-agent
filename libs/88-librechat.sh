@@ -29,9 +29,10 @@ librechat_apply() {
 
     local before=$CHANGE_COUNT
     _librechat_secrets
+    _librechat_images                 # first: the scanner derives LibreChat's page from the image
+    _librechat_scanner
     _librechat_files
     _librechat_write_unit
-    _librechat_images
     converge_unit "$(librechat_unit_name).service" "$before"
     _librechat_verify
 }
@@ -123,6 +124,14 @@ services:
       - ./librechat.yaml:/app/librechat.yaml:ro
       - uploads:/app/uploads
       - images:/app/client/public/images
+EOF
+    # The scanner: LibreChat's page with one script tag more, and the scanner's
+    # files where LibreChat serves its own (see _librechat_scanner).
+    is_true "${LIBRECHAT_SCANNER:-true}" && cat <<EOF
+      - ./index.html:/app/client/dist/index.html:ro
+      - ./scanner:/app/client/dist/hermes-scan:ro
+EOF
+    cat <<EOF
 # Named volumes, not bind mounts: LibreChat runs as the image's node user, and
 # a named volume starts with the image's own directory and its owner. Its logs
 # stay with the container: docker compose logs api, in the directory above.
@@ -294,21 +303,98 @@ _librechat_write_unit() {
 }
 
 # Pulled here, not by the unit's first start: a gigabyte against a start
-# timeout is a failure that reads as LibreChat being broken.
+# timeout is a failure that reads as LibreChat being broken. One image at a
+# time, by name: the compose file does not exist yet on a first run, and the
+# scanner reads LibreChat's page out of the image before anything starts.
 _librechat_images() {
-    local image missing=false
+    local image pulled=false
     for image in "$LIBRECHAT_IMAGE" "$LIBRECHAT_MONGO_IMAGE" "$LIBRECHAT_MEILI_IMAGE"; do
         [[ $DRY_RUN != true ]] && docker image inspect "$image" >/dev/null 2>&1 && continue
-        missing=true
+        log_info "pulling ${image}"
+        run docker pull --quiet "$image" >/dev/null || die "could not pull ${image}"
+        pulled=true
     done
-    if [[ $missing == false ]]; then
-        log_skip "LibreChat images present"
+    if [[ $pulled == true ]]; then mark_changed; else log_skip "LibreChat images present"; fi
+}
+
+# ---------------------------------------------------------------------------
+# The document scanner (bot/librechat/scanner/scan.js): a button next to the
+# paperclip; the camera shows the page's edges live, each shot is straightened
+# and cropped, and the pages go into LibreChat's own upload as one PDF.
+#
+# LibreChat is not rebuilt for it. Its server reads client/dist/index.html once
+# at start and serves client/dist as static files, so the run mounts two things
+# over the image: that page with one script tag more — derived from the pinned
+# image on every run, so an upgrade cannot leave an old page behind — and a
+# directory next to LibreChat's own files with the scanner and its two
+# libraries: jscanify (MIT) and the OpenCV.js build it ships, pinned by tag and
+# checksum. The service worker caches LibreChat's assets but not the page, so
+# an installed app picks the button up on its next start.
+# ---------------------------------------------------------------------------
+readonly _LC_SCANNER_SRC="https://raw.githubusercontent.com/puffinsoft/jscanify/v1.4.0/src"
+readonly _LC_SCANNER_JSCANIFY_SHA="7463ca648de2c081a07ef556e79d5d6b7525f2a5e2ca55fefdcb69608b014ea3"
+readonly _LC_SCANNER_OPENCV_SHA="7beec9c6b373927a6d68b145bff380a7b5c7f1b4a8c32bf88d11e591e54930a6"
+
+librechat_scanner_source() { printf '%s/bot/librechat/scanner/scan.js' "$SCRIPT_DIR"; }
+
+# LibreChat's page with the scanner's script tag before </body>, once; the
+# query carries the script's own checksum, so a new scanner is fetched fresh.
+librechat_index_with_scanner() {  # librechat_index_with_scanner VERSION < index.html -> index.html
+    python3 -c '
+import sys
+page, version = sys.stdin.read(), sys.argv[1]
+tag = "<script defer src=\"./hermes-scan/scan.js?v=%s\"></script>" % version
+if "hermes-scan/scan.js" in page:
+    sys.exit("the page already carries a scanner tag; it must come from the image, not from an earlier run")
+if page.count("</body>") != 1:
+    sys.exit("LibreChat'"'"'s page has no single </body>; the image changed — review the scanner")
+sys.stdout.write(page.replace("</body>", tag + "</body>"))
+' "$1"
+}
+
+_librechat_fetch_pinned() {       # _librechat_fetch_pinned DEST URL SHA256
+    local dest=$1 url=$2 sha=$3 tmp
+    if [[ -f $dest ]] && [[ $(sha256sum "$dest" | cut -d' ' -f1) == "$sha" ]]; then
+        log_skip "$(basename "$dest") present (checksum verified)"
         return 0
     fi
-    log_info "pulling the LibreChat images (about a gigabyte the first time)"
-    run docker compose --project-directory "$LIBRECHAT_DIR" pull --quiet ||
-        die "could not pull the LibreChat images"
-    mark_changed
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] download ${url} -> ${dest} (sha256 ${sha:0:12}…)"
+        return 0
+    fi
+    tmp=$(mktemp "${dest}.XXXXXX")
+    fetch "$url" >"$tmp" || { rm -f "$tmp"; die "could not download ${url}"; }
+    if [[ $(sha256sum "$tmp" | cut -d' ' -f1) != "$sha" ]]; then
+        rm -f "$tmp"
+        die "${url} does not match its pinned checksum; not installing it"
+    fi
+    chmod 0644 "$tmp"; mv -f "$tmp" "$dest"
+    mark_changed; log_ok "$(basename "$dest") downloaded and verified"
+}
+
+_librechat_scanner() {
+    local dir="${LIBRECHAT_DIR}/scanner"
+    if ! is_true "${LIBRECHAT_SCANNER:-true}"; then
+        if [[ -e $dir || -e ${LIBRECHAT_DIR}/index.html ]]; then
+            run rm -rf "$dir" "${LIBRECHAT_DIR}/index.html"
+            mark_changed; log_ok "document scanner removed"
+        fi
+        return 0
+    fi
+    ensure_dir "$LIBRECHAT_DIR" 0755
+    ensure_dir "$dir" 0755
+    write_file "${dir}/scan.js" 0644 <"$(librechat_scanner_source)"
+    _librechat_fetch_pinned "${dir}/jscanify.js" "${_LC_SCANNER_SRC}/jscanify.js" "$_LC_SCANNER_JSCANIFY_SHA"
+    _librechat_fetch_pinned "${dir}/opencv.js" "${_LC_SCANNER_SRC}/opencv.js" "$_LC_SCANNER_OPENCV_SHA"
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] derive ${LIBRECHAT_DIR}/index.html from ${LIBRECHAT_IMAGE} with the scanner's script tag"
+        return 0
+    fi
+    local page version
+    page=$(docker run --rm --entrypoint cat "$LIBRECHAT_IMAGE" /app/client/dist/index.html) ||
+        die "could not read LibreChat's page from ${LIBRECHAT_IMAGE}"
+    version=$(sha256sum "$(librechat_scanner_source)" | cut -c1-12)
+    write_file "${LIBRECHAT_DIR}/index.html" 0644 <<<"$(librechat_index_with_scanner "$version" <<<"$page")"
 }
 
 _librechat_verify() {
@@ -332,6 +418,14 @@ _librechat_verify() {
         die "LibreChat rejected librechat.yaml; the lines above say why"
     fi
     log_ok "LibreChat answering on 127.0.0.1:${LIBRECHAT_PORT} -> $(librechat_url)"
+    if is_true "${LIBRECHAT_SCANNER:-true}"; then
+        if [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-scan/scan.js") == 200 ]] &&
+           fetch "http://127.0.0.1:${LIBRECHAT_PORT}/" 2>/dev/null | grep -q "hermes-scan/scan.js"; then
+            log_ok "  document scanner served next to the paperclip"
+        else
+            log_warn "  the document scanner is not served (page or files); the chat works without it"
+        fi
+    fi
     local k port
     while IFS= read -r k; do
         [[ -n $k ]] || continue
