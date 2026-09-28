@@ -249,6 +249,7 @@ fixing whether or not the move happens.
 - [x] Photos (camera) and documents from LibreChat reach the bots as files — installed 2026-09-28; verified on the path LibreChat uses: the Secretary read a PDF and a photographed receipt and named their saved paths (the operator's own test in the web chat is the next item)
 - [ ] The operator uploads a photo from the phone's camera and a PDF in the web chat
 - [x] The document scanner in the web chat (live edges, cropped PDF) — built, tested, installed 2026-09-28 (page and files served through the tunnel, checksums verified)
+- [x] The scanner froze on the phone at "Loading" (camera on, no button answering, not even Cancel): OpenCV's module is a thenable, and a promise resolved with it held the page's thread. The image work moved to a Web Worker that polls for OpenCV and frees every contour, the scanner opens as a `<dialog>`, "Capture" works at once — installed 2026-09-28 (new version served through the tunnel, files byte-identical)
 - [ ] The operator scans a page on the phone: button next to the paperclip, green outline, PDF lands in the chat
 - [ ] Idea, not decided: the same cropping on the bot's side for photos from Teams
 - [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
