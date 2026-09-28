@@ -140,6 +140,11 @@ general questions go to the Gemini app, not to a chat on the bridge.
   alles sehen"). The personal bots act with the operator's accounts.
 - Editing or regenerating a message in LibreChat does not rewrite the agent's
   history of that chat, which is loaded from the agent's store.
+- A file is only as readable as the bot's tools make it: the Secretary reads
+  documents, photos and scans and files them — creating the tasks they call
+  for itself — while the Tasks bot stays lean, without file or vision tools in
+  the web chat. Documents go to the Secretary (the operator's choice,
+  2026-09-28).
 - About 1–1.5 GB of RAM for the three containers; images about a gigabyte.
 - LibreChat's data (chats, accounts) lives in its Docker volumes, outside the
   agent's backup; `--purge` removes them on uninstall.

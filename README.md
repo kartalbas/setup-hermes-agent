@@ -987,7 +987,10 @@ scanner makes — has no text to extract: a second patch
 and tells the bot to read the pictures with `vision_analyze`, so it looks at
 the scan straight away instead of trying tools that are not on the host. A PDF
 with text keeps the gateway's own note; a mixed one gets pictures of its
-scanned pages. At most the first 20 pages.
+scanned pages. At most the first 20 pages. A file is only as readable as the
+bot's tools make it: the Secretary reads and files documents and makes the
+tasks they call for; the Tasks bot, lean by design, has no file or vision
+tools — send documents to the Secretary.
 
 **The document scanner.** Next to the paperclip sits a scanner button
 (`LIBRECHAT_SCANNER`, on by default). It opens the camera full-screen and draws
