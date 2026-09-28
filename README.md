@@ -990,12 +990,15 @@ edges, several pages in a row — and "Done" puts them into one PDF and hands it
 to LibreChat's own upload, as if picked with the paperclip; the bot gets it as
 a file. A page without a clear edge is taken as it is and marked in amber: a
 darker background under the paper helps. It runs entirely in the browser
-(`bot/librechat/scanner/scan.js`, with jscanify and the OpenCV.js build it
-ships, MIT, pinned by checksum, loaded only when the scanner opens — about
-9 MB once). LibreChat is not rebuilt for it: the run mounts LibreChat's own
-page with one script tag more, derived from the pinned image on every run, and
-the scanner's files next to LibreChat's; an installed app picks the button up
-on its next start.
+(`bot/librechat/scanner/scan.js`). The image work runs in a Web Worker
+(`scan-worker.js`) with jscanify and the OpenCV.js build it ships (MIT, pinned
+by checksum, about 9 MB, fetched once when the scanner first opens), so the
+page never waits for it: "Capture" works as soon as the camera runs — uncropped
+until edge detection is ready — and the line at the top of the camera says
+what is loading or what failed. LibreChat is not rebuilt for it: the run
+mounts LibreChat's own page with one script tag more, derived from the pinned
+image on every run, and the scanner's files next to LibreChat's; an installed
+app picks the button up on its next start.
 
 ```bash
 systemctl status <service>-librechat                      # up: the three containers are running

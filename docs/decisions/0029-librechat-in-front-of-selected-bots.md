@@ -84,6 +84,16 @@ general questions go to the Gemini app, not to a chat on the bridge.
    the service worker caches assets, not the page. The DOM hooks it relies on
    — `#attach-file-menu-button` and the file input beside it — are checked
    again on every LibreChat upgrade; without them the PDF is downloaded instead.
+   The image work runs in a Web Worker (`scan-worker.js`), never on the page:
+   OpenCV.js's module is a thenable whose `then()` calls back with itself, so a
+   promise resolved with it resolves again forever — the first version did that
+   on the page, which froze on the phone with the camera running and not even
+   "Cancel" answering. The worker polls for OpenCV instead, and its WASM start
+   and its global `Module` stay out of the page. The scanner opens as a modal
+   `<dialog>`; "Capture" works as soon as the camera runs, uncropped until the
+   worker is ready. The worker does jscanify's contour search itself and frees
+   every contour: this OpenCV build never frees a handle that is dropped, and
+   jscanify's own left about a thousand per frame on a busy desk.
 
 ## Consequences
 

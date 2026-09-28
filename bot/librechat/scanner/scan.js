@@ -2,11 +2,12 @@
  * The document scanner in the web chat (ADR 0029).
  *
  * A button next to LibreChat's paperclip opens the camera. The page's edges are
- * found live and drawn over the picture; every shot is straightened and cropped
- * (jscanify on OpenCV.js, both loaded only when the scanner opens), and "Done"
- * turns the pages into one PDF and hands it to LibreChat's own upload input —
- * exactly as if it had been picked with the paperclip. From there it goes to the
- * bot like any other attachment.
+ * found live and drawn over the picture; every shot is straightened and cropped,
+ * and "Done" turns the pages into one PDF and hands it to LibreChat's own upload
+ * input — exactly as if it had been picked with the paperclip. From there it goes
+ * to the bot like any other attachment. The image work (jscanify on OpenCV.js)
+ * runs in scan-worker.js, off the page's thread; until it is ready — or if it
+ * cannot start — the camera still takes pages, uncropped.
  *
  * Plain JavaScript without a build step: the installer serves this file and the
  * two libraries next to LibreChat's own and adds one script tag to its page.
@@ -85,25 +86,28 @@
   var BASE = SRC.replace(/scan\.js(\?.*)?$/, "");
   // The page's tag carries one version for the scanner and its libraries
   // together; asking for them with it keeps a cached old library from staying.
-  var QUERY = (SRC.match(/[?&]v=([0-9a-f]+)/) || [])[1] ? "?v=" + SRC.match(/[?&]v=([0-9a-f]+)/)[1] : "";
+  var VERSION = (SRC.match(/[?&]v=([0-9a-f]+)/) || [])[1];
+  var QUERY = VERSION ? "?v=" + VERSION : "";
   var DETECT_WIDTH = 480;        // the live detection runs on a small copy of the frame
+  var FRAME_LONG_SIDE = 3200;    // a captured frame, before it is cut
   var PAGE_LONG_SIDE = 2400;     // about 200 dpi on A4: small files, sharp text
-  var MIN_PAGE_SHARE = 0.12;     // a "page" smaller than this share of the frame is noise
 
   var de = /^de\b/i.test(navigator.language || "");
   var T = de ? {
     scan: "Dokument scannen", capture: "Aufnehmen", done: "Fertig", cancel: "Abbrechen",
+    camera: "Kamera wird gestartet …", loading: "Randerkennung wird geladen (einmalig ca. 9 MB) …",
     find: "Blatt ganz ins Bild halten – ein dunkler Untergrund hilft", found: "Seite erkannt",
-    loading: "Scanner wird geladen …", building: "PDF wird erstellt …",
-    noCamera: "Keine Kamera verfügbar, oder der Zugriff wurde nicht erlaubt.",
-    failed: "Der Scanner konnte nicht geladen werden.", uncut: "Keine Blattkante gefunden – Seite ungeschnitten übernommen",
+    building: "PDF wird erstellt …", noCamera: "Keine Kamera verfügbar, oder der Zugriff wurde nicht erlaubt.",
+    noDetect: "Randerkennung nicht verfügbar – Aufnahmen werden ungeschnitten übernommen",
+    uncut: "Keine Blattkante gefunden – Seite ungeschnitten übernommen",
     remove: "Seite entfernen", fallback: "Das PDF wurde heruntergeladen – bitte über die Büroklammer anhängen."
   } : {
     scan: "Scan a document", capture: "Capture", done: "Done", cancel: "Cancel",
+    camera: "Starting the camera …", loading: "Loading edge detection (about 9 MB, once) …",
     find: "Fit the whole page in the frame – a dark background helps", found: "Page detected",
-    loading: "Loading the scanner …", building: "Building the PDF …",
-    noCamera: "No camera available, or access was not allowed.",
-    failed: "The scanner could not be loaded.", uncut: "No page edge found – page taken uncropped",
+    building: "Building the PDF …", noCamera: "No camera available, or access was not allowed.",
+    noDetect: "Edge detection unavailable – pages are taken uncropped",
+    uncut: "No page edge found – page taken uncropped",
     remove: "Remove page", fallback: "The PDF was downloaded – please attach it with the paperclip."
   };
 
@@ -112,64 +116,80 @@
     '<path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>' +
     '<path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg>';
 
-  // --- libraries, loaded once, when first needed --------------------------------
-  var libs = null;
-  function loadScript(src) {
-    return new Promise(function (resolve, reject) {
-      var s = document.createElement("script");
-      s.src = src; s.async = true;
-      s.onload = function () { resolve(); };
-      s.onerror = function () { reject(new Error("could not load " + src)); };
-      document.head.appendChild(s);
-    });
+  // --- the worker: OpenCV off the page's thread --------------------------------
+  // Started when the scanner first opens and kept for the next page; one that
+  // failed is dropped, and the next opening starts a new one.
+  var WORKER_START_MS = 120000, DETECT_MS = 5000, EXTRACT_MS = 20000;
+  var worker = null, workerState = "idle", listeners = [], pending = {}, nextId = 1;
+  function workerChanged(state) {
+    workerState = state;
+    listeners.slice().forEach(function (f) { f(state); });
   }
-  function cvReady(timeoutMs) {
-    // OpenCV.js reports itself ready asynchronously, and some builds hand out a
-    // thenable module; waiting for the API itself sidesteps both.
-    return new Promise(function (resolve, reject) {
-      var started = Date.now();
-      (function poll() {
-        var cv = window.cv;
-        if (cv && typeof cv.Mat === "function" && typeof cv.imread === "function") return resolve(cv);
-        if (Date.now() - started > timeoutMs) return reject(new Error("OpenCV did not start"));
-        setTimeout(poll, 100);
-      })();
-    });
+  function workerFailed(message) {
+    if (window.console) console.warn("[scanner] edge detection:", message);
+    if (worker) { try { worker.terminate(); } catch (e) { /* gone already */ } }
+    worker = null;
+    Object.keys(pending).forEach(function (id) { var answer = pending[id]; delete pending[id]; answer({ error: message }); });
+    workerChanged("failed");
   }
-  function loadLibs() {
-    if (!libs) {
-      libs = loadScript(BASE + "opencv.js" + QUERY)
-        .then(function () { return cvReady(45000); })
-        .then(function () { return loadScript(BASE + "jscanify.js" + QUERY); })
-        .then(function () { return new window.jscanify(); })
-        .catch(function (e) { libs = null; throw e; });
+  function startWorker() {
+    if (worker) return;
+    workerChanged("loading");
+    var w;
+    try {
+      w = new Worker(BASE + "scan-worker.js" + QUERY);
+    } catch (e) {
+      workerFailed(String((e && e.message) || e));
+      return;
     }
-    return libs;
+    worker = w;
+    var started = setTimeout(function () {
+      if (worker === w && workerState === "loading") workerFailed("did not start within " + WORKER_START_MS / 1000 + " s");
+    }, WORKER_START_MS);
+    w.onmessage = function (e) {
+      if (worker !== w) return;
+      var m = e.data || {};
+      if (m.type === "ready") { clearTimeout(started); workerChanged("ready"); return; }
+      if (m.type === "error") { clearTimeout(started); workerFailed(m.message); return; }
+      var answer = pending[m.id];
+      delete pending[m.id];
+      if (answer) answer(m);
+    };
+    w.onerror = function (e) {
+      if (worker !== w) return;
+      clearTimeout(started);
+      workerFailed((e && e.message) || "the worker failed");
+    };
+  }
+  /** One question to the worker; the answer, or {error} when there is none in time. */
+  function ask(message, transfer, ms) {
+    return new Promise(function (resolve) {
+      var id = message.id = nextId++;
+      var timer = setTimeout(function () { delete pending[id]; resolve({ error: "no answer in time" }); }, ms);
+      pending[id] = function (m) { clearTimeout(timer); resolve(m); };
+      try {
+        worker.postMessage(message, transfer || []);
+      } catch (e) {
+        delete pending[id]; clearTimeout(timer);
+        resolve({ error: String((e && e.message) || e) });
+      }
+    });
   }
 
-  // --- the page's corners -------------------------------------------------------
-  function corners(scanner, canvas) {
-    var cv = window.cv, mat = cv.imread(canvas), contour = null;
-    try {
-      contour = scanner.findPaperContour(mat);
-      if (!contour) return null;
-      if (cv.contourArea(contour) < MIN_PAGE_SHARE * canvas.width * canvas.height) return null;
-      var c = scanner.getCornerPoints(contour);
-      if (!c.topLeftCorner || !c.topRightCorner || !c.bottomLeftCorner || !c.bottomRightCorner) return null;
-      return c;
-    } catch (e) {
-      return null;
-    } finally {
-      mat.delete();
-      if (contour) { try { contour.delete(); } catch (e) { /* already freed */ } }
-    }
-  }
   function scaled(c, f) {
     function p(q) { return { x: q.x * f, y: q.y * f }; }
     return { topLeftCorner: p(c.topLeftCorner), topRightCorner: p(c.topRightCorner),
              bottomLeftCorner: p(c.bottomLeftCorner), bottomRightCorner: p(c.bottomRightCorner) };
   }
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  function downscaled(canvas, longSide) {
+    var r = Math.min(1, longSide / Math.max(canvas.width, canvas.height));
+    if (r === 1) return canvas;
+    var out = document.createElement("canvas");
+    out.width = Math.round(canvas.width * r); out.height = Math.round(canvas.height * r);
+    out.getContext("2d").drawImage(canvas, 0, 0, out.width, out.height);
+    return out;
+  }
 
   // --- LibreChat's own upload ---------------------------------------------------
   function attachButton() { return document.getElementById("attach-file-menu-button"); }
@@ -206,168 +226,207 @@
     if (text) e.textContent = text;
     return e;
   }
-  var BTN = "border:0;border-radius:999px;padding:12px 18px;font:600 15px system-ui,sans-serif;" +
-            "background:rgba(255,255,255,.14);color:#fff;cursor:pointer;min-width:96px";
+  var BTN = "border:0;border-radius:999px;padding:12px 18px;font:600 15px system-ui,sans-serif;pointer-events:auto;" +
+            "background:rgba(255,255,255,.14);color:#fff;cursor:pointer;min-width:96px;touch-action:manipulation";
 
   function openScanner() {
-    var pages = [], stream = null, timer = null, busy = false, closed = false, scanner = null, last = null;
+    if (document.getElementById("hermes-scanner")) return;
+    var pages = [], stream = null, timer = null, detecting = false, capturing = false, closed = false, last = null;
 
-    var root = el("div", "position:fixed;inset:0;z-index:2147483647;background:#000;display:flex;" +
-                         "flex-direction:column;color:#fff;font:15px system-ui,sans-serif;" +
-                         "padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)");
-    root.setAttribute("role", "dialog"); root.setAttribute("aria-label", T.scan);
-    var stage = el("div", "position:relative;flex:1;overflow:hidden");
-    var video = el("video", "position:absolute;inset:0;width:100%;height:100%;object-fit:contain");
-    video.setAttribute("playsinline", ""); video.muted = true; video.autoplay = true;
+    // A modal <dialog> sits in the browser's top layer, above anything the page
+    // stacks, and is outside whatever the page marks inert; pointer events are
+    // switched on explicitly in case the page switched them off on <body>.
+    var useDialog = typeof HTMLDialogElement === "function";
+    var root = el(useDialog ? "dialog" : "div",
+      "position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;border:0;" +
+      "padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);box-sizing:border-box;z-index:2147483647;" +
+      "background:#000;color:#fff;display:flex;flex-direction:column;pointer-events:auto;font:15px system-ui,sans-serif");
+    root.id = "hermes-scanner";
+    root.setAttribute("aria-label", T.scan);
+    if (!useDialog) root.setAttribute("role", "dialog");
+    var stage = el("div", "position:relative;flex:1;overflow:hidden;min-height:0");
+    var video = el("video", "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000");
+    video.setAttribute("playsinline", ""); video.setAttribute("muted", ""); video.muted = true; video.autoplay = true;
     var overlay = el("canvas", "position:absolute;inset:0;width:100%;height:100%;pointer-events:none");
     var hint = el("div", "position:absolute;left:0;right:0;top:12px;text-align:center;padding:0 16px;" +
-                         "text-shadow:0 1px 3px #000", T.loading);
+                         "text-shadow:0 1px 3px #000;pointer-events:none", T.camera);
     stage.appendChild(video); stage.appendChild(overlay); stage.appendChild(hint);
-    var thumbs = el("div", "display:flex;gap:8px;overflow-x:auto;padding:8px 12px;min-height:0");
-    var bar = el("div", "display:flex;align-items:center;justify-content:space-between;padding:12px 16px 16px");
+    var thumbs = el("div", "display:flex;gap:8px;overflow-x:auto;padding:8px 12px;flex:none;pointer-events:auto");
+    var bar = el("div", "display:flex;align-items:center;justify-content:space-between;padding:12px 16px 16px;" +
+                        "flex:none;pointer-events:auto");
     var cancel = el("button", BTN, T.cancel);
     var shoot = el("button", "width:72px;height:72px;border-radius:50%;border:4px solid #fff;background:#fff;" +
-                             "box-shadow:inset 0 0 0 3px #000;cursor:pointer");
-    shoot.setAttribute("aria-label", T.capture); shoot.disabled = true;
+                             "box-shadow:inset 0 0 0 3px #000;cursor:pointer;pointer-events:auto;touch-action:manipulation");
+    shoot.setAttribute("aria-label", T.capture); shoot.disabled = true; shoot.style.opacity = ".4";
     var done = el("button", BTN + ";background:#10a37f", T.done);
     done.disabled = true; done.style.opacity = ".5";
+    [cancel, shoot, done].forEach(function (b) { b.type = "button"; });
     bar.appendChild(cancel); bar.appendChild(shoot); bar.appendChild(done);
     root.appendChild(stage); root.appendChild(thumbs); root.appendChild(bar);
+    // the page must not see our taps as taps outside something of its own
+    ["pointerdown", "mousedown", "touchstart", "click", "keydown"].forEach(function (type) {
+      root.addEventListener(type, function (e) { e.stopPropagation(); });
+    });
     document.body.appendChild(root);
+    if (useDialog) { try { root.showModal(); } catch (e) { root.setAttribute("open", ""); } }
+    // should anything mark the scanner inert after all, take it back
+    new MutationObserver(function () {
+      if (root.hasAttribute("inert")) root.removeAttribute("inert");
+      if (root.getAttribute("aria-hidden") === "true") root.removeAttribute("aria-hidden");
+    }).observe(root, { attributes: true, attributeFilter: ["inert", "aria-hidden"] });
 
     var small = document.createElement("canvas");
 
     function close() {
+      if (closed) return;
       closed = true;
       if (timer) clearTimeout(timer);
       if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+      listeners = listeners.filter(function (f) { return f !== onWorker; });
+      if (useDialog && root.open) { try { root.close(); } catch (e) { /* removed below */ } }
       root.remove();
     }
-    function fail(message) { hint.textContent = message; shoot.disabled = true; }
-
     function refreshDone() {
       done.disabled = pages.length === 0;
       done.style.opacity = pages.length ? "1" : ".5";
       done.textContent = pages.length ? T.done + " (" + pages.length + ")" : T.done;
     }
+    function status() {
+      if (!video.videoWidth) return;
+      if (workerState === "ready") hint.textContent = last ? T.found : T.find;
+      else if (workerState === "failed") hint.textContent = T.noDetect;
+      else hint.textContent = T.loading;
+    }
+    function onWorker() { if (!closed) { status(); startDetect(); } }
 
     function displayBox() {
       var sw = stage.clientWidth, sh = stage.clientHeight, vw = video.videoWidth, vh = video.videoHeight;
       var s = Math.min(sw / vw, sh / vh);
       return { s: s, x: (sw - vw * s) / 2, y: (sh - vh * s) / 2, sw: sw, sh: sh };
     }
+    function draw() {
+      var box = displayBox(), dpr = window.devicePixelRatio || 1;
+      var w = Math.round(box.sw * dpr), h = Math.round(box.sh * dpr);
+      if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+      var ctx = overlay.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, box.sw, box.sh);
+      if (!last) return;
+      var q = [last.topLeftCorner, last.topRightCorner, last.bottomRightCorner, last.bottomLeftCorner];
+      ctx.beginPath();
+      q.forEach(function (p, i) {
+        var x = box.x + p.x * box.s, y = box.y + p.y * box.s;
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(16,163,127,.18)"; ctx.fill();
+      ctx.lineWidth = 3; ctx.strokeStyle = "#10a37f"; ctx.stroke();
+    }
 
-    function detect() {
-      if (closed) return;
-      if (!busy && video.videoWidth) {
-        busy = true;
-        try {
-          var f = DETECT_WIDTH / video.videoWidth;
-          small.width = DETECT_WIDTH; small.height = Math.round(video.videoHeight * f);
-          small.getContext("2d").drawImage(video, 0, 0, small.width, small.height);
-          var c = corners(scanner, small);
-          last = c ? scaled(c, 1 / f) : null;          // in the video's own pixels
-          var box = displayBox(), dpr = window.devicePixelRatio || 1;
-          overlay.width = box.sw * dpr; overlay.height = box.sh * dpr;
-          var ctx = overlay.getContext("2d");
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          ctx.clearRect(0, 0, box.sw, box.sh);
-          if (last) {
-            var q = [last.topLeftCorner, last.topRightCorner, last.bottomRightCorner, last.bottomLeftCorner];
-            ctx.beginPath();
-            q.forEach(function (p, i) {
-              var x = box.x + p.x * box.s, y = box.y + p.y * box.s;
-              if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-            });
-            ctx.closePath();
-            ctx.fillStyle = "rgba(16,163,127,.18)"; ctx.fill();
-            ctx.lineWidth = 3; ctx.strokeStyle = "#10a37f"; ctx.stroke();
-          }
-          hint.textContent = last ? T.found : T.find;
-        } finally { busy = false; }
-      }
-      timer = setTimeout(detect, 150);
+    function startDetect() { if (!timer && !closed && workerState === "ready") tick(); }
+    function tick() {
+      timer = setTimeout(tick, 150);
+      if (closed || detecting || capturing || workerState !== "ready" || !video.videoWidth) return;
+      detecting = true;
+      var f = DETECT_WIDTH / video.videoWidth;
+      small.width = DETECT_WIDTH; small.height = Math.max(1, Math.round(video.videoHeight * f));
+      var ctx = small.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(video, 0, 0, small.width, small.height);
+      var img = ctx.getImageData(0, 0, small.width, small.height);
+      ask({ type: "detect", image: { data: img.data, width: img.width, height: img.height } }, [img.data.buffer], DETECT_MS)
+        .then(function (r) {
+          detecting = false;
+          if (closed) return;
+          last = r && r.corners ? scaled(r.corners, 1 / f) : null;   // in the video's own pixels
+          draw(); status();
+        });
+    }
+
+    function addPage(canvas, cut) {
+      canvas.toBlob(function (blob) {
+        capturing = false;
+        if (!blob || closed) return;
+        blob.arrayBuffer().then(function (buf) {
+          var entry = { jpeg: new Uint8Array(buf), width: canvas.width, height: canvas.height };
+          pages.push(entry);
+          var t = el("img", "height:64px;border-radius:4px;border:2px solid " + (cut ? "#10a37f" : "#e5a50a") +
+                            ";cursor:pointer;flex:none;pointer-events:auto");
+          t.src = URL.createObjectURL(blob); t.alt = T.remove; t.title = T.remove;
+          t.addEventListener("click", function () {
+            pages.splice(pages.indexOf(entry), 1); URL.revokeObjectURL(t.src); t.remove(); refreshDone();
+          });
+          thumbs.appendChild(t);
+          refreshDone();
+          if (!cut && workerState === "ready") hint.textContent = T.uncut;
+        });
+      }, "image/jpeg", 0.85);
     }
 
     function capture() {
-      if (!video.videoWidth || busy) return;
-      busy = true;
+      if (!video.videoWidth || capturing || closed) return;
+      capturing = true;
+      if (root.animate) root.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 180 });
+      var r = Math.min(1, FRAME_LONG_SIDE / Math.max(video.videoWidth, video.videoHeight));
       var full = document.createElement("canvas");
-      full.width = video.videoWidth; full.height = video.videoHeight;
-      full.getContext("2d").drawImage(video, 0, 0);
-      var c = last, page = null, cut = true;
-      if (c) {
-        try {
-          var w = Math.max(dist(c.topLeftCorner, c.topRightCorner), dist(c.bottomLeftCorner, c.bottomRightCorner));
-          var h = Math.max(dist(c.topLeftCorner, c.bottomLeftCorner), dist(c.topRightCorner, c.bottomRightCorner));
-          var k = Math.min(1, PAGE_LONG_SIDE / Math.max(w, h));
-          page = scanner.extractPaper(full, Math.round(w * k), Math.round(h * k), c);
-        } catch (e) {
-          page = null;                               // an odd quadrilateral: take the frame instead
-        }
-      }
-      if (!page) {                                   // no edge: the whole frame, scaled down
-        cut = false;
-        var r = Math.min(1, PAGE_LONG_SIDE / Math.max(full.width, full.height));
-        page = document.createElement("canvas");
-        page.width = Math.round(full.width * r); page.height = Math.round(full.height * r);
-        page.getContext("2d").drawImage(full, 0, 0, page.width, page.height);
-      }
-      page.toBlob(function (blob) {
-        busy = false;
-        if (!blob) return;
-        blob.arrayBuffer().then(function (buf) {
-          var entry = { jpeg: new Uint8Array(buf), width: page.width, height: page.height };
-          pages.push(entry);
-          var t = el("img", "height:64px;border-radius:4px;border:2px solid " + (cut ? "#10a37f" : "#e5a50a") +
-                            ";cursor:pointer;flex:none");
-          t.src = URL.createObjectURL(blob); t.alt = T.remove; t.title = T.remove;
-          t.onclick = function () {
-            pages.splice(pages.indexOf(entry), 1); URL.revokeObjectURL(t.src); t.remove(); refreshDone();
-          };
-          thumbs.appendChild(t);
-          refreshDone();
-          if (!cut) hint.textContent = T.uncut;
+      full.width = Math.round(video.videoWidth * r); full.height = Math.round(video.videoHeight * r);
+      var fctx = full.getContext("2d");
+      fctx.drawImage(video, 0, 0, full.width, full.height);
+      var c = workerState === "ready" && last ? scaled(last, r) : null;
+      if (!c) { addPage(downscaled(full, PAGE_LONG_SIDE), false); return; }
+      var w = Math.max(dist(c.topLeftCorner, c.topRightCorner), dist(c.bottomLeftCorner, c.bottomRightCorner));
+      var h = Math.max(dist(c.topLeftCorner, c.bottomLeftCorner), dist(c.topRightCorner, c.bottomRightCorner));
+      var k = Math.min(1, PAGE_LONG_SIDE / Math.max(w, h));
+      var img = fctx.getImageData(0, 0, full.width, full.height);
+      ask({ type: "extract", image: { data: img.data, width: img.width, height: img.height }, corners: c,
+            width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)) }, [img.data.buffer], EXTRACT_MS)
+        .then(function (res) {
+          if (closed) { capturing = false; return; }
+          if (res && res.image) {
+            var page = document.createElement("canvas");
+            page.width = res.image.width; page.height = res.image.height;
+            page.getContext("2d").putImageData(new ImageData(res.image.data, res.image.width, res.image.height), 0, 0);
+            addPage(page, true);
+          } else {
+            addPage(downscaled(full, PAGE_LONG_SIDE), false);
+          }
         });
-      }, "image/jpeg", 0.85);
-      root.animate && root.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 180 });
     }
 
     function finish() {
       if (!pages.length) return;
       hint.textContent = T.building;
       setTimeout(function () {
-        var pdf = buildPdf(pages);
-        var file = new File([pdf], scanFileName(), { type: "application/pdf", lastModified: Date.now() });
+        var file = new File([buildPdf(pages)], scanFileName(), { type: "application/pdf", lastModified: Date.now() });
         close();
         deliver(file);
       }, 30);
     }
 
-    cancel.onclick = close;
-    shoot.onclick = capture;
-    done.onclick = finish;
-    document.addEventListener("keydown", function esc(e) {
-      if (e.key === "Escape") { document.removeEventListener("keydown", esc); close(); }
-    });
+    cancel.addEventListener("click", close);
+    shoot.addEventListener("click", capture);
+    done.addEventListener("click", finish);
+    root.addEventListener("cancel", function (e) { e.preventDefault(); close(); });   // Escape on a <dialog>
+    root.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { fail(T.noCamera); return; }
+    listeners.push(onWorker);
+    startWorker();                                   // in parallel with the camera, not after it
+    video.addEventListener("loadedmetadata", function () {
+      if (closed) return;
+      shoot.disabled = false; shoot.style.opacity = "1";
+      status(); startDetect();
+    });
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { hint.textContent = T.noCamera; return; }
     navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }
     }).then(function (s) {
       if (closed) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
       stream = s; video.srcObject = s;
-      return video.play().catch(function () { /* autoplay is allowed: muted and inline */ });
-    }).then(function () {
-      return loadLibs();
-    }).then(function (sc) {
-      if (closed) return;
-      scanner = sc; shoot.disabled = false; hint.textContent = T.find;
-      detect();
+      var p = video.play();                          // not waited for: some browsers never settle it
+      if (p && p.catch) p.catch(function () { /* autoplay is allowed: muted and inline */ });
     }).catch(function (e) {
-      fail(stream ? T.failed : T.noCamera);
-      if (window.console) console.warn("[scanner]", e);
+      hint.textContent = T.noCamera;
+      if (window.console) console.warn("[scanner] camera:", e);
     });
   }
 
@@ -386,6 +445,9 @@
     b.setAttribute("aria-label", T.scan); b.title = T.scan;
     b.innerHTML = ICON;
     b.disabled = attach.disabled;
+    ["pointerdown", "mousedown", "touchstart"].forEach(function (type) {
+      b.addEventListener(type, function (e) { e.stopPropagation(); });
+    });
     b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); openScanner(); });
     attach.insertAdjacentElement("afterend", b);
   }

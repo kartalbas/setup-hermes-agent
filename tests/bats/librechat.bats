@@ -302,12 +302,144 @@ PY
     rm -rf "$tmp"
 }
 
-@test "a new scanner or a new library pin gives the page a new version, which the libraries are fetched with" {
+@test "a new scanner, worker or library pin gives the page a new version, which all of it is fetched with" {
+    IFS=$'\n\t'                                          # as in install.sh
     v1=$(librechat_scanner_version)
     [[ $v1 =~ ^[0-9a-f]{12}$ ]]
-    # the version covers the pins: the same script with another pin is another version
-    v3=$( { cat "$(librechat_scanner_source)"; printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "changed"; } | sha256sum | cut -c1-12 )
+    # the version covers the pins: the same files with another pin are another version
+    v3=$( { cat "$(librechat_scanner_source)/scan.js" "$(librechat_scanner_source)/scan-worker.js"
+            printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "changed"; } | sha256sum | cut -c1-12 )
     [ "$v1" != "$v3" ]
-    grep -q 'BASE + "opencv.js" + QUERY' "$(librechat_scanner_source)"
-    grep -q 'BASE + "jscanify.js" + QUERY' "$(librechat_scanner_source)"
+    # and every file of the scanner's own: a changed worker is another version
+    src=$(mktemp -d); mkdir -p "${src}/bot/librechat/scanner"
+    cp "$(librechat_scanner_source)/scan.js" "$(librechat_scanner_source)/scan-worker.js" "${src}/bot/librechat/scanner/"
+    [ "$(SCRIPT_DIR=$src librechat_scanner_version)" = "$v1" ]
+    printf '\n' >>"${src}/bot/librechat/scanner/scan-worker.js"
+    [ "$(SCRIPT_DIR=$src librechat_scanner_version)" != "$v1" ]
+    rm -rf "$src"
+    # the page starts the worker with the version, the worker fetches the libraries with it
+    grep -q 'BASE + "scan-worker.js" + QUERY' "$(librechat_scanner_source)/scan.js"
+    grep -q 'importScripts("opencv.js" + query)' "$(librechat_scanner_source)/scan-worker.js"
+    grep -q 'importScripts("jscanify.js" + query)' "$(librechat_scanner_source)/scan-worker.js"
+}
+
+@test "the installer puts every file of the scanner's own next to its libraries, and the page asks for this version" {
+    IFS=$'\n\t'                                          # as in install.sh
+    LIBRECHAT_DIR=$(mktemp -d); DRY_RUN=false
+    _librechat_fetch_pinned() { :; }
+    docker() { printf '<html><body><div id="root"></div></body></html>'; }
+    _librechat_scanner
+    for f in scan.js scan-worker.js; do
+        cmp -s "${LIBRECHAT_DIR}/scanner/${f}" <(printf '%s' "$(cat "$(librechat_scanner_source)/${f}")")
+    done
+    grep -q "hermes-scan/scan.js?v=$(librechat_scanner_version)\"" "${LIBRECHAT_DIR}/index.html"
+    rm -rf "$LIBRECHAT_DIR"
+}
+
+@test "the scanner's scripts parse" {
+    command -v node >/dev/null || skip "node is not installed"
+    node --check "$REPO_ROOT/bot/librechat/scanner/scan.js"
+    node --check "$REPO_ROOT/bot/librechat/scanner/scan-worker.js"
+}
+
+# The worker against the real libraries, where an installed scanner has them.
+scanner_libs() {                  # LIBS: the installed, pinned libraries — or the test is skipped
+    LIBS="${LIBRECHAT_DIR}/scanner"
+    command -v node >/dev/null || skip "node is not installed"
+    [[ -f ${LIBS}/opencv.js && -f ${LIBS}/jscanify.js ]] || skip "the scanner's libraries are not installed here"
+    [[ $(sha256sum "${LIBS}/opencv.js" | cut -d' ' -f1) == "$_LC_SCANNER_OPENCV_SHA" &&
+       $(sha256sum "${LIBS}/jscanify.js" | cut -d' ' -f1) == "$_LC_SCANNER_JSCANIFY_SHA" ]] ||
+        skip "the installed libraries are not the pinned ones"
+}
+
+@test "the scanner's worker starts OpenCV in a worker's own scope, finds the page and straightens it" {
+    scanner_libs
+    # Bounded from outside: a promise resolved with OpenCV's module — a thenable —
+    # resolves again forever and holds the whole thread; no timer inside fires.
+    timeout 120 node - "$REPO_ROOT/bot/librechat/scanner/scan-worker.js" "$LIBS" <<'JS'
+const fs = require("fs"), path = require("path"), vm = require("vm");
+const [worker, libs] = process.argv.slice(2);
+const posted = [], loaded = [];
+const scope = {                   // what a browser gives a worker, and nothing of Node
+  location: { href: "https://chat.example.com/hermes-scan/scan-worker.js?v=test", search: "?v=test" },
+  setTimeout, clearTimeout, console, atob, btoa, fetch, performance, TextDecoder, TextEncoder,
+  crypto: require("crypto").webcrypto,
+  postMessage: (m) => posted.push(m),
+  importScripts: (...urls) => urls.forEach((u) => {
+    loaded.push(u);
+    const name = u.split("?")[0];
+    vm.runInContext(fs.readFileSync(path.join(libs, name), "utf8"), scope, { filename: name });
+  }),
+};
+scope.self = scope;
+vm.createContext(scope);
+const t0 = Date.now();
+vm.runInContext(fs.readFileSync(worker, "utf8"), scope, { filename: "scan-worker.js" });
+
+function page(w, h, quad) {       // a light quadrilateral on a dark ground, RGBA
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const s = quad.map((p, i) => { const q = quad[(i + 1) % 4]; return (q.x - p.x) * (y + 0.5 - p.y) - (q.y - p.y) * (x + 0.5 - p.x); });
+    const v = quad.length && (s.every((d) => d >= 0) || s.every((d) => d <= 0)) ? 245 : 40, o = (y * w + x) * 4;
+    data[o] = data[o + 1] = data[o + 2] = v; data[o + 3] = 255;
+  }
+  return { data, width: w, height: h };
+}
+function fail(msg) { console.error(msg); process.exit(1); }
+function answer(id) { const m = posted.find((p) => p.id === id); if (!m) fail("no answer to " + id); return m; }
+
+(function wait() {
+  const boot = posted.find((m) => m.type);
+  if (!boot) { if (Date.now() - t0 > 90000) fail("the worker never said ready or error"); return setTimeout(wait, 100); }
+  if (boot.type !== "ready") fail("the worker failed: " + boot.message);
+  if (loaded.join(" ") !== "opencv.js?v=test jscanify.js?v=test") fail("libraries fetched without the version: " + loaded);
+
+  const quad = [{ x: 150, y: 80 }, { x: 480, y: 110 }, { x: 450, y: 420 }, { x: 120, y: 390 }];
+  scope.onmessage({ data: { id: 1, type: "detect", image: page(640, 480, quad) } });
+  const c = answer(1).corners;
+  if (!c) fail("no page found: " + JSON.stringify(answer(1)));
+  const want = { topLeftCorner: quad[0], topRightCorner: quad[1], bottomRightCorner: quad[2], bottomLeftCorner: quad[3] };
+  for (const k of Object.keys(want)) {
+    if (Math.abs(c[k].x - want[k].x) > 4 || Math.abs(c[k].y - want[k].y) > 4) fail(k + " " + JSON.stringify(c[k]));
+  }
+  scope.onmessage({ data: { id: 2, type: "extract", image: page(640, 480, quad), corners: c, width: 300, height: 400 } });
+  const img = answer(2).image;
+  if (!img || img.width !== 300 || img.height !== 400 || img.data.length !== 300 * 400 * 4) fail("extract: " + JSON.stringify(answer(2)).slice(0, 200));
+  let sum = 0; for (let i = 0; i < img.data.length; i += 4) sum += img.data[i];
+  if (sum / (300 * 400) < 200) fail("the straightened page is not the page");
+  scope.onmessage({ data: { id: 3, type: "detect", image: page(640, 480, []) } });
+  if (answer(3).corners !== null) fail("a blank frame has a page: " + JSON.stringify(answer(3)));
+  process.exit(0);
+})();
+JS
+}
+
+@test "the scanner's worker frees every contour it looks at: this OpenCV build never frees one by itself" {
+    scanner_libs
+    ! grep -q FinalizationRegistry "${LIBS}/opencv.js"   # nothing collects a handle that is dropped
+    timeout 120 node - "$REPO_ROOT/bot/librechat/scanner/scan-worker.js" "$LIBS" <<'JS'
+const [worker, libs] = process.argv.slice(2);
+const cv = require(libs + "/opencv.js"), jscanify = require(libs + "/jscanify.js");
+global.cv = cv;                   // jscanify finds OpenCV as a global
+const { findCorners } = require(worker);
+function busy(w, h) {             // a page on a desk full of small things: a thousand contours
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const onPage = x > 120 && x < 360 && y > 60 && y < 300;
+    const dot = ((x >> 3) + (y >> 3)) % 3 === 0 && x % 8 > 1 && y % 8 > 1;
+    const v = onPage ? 240 : dot ? 220 : 30, o = (y * w + x) * 4;
+    data[o] = data[o + 1] = data[o + 2] = v; data[o + 3] = 255;
+  }
+  return { data, width: w, height: h };
+}
+(function wait() {
+  if (typeof cv.Mat !== "function") return setTimeout(wait, 20);
+  const handed = [], get = cv.MatVector.prototype.get;
+  cv.MatVector.prototype.get = function (i) { const m = get.call(this, i); handed.push(m); return m; };
+  if (!findCorners(cv, new jscanify(), busy(480, 360))) { console.error("the page on the busy desk was not found"); process.exit(1); }
+  const alive = handed.filter((m) => !m.isDeleted()).length;
+  if (handed.length < 500 || alive) { console.error(alive + " of " + handed.length + " contours left behind"); process.exit(1); }
+  process.exit(0);
+})();
+JS
 }

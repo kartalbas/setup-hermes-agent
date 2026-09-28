@@ -326,21 +326,26 @@ _librechat_images() {
 # at start and serves client/dist as static files, so the run mounts two things
 # over the image: that page with one script tag more — derived from the pinned
 # image on every run, so an upgrade cannot leave an old page behind — and a
-# directory next to LibreChat's own files with the scanner and its two
-# libraries: jscanify (MIT) and the OpenCV.js build it ships, pinned by tag and
-# checksum. The service worker caches LibreChat's assets but not the page, so
-# an installed app picks the button up on its next start.
+# directory next to LibreChat's own files with the scanner, the worker it does
+# its image work in (scan-worker.js: OpenCV off the page's thread), and their
+# two libraries: jscanify (MIT) and the OpenCV.js build it ships, pinned by tag
+# and checksum. The service worker caches LibreChat's assets but not the page,
+# so an installed app picks the button up on its next start.
 # ---------------------------------------------------------------------------
 readonly _LC_SCANNER_SRC="https://raw.githubusercontent.com/puffinsoft/jscanify/v1.4.0/src"
 readonly _LC_SCANNER_JSCANIFY_SHA="7463ca648de2c081a07ef556e79d5d6b7525f2a5e2ca55fefdcb69608b014ea3"
 readonly _LC_SCANNER_OPENCV_SHA="7beec9c6b373927a6d68b145bff380a7b5c7f1b4a8c32bf88d11e591e54930a6"
 
-librechat_scanner_source() { printf '%s/bot/librechat/scanner/scan.js' "$SCRIPT_DIR"; }
+readonly -a _LC_SCANNER_FILES=(scan.js scan-worker.js)   # the scanner's own, from the repo
 
-# One version for the scanner and its two libraries: the files are cached for
-# days, and a new script or a new pin must reach a browser that has the old.
+librechat_scanner_source() { printf '%s/bot/librechat/scanner' "$SCRIPT_DIR"; }
+
+# One version for the scanner's files and its two libraries: they are cached
+# for days, and a new script or a new pin must reach a browser that has the old.
 librechat_scanner_version() {
-    { cat "$(librechat_scanner_source)"; printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "$_LC_SCANNER_OPENCV_SHA"; } |
+    local f
+    { for f in "${_LC_SCANNER_FILES[@]}"; do cat "$(librechat_scanner_source)/${f}"; done
+      printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "$_LC_SCANNER_OPENCV_SHA"; } |
         sha256sum | cut -c1-12
 }
 
@@ -390,7 +395,10 @@ _librechat_scanner() {
     fi
     ensure_dir "$LIBRECHAT_DIR" 0755
     ensure_dir "$dir" 0755
-    write_file "${dir}/scan.js" 0644 <"$(librechat_scanner_source)"
+    local f
+    for f in "${_LC_SCANNER_FILES[@]}"; do
+        write_file "${dir}/${f}" 0644 <"$(librechat_scanner_source)/${f}"
+    done
     _librechat_fetch_pinned "${dir}/jscanify.js" "${_LC_SCANNER_SRC}/jscanify.js" "$_LC_SCANNER_JSCANIFY_SHA"
     _librechat_fetch_pinned "${dir}/opencv.js" "${_LC_SCANNER_SRC}/opencv.js" "$_LC_SCANNER_OPENCV_SHA"
     if [[ $DRY_RUN == true ]]; then
@@ -426,11 +434,16 @@ _librechat_verify() {
     fi
     log_ok "LibreChat answering on 127.0.0.1:${LIBRECHAT_PORT} -> $(librechat_url)"
     if is_true "${LIBRECHAT_SCANNER:-true}"; then
-        if [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-scan/scan.js") == 200 ]] &&
-           fetch "http://127.0.0.1:${LIBRECHAT_PORT}/" 2>/dev/null | grep -q "hermes-scan/scan.js"; then
-            log_ok "  document scanner served next to the paperclip"
+        local f missing=""
+        for f in "${_LC_SCANNER_FILES[@]}" jscanify.js opencv.js; do
+            [[ $(http_status "http://127.0.0.1:${LIBRECHAT_PORT}/hermes-scan/${f}") == 200 ]] || missing+=" ${f}"
+        done
+        if [[ -n $missing ]]; then
+            log_warn "  the document scanner's files are not served:${missing}; the chat works without it"
+        elif ! fetch "http://127.0.0.1:${LIBRECHAT_PORT}/" 2>/dev/null | grep -q "hermes-scan/scan.js"; then
+            log_warn "  LibreChat's page does not carry the scanner's tag; the chat works without it"
         else
-            log_warn "  the document scanner is not served (page or files); the chat works without it"
+            log_ok "  document scanner served next to the paperclip"
         fi
     fi
     local k port
