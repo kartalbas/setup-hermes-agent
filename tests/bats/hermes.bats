@@ -321,7 +321,7 @@ made = len(calls)
 assert send("Scan.pdf", scan) == note and len(calls) == made, "the same scan sent again was rendered again"
 
 # a PDF with text: the gateway's own note, nothing more
-text = send("Brief.pdf", pdf([("text", "Rechnung Nummer 51 ueber CHF 1558.20")]))
+text = send("Brief.pdf", pdf([("text", "Rechnung Nummer 4711 ueber CHF 123.45")]))
 assert text.startswith("[DOC Brief.pdf at ") and text.endswith("inlined=False]"), text
 
 # a mixed one: the gateway's note, and the scanned page as a picture

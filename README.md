@@ -1123,15 +1123,43 @@ What git keeps out of this repository is exactly what a rebuilt host needs
 first. `configs` keeps it, per host, in a private repository of yours:
 
 ```bash
-sudo ./install.sh configs save                      # pull, copy this host's files there, commit, push
-sudo CONFIGS_REPO=OWNER/NAME ./install.sh configs   # a new host: its files in place, then the run
+sudo ./install.sh configs save        # after changing a setting or signing in again: pull, copy, commit, push
 ```
+
+A new host, from a clone of this repository anywhere, as you — signed in to
+GitHub, which the account is not yet:
+
+```bash
+sudo CONFIGS_REPO=OWNER/NAME ./install.sh configs   # 1. config/ into this clone (no account yet: its part waits)
+sudo ./bootstrap.sh                                  # 2. the account, and its copy of this clone with config/
+sudo ./install.sh configs                            # 3. the sign-ins, into the account
+sudo -u <account> -i                                 # 4. the run, as the account, in its copy —
+    cd setup-hermes-agent && sudo ./install.sh       #    it asks for no sign-in
+sudo ./install.sh configs                            # 5. back here: the bots' memory, into the profiles the run made
+```
+
+Then delete this clone (3.1).
 
 - **Which files** — the ones git ignores here and the run reads:
   `config/*.conf` that git does not track (`hermes.conf`, `channels.conf`,
   `secrets.conf`, …), everything in `config/credentials/` but its README, and
   `*.secrets` / `secrets.env` wherever they lie. Not the examples, not what git
   tracks, not `temp/`, `bot/build/` or `.state/`.
+- **And from outside the checkout** — what no run can recreate:
+  - the sign-ins of 3.3: the assistant's tokens (`*.token` in its state
+    directory: Microsoft 365, Google, every read account) and the mail relay's
+    `emailproxy.config`, which keeps its token block;
+  - the CLIs' sign-ins in the agent account's home: agy and its ACP server,
+    `gh`, `az`, `gcloud`, Claude Code;
+  - the bots' memory: `memories/*.md` and `cron/jobs.json` of every profile, and
+    the skills a bot wrote or changed itself — not the ones the agent ships or
+    this repository deploys, which every install brings back.
+
+  Stored under `hosts/<host>/host/` by what they are — `state/assistant/…`,
+  `state/mailproxy/…`, `home/…`, `hermes/…` — not where this host keeps them.
+  Not the run's own products (the relay's certificate, `.env` files, the
+  agent's `config.yaml` and `auth.json`, the tunnel token in `api` mode), and
+  not the bots' conversations: those are data, backed up by the backup module.
 - **Where** — `CONFIGS_REPO=OWNER/NAME` is cloned as you, never as root, to
   `~/repos/<owner in lower case>/<name>`; this host's files live in
   `setup-hermes-agent/hosts/<CONFIGS_HOST>/` there (default: the short host
@@ -1142,6 +1170,14 @@ sudo CONFIGS_REPO=OWNER/NAME ./install.sh configs   # a new host: its files in p
 - **`configs`** pulls and puts every file in place, owned as the checkout,
   secrets and private keys `0600`, the rest `0644`. It writes only paths git
   ignores here: whatever the repository carries, it never lands on code.
+  Outside the checkout it puts back only what is **missing**, owned by the
+  agent's account, `0600`: a sign-in present here is the newer one (tokens
+  renew themselves), and memory present here is the bots' own. Memory goes only
+  into a profile that exists — the run creates profiles by cloning, and a
+  directory made first would stop that — so on a new host the second
+  `configs` after the run fills it; a skill file replaces only the agent's
+  shipped copy, never one changed here. Every path is checked against the
+  list: a config repository cannot put a file anywhere else.
 - **`configs save`** pulls first and stops if that does not fast-forward,
   copies back what changed, stages only this host's folder — anything else
   changed in the clone stays out — and commits only when something did

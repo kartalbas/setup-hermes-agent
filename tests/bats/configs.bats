@@ -170,3 +170,93 @@ commits() { git -C "$REMOTE" rev-list --count master; }
     [ "$status" -eq 2 ] && [[ $output == *"unexpected argument: save"* ]]
     "$REPO_ROOT/install.sh" --help | grep -q 'configs save'
 }
+
+# Outside the checkout: the agent account's home, the modules' state and the
+# agent's data directory, all throwaway, with an agent bundle to compare to.
+host_side() {
+    AGENT_HOME=$(mktemp -d)
+    _configs_agent_home() { printf '%s' "$AGENT_HOME"; }
+    SERVICE_USER=$(id -un) SERVICE_GROUP=$(id -gn)
+    ASSISTANT_STATE_DIR=$(mktemp -d)/assistant MAILPROXY_STATE_DIR=$(mktemp -d)/mailproxy
+    HERMES_HOME=$(mktemp -d)/hermes INSTALL_DIR=$(mktemp -d)
+    mkdir -p "$ASSISTANT_STATE_DIR" "$MAILPROXY_STATE_DIR" "$INSTALL_DIR/skills/pdf"
+    printf 'shipped\n' >"$INSTALL_DIR/skills/pdf/SKILL.md"
+    printf 'm365\n' >"$ASSISTANT_STATE_DIR/m365.token"
+    printf 'google\n' >"$ASSISTANT_STATE_DIR/google.token"
+    : >"$ASSISTANT_STATE_DIR/google.token.lock"
+    printf 'relay\n' >"$MAILPROXY_STATE_DIR/emailproxy.config"
+    printf 'cert\n' >"$MAILPROXY_STATE_DIR/relay.key"
+    mkdir -p "$AGENT_HOME/.gemini/antigravity-cli" "$AGENT_HOME/.config/gh" "$AGENT_HOME/.claude" \
+             "$AGENT_HOME/.config/gcloud/configurations"
+    printf 'agy\n' >"$AGENT_HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+    printf 'gh\n' >"$AGENT_HOME/.config/gh/hosts.yml"
+    printf 'claude\n' >"$AGENT_HOME/.claude/.credentials.json"
+    printf 'gcloud\n' >"$AGENT_HOME/.config/gcloud/configurations/config_default"
+    printf 'shell\n' >"$AGENT_HOME/.bashrc"
+    local p="$HERMES_HOME/profiles/secretary"
+    mkdir -p "$p/memories" "$p/cron" "$p/skills/pdf" "$p/skills/own/__pycache__"
+    printf 'x\n' >"$HERMES_HOME/config.yaml"; printf 'x\n' >"$p/config.yaml"
+    printf 'noted\n' >"$p/memories/MEMORY.md"; printf 'user\n' >"$p/memories/USER.md"; : >"$p/memories/MEMORY.md.lock"
+    printf '{"jobs": []}\n' >"$p/cron/jobs.json"; printf 'db\n' >"$p/cron/executions.db"
+    printf 'changed by the bot\n' >"$p/skills/pdf/SKILL.md"      # a shipped skill the bot changed
+    printf 'written by the bot\n' >"$p/skills/own/SKILL.md"
+    printf 'cache\n' >"$p/skills/own/__pycache__/x.pyc"
+}
+
+@test "outside the checkout: the sign-ins and the bots' own memory, stored by what they are, not where this host has them" {
+    host_side
+    [ "$(configs_host_files | cut -d'|' -f1 | sort | tr '\n' ' ')" = "hermes/profiles/secretary/cron/jobs.json hermes/profiles/secretary/memories/MEMORY.md hermes/profiles/secretary/memories/USER.md hermes/profiles/secretary/skills/own/SKILL.md hermes/profiles/secretary/skills/pdf/SKILL.md home/.claude/.credentials.json home/.config/gcloud/configurations/config_default home/.config/gh/hosts.yml home/.gemini/antigravity-cli/antigravity-oauth-token state/assistant/google.token state/assistant/m365.token state/mailproxy/emailproxy.config " ]
+    configs_run save
+    [ "$(git -C "$REMOTE" show "master:${FOLDER}/host/state/assistant/m365.token")" = m365 ]
+    [ "$(git -C "$REMOTE" show "master:${FOLDER}/host/hermes/profiles/secretary/skills/own/SKILL.md")" = "written by the bot" ]
+    # every stored path says what it is, none where this host keeps it
+    git -C "$REMOTE" ls-tree -r --name-only master -- "${FOLDER}/host" | sed "s#^${FOLDER}/host/##" |
+        { ! grep -v -E '^(state|home|hermes)/'; } | { ! grep -F -e "$AGENT_HOME" -e "$ASSISTANT_STATE_DIR" -e "$HERMES_HOME"; }
+}
+
+@test "configs puts back only what is missing: a sign-in or memory here is the newer, a profile waits for the run, a shipped skill copy is replaced" {
+    host_side
+    configs_run save
+    local p="$HERMES_HOME/profiles/secretary"
+    rm -f "$ASSISTANT_STATE_DIR/m365.token" "$AGENT_HOME/.config/gh/hosts.yml" "$p/memories/USER.md"
+    rm -rf "$AGENT_HOME/.claude"
+    printf 'renewed here\n' >"$ASSISTANT_STATE_DIR/google.token"      # this host's is the newer
+    printf 'changed here\n' >"$p/memories/MEMORY.md"
+    rm -f "$p/skills/own/SKILL.md"
+    printf 'shipped\n' >"$p/skills/pdf/SKILL.md"                  # a new install's copy, as the agent ships it
+    # a profile the run has not created yet, with memory saved for it
+    mkdir -p "${CLONE}/${FOLDER}/host/hermes/profiles/news/memories"
+    printf 'news\n' >"${CLONE}/${FOLDER}/host/hermes/profiles/news/memories/MEMORY.md"
+    configs_run apply
+    [ "$(cat "$ASSISTANT_STATE_DIR/m365.token")" = m365 ] && [ "$(stat -c %a "$ASSISTANT_STATE_DIR/m365.token")" = 600 ]
+    [ "$(cat "$AGENT_HOME/.config/gh/hosts.yml")" = gh ]
+    [ "$(cat "$AGENT_HOME/.claude/.credentials.json")" = claude ] && [ "$(stat -c %a "$AGENT_HOME/.claude")" = 700 ]
+    [ "$(cat "$ASSISTANT_STATE_DIR/google.token")" = "renewed here" ]
+    [ "$(cat "$p/memories/MEMORY.md")" = "changed here" ] && [ "$(cat "$p/memories/USER.md")" = user ]
+    [ "$(cat "$p/skills/own/SKILL.md")" = "written by the bot" ]
+    [ "$(cat "$p/skills/pdf/SKILL.md")" = "changed by the bot" ]    # the shipped copy gave way
+    [ ! -e "$HERMES_HOME/profiles/news" ]                            # never made ahead of the run
+    # a skill changed on this host since is its own, and stays
+    printf 'changed here\n' >"$p/skills/pdf/SKILL.md"
+    configs_run apply
+    [ "$(cat "$p/skills/pdf/SKILL.md")" = "changed here" ]
+}
+
+@test "a config repository cannot put a file anywhere, and an account that does not exist yet waits" {
+    host_side
+    configs_run save
+    local h="${CLONE}/${FOLDER}/host"
+    mkdir -p "$h/home" "$h/state/assistant" "$h/elsewhere"
+    printf 'evil\n' >"$h/home/.bashrc"
+    printf 'evil\n' >"$h/state/assistant/not-a-token"
+    printf 'evil\n' >"$h/elsewhere/file"
+    for rel in home/.bashrc state/assistant/not-a-token elsewhere/file "state/assistant/../../x.token" "hermes/profiles/x/../../y/memories/a.md" "home/.config/gcloud/configurations/config_x/y"; do
+        ! configs_host_path "$rel" >/dev/null || { echo "accepted: $rel"; false; }
+    done
+    configs_run apply
+    [ "$(cat "$AGENT_HOME/.bashrc")" = shell ] && [ ! -e "$ASSISTANT_STATE_DIR/not-a-token" ]
+    _configs_agent_home() { return 1; }
+    LOG_LEVEL=warn
+    bats_run configs_run apply
+    [ "$status" -eq 0 ] && [[ $output == *"does not exist yet"*"bootstrap.sh, then configs again"* ]]
+}

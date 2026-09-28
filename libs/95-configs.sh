@@ -7,8 +7,10 @@
 #   sudo ./install.sh configs save   pull, copy them back, commit, push
 #
 # The files are the ones git keeps out of this repository and the run reads
-# (configs_wanted): the site config, the secrets, the credentials. They are
-# kept there as they are, unencrypted — the repository must stay private.
+# (configs_wanted): the site config, the secrets, the credentials — and, from
+# outside the checkout, the sign-ins nobody can script and the bots' memory
+# (configs_host_files). They are kept there as they are, unencrypted — the
+# repository must stay private.
 # CONFIGS_REPO=OWNER/NAME is cloned as the invoking user — git never runs as
 # root — to ~/repos/<owner in lower case>/<name>; this host's files live in
 # setup-hermes-agent/hosts/<CONFIGS_HOST>/ (default: the short host name), each
@@ -169,8 +171,9 @@ _configs_apply() {                # _configs_apply HOSTDIR HOST
         run install -m "$mode" ${own[@]+"${own[@]}"} "$src" "$dst"
         log_ok "${path} (${mode})"
         count=$(( count + 1 ))
-    done < <(find "$sub" -type f -print0 | sort -z)
-    (( count )) || log_skip "every setting already in place"
+    done < <(find "$sub" -path "${sub}/host" -prune -o -type f -print0 | sort -z)
+    (( count )) || log_skip "every setting of the checkout already in place"
+    _configs_apply_host "${sub}/host"
 }
 
 _configs_save() {                 # _configs_save CLONE HOSTDIR HOST
@@ -189,6 +192,18 @@ _configs_save() {                 # _configs_save CLONE HOSTDIR HOST
         fi
         count=$(( count + 1 ))
     done < <(configs_local_files)
+    local stored abs
+    while IFS='|' read -r stored abs; do
+        [[ -n $stored ]] || continue
+        dst="${sub}/host/${stored}"
+        if [[ -f $dst ]] && cmp -s "$abs" "$dst" 2>/dev/null; then continue; fi
+        if [[ $DRY_RUN == true ]]; then
+            log_info "[dry-run] copy ${abs} to ${folder}/host/${stored}"
+        else
+            _configs_copy_in "$abs" "$dst"
+        fi
+        count=$(( count + 1 ))
+    done < <(configs_host_files)
     [[ $DRY_RUN == true ]] && { log_info "[dry-run] ${count} file(s) would change; commit and push them"; return 0; }
     configs_as_user git -C "$dir" add -A -- "$folder"
     if configs_as_user git -C "$dir" diff --cached --quiet -- "$folder"; then
@@ -219,4 +234,191 @@ _configs_remember() {             # _configs_remember HOST
     # shellcheck disable=SC2059  # the lines are ours, their \n is meant
     printf "\n# Where configs / configs save keep this host's settings (a private repository).\n${add}" >>"$file"
     log_ok "noted in ${file}: ${add//\\n/ }"
+}
+
+# ---------------------------------------------------------------------------
+# Outside the checkout: the sign-ins nobody can script, and the bots' memory
+# ---------------------------------------------------------------------------
+# Kept under hosts/<host>/host/ by what they are rather than where this host
+# has them — "state/assistant/…", "state/mailproxy/…" for the modules' state,
+# "home/…" for the agent account's home, "hermes/…" for its data directory —
+# so no account name or absolute path of this host is a folder name there.
+# Only what configs_host_path names is ever written: `configs` runs as root,
+# and a config repository must not be a way to put a file anywhere.
+
+# The CLIs' sign-ins in the agent account's home, and Claude Code's.
+readonly -a _CONFIGS_HOME_FILES=(
+    .gemini/antigravity-cli/antigravity-oauth-token   # agy: the Gemini subscription
+    .gemini/antigravity-acp/acp_token.json            # agy's ACP server
+    .config/gh/hosts.yml                              # gh, and git's pushes over https
+    .azure/msal_token_cache.json .azure/azureProfile.json .azure/config .azure/clouds.config   # az: the azure module
+    .config/gcloud/credentials.db .config/gcloud/access_tokens.db
+    .config/gcloud/default_configs.db .config/gcloud/active_config                            # gcloud: the google module
+    .claude/.credentials.json                         # Claude Code: the Admin bot
+)
+
+_configs_agent_home() {           # the agent account's home, or nothing when it does not exist yet
+    local home
+    home=$(getent passwd "${SERVICE_USER:-}" 2>/dev/null | cut -d: -f6) || return 1
+    [[ -n $home && -d $home ]] || return 1
+    printf '%s' "$home"
+}
+
+# configs_host_path STORED — where a stored host file belongs on this host,
+# or nothing (status 1) for a path this list does not name.
+configs_host_path() {
+    local rel=$1 home f
+    [[ $rel != *..* && $rel != /* && $rel != *//* ]] || return 1
+    case $rel in
+        state/assistant/*)
+            [[ ${rel#state/assistant/} =~ ^[A-Za-z0-9_.@+-]+\.token$ ]] || return 1
+            printf '%s/%s' "$ASSISTANT_STATE_DIR" "${rel#state/assistant/}" ;;
+        state/mailproxy/emailproxy.config)
+            printf '%s/emailproxy.config' "$MAILPROXY_STATE_DIR" ;;
+        home/*)
+            home=$(_configs_agent_home) || return 1
+            for f in "${_CONFIGS_HOME_FILES[@]}"; do
+                [[ ${rel#home/} == "$f" ]] && { printf '%s/%s' "$home" "$f"; return 0; }
+            done
+            [[ ${rel#home/} =~ ^\.config/gcloud/configurations/config_[A-Za-z0-9_-]+$ ]] || return 1
+            printf '%s/%s' "$home" "${rel#home/}" ;;
+        hermes/*)
+            [[ ${rel#hermes/} =~ ^(profiles/[A-Za-z0-9_-]+/)?(memories/[A-Za-z0-9_.-]+\.md|cron/jobs\.json|skills/[A-Za-z0-9_./-]+)$ ]] ||
+                return 1
+            printf '%s/%s' "$HERMES_HOME" "${rel#hermes/}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# The digests of every skill file the agent ships and this repository deploys:
+# a skill file with one of them is reproducible, not the bot's own.
+_configs_shipped_digests() {
+    local dir; dir=$(hermes_install_dir 2>/dev/null || true)
+    {
+        [[ -n $dir ]] && find "${dir}/skills" "${dir}/optional-skills" -type f -print0 2>/dev/null
+        find "${SCRIPT_DIR}/bot" -type f -name '*.md' -print0 2>/dev/null
+    } | xargs -0 -r sha256sum | cut -d' ' -f1 | sort -u
+}
+
+# configs_host_files — the host files there are now: "STORED|ABSOLUTE" per line.
+configs_host_files() {
+    local home f p shipped
+    for f in "${ASSISTANT_STATE_DIR}"/*.token; do          # Microsoft 365, Google, every read account
+        [[ -f $f ]] && printf 'state/assistant/%s|%s\n' "${f##*/}" "$f"
+    done
+    f="${MAILPROXY_STATE_DIR}/emailproxy.config"           # the relay's token block lives in it
+    [[ -f $f ]] && printf 'state/mailproxy/emailproxy.config|%s\n' "$f"
+    if home=$(_configs_agent_home); then
+        for f in "${_CONFIGS_HOME_FILES[@]}" ; do
+            [[ -f ${home}/${f} ]] && printf 'home/%s|%s\n' "$f" "${home}/${f}"
+        done
+        for f in "${home}"/.config/gcloud/configurations/config_*; do
+            [[ -f $f ]] && printf 'home/%s|%s\n' "${f#"${home}"/}" "$f"
+        done
+    fi
+    [[ -n ${HERMES_HOME:-} && -d $HERMES_HOME ]] || return 0
+    # the bots' memory: what they noted, their scheduled jobs, the skills they wrote
+    for p in "$HERMES_HOME" "$HERMES_HOME"/profiles/*; do
+        [[ -d $p ]] || continue
+        for f in "$p"/memories/*.md "$p"/cron/jobs.json; do
+            [[ -f $f ]] && printf 'hermes/%s|%s\n' "${f#"${HERMES_HOME}"/}" "$f"
+        done
+    done
+    shipped=$(_configs_shipped_digests)
+    for p in "$HERMES_HOME" "$HERMES_HOME"/profiles/*; do
+        [[ -d ${p}/skills ]] || continue
+        while IFS= read -r -d '' f; do
+            grep -qxF "$(sha256sum "$f" | cut -d' ' -f1)" <<<"$shipped" && continue
+            printf 'hermes/%s|%s\n' "${f#"${HERMES_HOME}"/}" "$f"
+        done < <(find "${p}/skills" \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name '*.pyc' -print0)
+    done
+    return 0
+}
+
+# Into the clone, as the invoking user; root reads what that user may not.
+_configs_copy_in() {              # _configs_copy_in SOURCE DEST
+    local src=$1 dst=$2
+    configs_as_user mkdir -p "$(dirname "$dst")"
+    if (( EUID == 0 )); then
+        install -m 0600 -o "$(configs_user)" -g "$(id -gn "$(configs_user)")" "$src" "$dst"
+    else
+        configs_as_user install -m 0600 "$src" "$dst"
+    fi
+}
+
+# Every missing directory on the way, not only the last: `install -d` gives its
+# owner and mode to the last one alone, and a ~/.config made by root would
+# shut the agent out of its own.
+_configs_make_dirs() {            # _configs_make_dirs DIR [install's -o USER -g GROUP]
+    local dir=$1 d
+    shift
+    local -a missing=()
+    for (( d = 0; d < 64; d++ )); do
+        [[ -d $dir ]] && break
+        missing=("$dir" ${missing[@]+"${missing[@]}"})
+        dir=$(dirname "$dir")
+    done
+    for dir in ${missing[@]+"${missing[@]}"}; do
+        run install -d -m 0700 "$@" "$dir" || return 1
+    done
+    return 0
+}
+
+# Put back what is missing. A sign-in present here is the newer one — tokens
+# renew themselves — and memory present here is the bots' own: both are kept.
+# Memory goes only into a profile that exists: the run creates profiles by
+# cloning, and a directory made first would stop that; after the install run,
+# `configs` again fills them. A skill file is replaced only where it is still
+# the agent's shipped copy.
+_configs_apply_host() {           # _configs_apply_host HOSTDIR
+    local sub=$1 src rel dst profile shipped="" count=0 kept=0 waiting=0
+    local -a own=()
+    [[ -d $sub ]] || return 0
+    if ! _configs_agent_home >/dev/null; then
+        log_warn "the agent's account ${SERVICE_USER:-?} does not exist yet: its sign-ins and memory wait — bootstrap.sh, then configs again"
+        return 0
+    fi
+    if (( EUID == 0 )); then
+        own=(-o "$SERVICE_USER" -g "${SERVICE_GROUP:-$SERVICE_USER}")
+    elif [[ $(id -un) != "${SERVICE_USER:-}" ]]; then
+        log_warn "the sign-ins and memory outside the checkout are put back as root: sudo ./install.sh configs"
+        return 0
+    fi
+    while IFS= read -r -d '' src; do
+        rel=${src#"$sub"/}
+        if ! dst=$(configs_host_path "$rel"); then
+            log_warn "not a place configs knows, left alone: host/${rel}"
+            continue
+        fi
+        if [[ $rel == hermes/* ]]; then
+            profile=$HERMES_HOME
+            [[ $rel =~ ^hermes/profiles/([A-Za-z0-9_-]+)/ ]] && profile="${HERMES_HOME}/profiles/${BASH_REMATCH[1]}"
+            if [[ ! -f ${profile}/config.yaml ]]; then
+                waiting=$(( waiting + 1 ))
+                continue
+            fi
+            if [[ -f $dst && $rel == */skills/* ]]; then
+                [[ -n $shipped ]] || shipped=$(_configs_shipped_digests)
+                grep -qxF "$(sha256sum "$dst" | cut -d' ' -f1)" <<<"$shipped" || { kept=$(( kept + 1 )); continue; }
+                cmp -s "$src" "$dst" && continue
+            elif [[ -f $dst ]]; then
+                kept=$(( kept + 1 ))
+                continue
+            fi
+        elif [[ -f $dst ]]; then
+            kept=$(( kept + 1 ))
+            continue
+        fi
+        if ! _configs_make_dirs "$(dirname "$dst")" ${own[@]+"${own[@]}"} ||
+           ! run install -m 0600 ${own[@]+"${own[@]}"} "$src" "$dst"; then
+            log_warn "could not put back ${dst}"
+            continue
+        fi
+        log_ok "${dst}"
+        count=$(( count + 1 ))
+    done < <(find "$sub" -type f -print0 | sort -z)
+    (( kept )) && log_skip "${kept} sign-in or memory file(s) present here, kept: this host's are the newer"
+    (( waiting )) && log_info "${waiting} memory file(s) wait for their profile: after the install run, configs again"
+    (( count )) || log_skip "nothing missing outside the checkout"
+    return 0
 }
