@@ -246,7 +246,8 @@ fixing whether or not the move happens.
 - [x] `web` channel (the agent's API server on loopback, key, toolset), the `librechat` module (containers on loopback, unit, tunnel host), the Entra app, group and assignment — built and tested
 - [x] Installed on the host and verified 2026-09-28: containers up on loopback only, `chat.<zone>` answering through the tunnel, sign-in redirect to Entra with the new app, the group assigned with assignment required, both bots' API servers answering, and a two-turn test through the Tasks API server recalling the first turn from the agent's store
 - [ ] The operator signs in at `chat.<zone>`, installs the PWA, and tries Tasks and the Secretary in several chats
-- [ ] Photos (camera) and documents from LibreChat reach the bots as files — patch built and tested; install and verify with a real upload
+- [x] Photos (camera) and documents from LibreChat reach the bots as files — installed 2026-09-28; verified on the path LibreChat uses: the Secretary read a PDF and a photographed receipt and named their saved paths (the operator's own test in the web chat is the next item)
+- [ ] The operator uploads a photo from the phone's camera and a PDF in the web chat
 - [ ] Idea: a scan function for the Secretary — a photographed page becomes a straightened, cropped PDF automatically (for photos from Teams too)
 - [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
 - [ ] LibreChat's data (chats, accounts) is outside the agent's backup — include its Mongo volume if it stays
