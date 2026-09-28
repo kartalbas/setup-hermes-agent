@@ -450,6 +450,16 @@ LIBRECHAT_ENABLED=false
 # LIBRECHAT_WELCOME="Pick a bot above. Every chat is a context of its own."
 # LIBRECHAT_SCANNER=true                        # a document scanner next to the paperclip: live page edges, a cropped PDF
 # LIBRECHAT_APP_COLOR="#10a37f"                 # the installable app's icon: the title's initial on this colour
+
+# ---------------------------------------------------------------------------
+# This host's settings in your own private repository
+# ---------------------------------------------------------------------------
+# `sudo ./install.sh configs` puts them in place from there, `configs save`
+# copies them back, commits and pushes: config/*.conf, the secrets, the
+# credentials — unencrypted, so the repository must stay private. Cloned as
+# you (git never runs as root) to ~/repos/<owner in lower case>/<name>.
+# CONFIGS_REPO=OWNER/NAME
+# CONFIGS_HOST=                                 # this host's folder in it; empty: the short host name
 # LIBRECHAT_PORT=3080  LIBRECHAT_MONGO_PORT=27018  LIBRECHAT_MEILI_PORT=7701  LIBRECHAT_DIR=/opt/hermes-librechat
 # LIBRECHAT_IMAGE=ghcr.io/danny-avila/librechat:v0.8.7
 # LIBRECHAT_MONGO_IMAGE=mongo:8.0.20

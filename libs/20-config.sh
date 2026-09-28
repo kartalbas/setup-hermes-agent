@@ -325,6 +325,9 @@ config_defaults() {
     : "${LIBRECHAT_WELCOME:=Pick a bot above. Every chat is a context of its own.}"
     : "${LIBRECHAT_SCANNER:=true}"         # a document scanner next to the paperclip: live page edges, a cropped PDF
     : "${LIBRECHAT_APP_COLOR:=#10a37f}"    # the app icon's ground, behind the title's initial
+    # --- this host's settings in your own private repository (configs [save]) ---
+    : "${CONFIGS_REPO:=}"                  # OWNER/NAME; empty: the command asks for it to be set
+    : "${CONFIGS_HOST:=}"                  # this host's folder there; empty: the short host name
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
     # Derived without a literal: config_defaults runs before AND after the

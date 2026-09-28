@@ -185,6 +185,7 @@ modules_for() {                   # modules_for PATH… -> "a,b" or "all"
             libs/46-*)                          add credentials ;;
             libs/50-*)                          add docker ;;
             libs/99-*) ;;                       # teardown: nothing an install run applies
+            libs/95-*) ;;                       # the configs command: nothing an install run applies
             config/install.conf)                add clis; add devtools ;;
             config/bootstrap.conf)              add host ;;
             # Nothing that reaches the host: the examples document the

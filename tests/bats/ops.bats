@@ -21,7 +21,7 @@ setup() {
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/46-credentials.sh)" = credentials ]
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/30-preflight.sh libs/50-docker.sh)" = "preflight,docker" ]
     [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for config/install.conf)" = "clis,devtools" ]
-    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/99-uninstall.sh config/hermes.conf.example)" = none ]
+    [ "$(bash "$REPO_ROOT/bot/ops/opsctl" modules-for libs/99-uninstall.sh libs/95-configs.sh config/hermes.conf.example)" = none ]
 }
 
 # The catch-all used to be silence, so a path this list had never heard of —

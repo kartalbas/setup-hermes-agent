@@ -39,6 +39,7 @@ Hermes Agent provisioner
 
 USAGE
     ./install.sh [options]
+    ./install.sh [options] configs [save]
 
 OPTIONS
     -c, --config FILE       site config      (default: config/hermes.conf)
@@ -60,6 +61,11 @@ OPTIONS
     -V, --version           print version and exit
     -h, --help              this text
 
+COMMANDS
+    configs                 put this host's settings in place from your private
+                            config repository (CONFIGS_REPO=OWNER/NAME)
+    configs save            copy them back there, commit and push
+
 MODULES (run order)
 MODULE_LIST_PLACEHOLDER
 
@@ -69,6 +75,8 @@ EXAMPLES
     sudo ./install.sh --only channels,assistant     # after a role or provider change
     sudo ./install.sh --skip azure,tunnel,devtools  # nothing cloud-side changed
     sudo ./install.sh --uninstall
+    sudo CONFIGS_REPO=OWNER/NAME ./install.sh configs   # a new host: its settings first
+    sudo ./install.sh configs save                      # after changing them here
 
 Every module prints its duration at the end of the run, so the slow ones are
 easy to name in --skip.
@@ -122,6 +130,8 @@ parse_args() {
     DO_PURGE=false
     ONLY_MODULES=""
     SKIP_MODULES=""
+    COMMAND=install
+    CONFIGS_MODE=apply
 
     while (( $# )); do
         case $1 in
@@ -141,6 +151,8 @@ parse_args() {
             -V|--version)    printf '%s\n' "$PROVISIONER_VERSION"; exit 0 ;;
             -h|--help)       usage; exit 0 ;;
             --)              shift; break ;;
+            configs)         COMMAND=configs; shift
+                             if [[ ${1:-} == save ]]; then CONFIGS_MODE=save; shift; fi ;;
             -*)              printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
             *)               printf 'unexpected argument: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
         esac
@@ -275,6 +287,13 @@ main() {
     load_libraries
 
     trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
+
+    # This host's settings come before any check that needs them: on a new
+    # host `configs` is what brings the configuration the run would read.
+    if [[ $COMMAND == configs ]]; then
+        configs_command "$CONFIGS_MODE"
+        exit 0
+    fi
 
     # A misspelt module name should fail before anything is read or locked.
     selected_modules >/dev/null

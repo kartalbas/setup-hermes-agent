@@ -1066,7 +1066,8 @@ chmod 0600 config/secrets.conf
 
 Each template has a **SITE VALUES** block at the top. Fill that block plus the
 secrets file, and you are done — everything below those blocks has a working
-default and a comment saying why.
+default and a comment saying why. The ignored ones exist only on the host;
+keep them in a private repository of your own with `configs save` (2.4).
 
 ## 2.2 · The three names behind every credential
 
@@ -1115,6 +1116,42 @@ error configuration is not valid:
 error   - DEVTOOLS_GITHUB_TOKEN_VAR names 'GITHUB_TOKEN', which is empty in SECRETS_FILE
 error refusing to change anything until the configuration is fixed
 ```
+
+## 2.4 · Keep them in your own private repository
+
+What git keeps out of this repository is exactly what a rebuilt host needs
+first. `configs` keeps it, per host, in a private repository of yours:
+
+```bash
+sudo ./install.sh configs save                      # pull, copy this host's files there, commit, push
+sudo CONFIGS_REPO=OWNER/NAME ./install.sh configs   # a new host: its files in place, then the run
+```
+
+- **Which files** — the ones git ignores here and the run reads:
+  `config/*.conf` that git does not track (`hermes.conf`, `channels.conf`,
+  `secrets.conf`, …), everything in `config/credentials/` but its README, and
+  `*.secrets` / `secrets.env` wherever they lie. Not the examples, not what git
+  tracks, not `temp/`, `bot/build/` or `.state/`.
+- **Where** — `CONFIGS_REPO=OWNER/NAME` is cloned as you, never as root, to
+  `~/repos/<owner in lower case>/<name>`; this host's files live in
+  `setup-hermes-agent/hosts/<CONFIGS_HOST>/` there (default: the short host
+  name — set `CONFIGS_HOST` when two hosts share one), each under its path in
+  this checkout. The first `save` notes `CONFIGS_REPO` (and a `CONFIGS_HOST`
+  that is not the default) in `config/hermes.conf`, so a restored copy knows
+  where it came from.
+- **`configs`** pulls and puts every file in place, owned as the checkout,
+  secrets and private keys `0600`, the rest `0644`. It writes only paths git
+  ignores here: whatever the repository carries, it never lands on code.
+- **`configs save`** pulls first and stops if that does not fast-forward,
+  copies back what changed, stages only this host's folder — anything else
+  changed in the clone stays out — and commits only when something did
+  change (`setup-hermes-agent settings from <host>`), then pushes. Without a
+  git identity it stops before committing and names the two commands that set
+  one. `--dry-run` shows the files and changes nothing.
+
+The files are kept as they are, tokens and keys included, **unencrypted —
+the repository must stay private**. Nothing about it is in this repository:
+`CONFIGS_REPO` lives in your own `config/hermes.conf`.
 
 ---
 ---
