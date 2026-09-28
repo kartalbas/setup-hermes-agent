@@ -58,6 +58,19 @@ general questions go to the Gemini app, not to a chat on the bridge.
 5. **Nothing else moves.** Teams, mail, cron and the six bots are unchanged;
    notifications stay in Teams — a page cannot push.
 
+6. **Photos and documents arrive as files** (added 2026-09-28, after the first
+   test: uploads failed). LibreChat's "Upload to Provider" sends a photo as an
+   `image_url` data URL and a PDF as `{"type": "file", "file": {"filename",
+   "file_data"}}`; the agent's API server showed the photo to the model without
+   keeping it and refused the PDF. A carried patch (the fifth, like the Teams
+   and mail adapter patches) caches both with the gateway's own
+   `cache_media_bytes`, tells the agent where the file is in the gateway's own
+   words, keeps the photo visible, dedupes resends, and raises the request
+   limit to 40 MB (25 MB a file). LibreChat allows images, PDF, Office and text
+   up to 25 MB, shrinks photos to 3072 px, does not resend earlier files, and
+   shows each bot's real context window (`tokenConfig`, from the bot's
+   `LLM_CONTEXT_WINDOW`) instead of its ~32k guess for an unknown model name.
+
 ## Consequences
 
 - Chats become the unit of context the operator manages: new chat, rename,

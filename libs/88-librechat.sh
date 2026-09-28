@@ -192,24 +192,35 @@ EOF
 # is escaped by a serializer, not by hand. The bots' keys stay references
 # (${HERMES_WEB_<KEY>_KEY}) that LibreChat resolves from its environment.
 librechat_config_json() {
-    local k first=true specs='[]' endpoints='[]' name summary
+    local k first=true specs='[]' endpoints='[]' files='{}' name summary window
     while IFS= read -r k; do
         [[ -n $k ]] || continue
         name=$(bot_field "$k" NAME)
         summary=$(role_summary "$(bot_role_file "$k")" 2>/dev/null || true)
+        # The window the bot itself works with (the agent compresses at half of
+        # it), not LibreChat's guess for a model name it does not know (~32k).
+        window=$(bot_field "$k" LLM_CONTEXT_WINDOW); [[ $window =~ ^[0-9]+$ ]] || window=0
         endpoints=$(jq -c --arg name "$name" --arg key "$k" --arg kv "\${$(bot_field "$k" WEB_KEY_VAR)}" \
-                      --arg url "http://127.0.0.1:$(bot_field "$k" WEB_PORT)/v1" '. + [{
+                      --arg url "http://127.0.0.1:$(bot_field "$k" WEB_PORT)/v1" --argjson window "$window" '. + [{
             name: $name, apiKey: $kv, baseURL: $url,
             models: {default: [$key], fetch: false},
             titleConvo: false, summarize: false, modelDisplayLabel: $name,
             headers: {"X-Hermes-Session-Id": "{{LIBRECHAT_BODY_CONVERSATIONID}}"},
-            dropParams: ["stop", "user", "frequency_penalty", "presence_penalty"]}]' <<<"$endpoints")
+            dropParams: ["stop", "user", "frequency_penalty", "presence_penalty"]}
+            + (if $window > 0 then {tokenConfig: {($key): {prompt: 0, completion: 0, context: $window}}} else {} end)]' <<<"$endpoints")
+        # Photos (the phone's camera included) and documents go to the bot as
+        # files (the agent's carried web-files patch caches them like a Teams
+        # attachment); earlier ones are not sent again — the bot keeps them.
         specs=$(jq -c --arg name "$name" --arg key "$k" --arg d "$summary" --argjson def "$first" '. + [{
             name: $key, label: $name, description: $d, default: $def,
-            preset: {endpoint: $name, model: $key}}]' <<<"$specs")
+            preset: {endpoint: $name, model: $key, resendFiles: false}}]' <<<"$specs")
+        files=$(jq -c --arg name "$name" '. + {($name): {fileLimit: 10, fileSizeLimit: 25, totalSizeLimit: 25,
+            supportedMimeTypes: ["^image/.*$", "^application/pdf$", "^text/.*$", "^application/msword$",
+                                 "^application/vnd\\.ms-excel$",
+                                 "^application/vnd\\.openxmlformats-officedocument\\..*$"]}}' <<<"$files")
         first=false
     done < <(web_bots)
-    jq -n --argjson endpoints "$endpoints" --argjson specs "$specs" \
+    jq -n --argjson endpoints "$endpoints" --argjson specs "$specs" --argjson files "$files" \
           --arg welcome "$LIBRECHAT_WELCOME" '{
         version: "1.3.13",
         cache: true,
@@ -221,6 +232,10 @@ librechat_config_json() {
             peoplePicker: {users: false, groups: false, roles: false},
             marketplace: {use: false}},
         registration: {socialLogins: ["openid"]},
+        # A phone photo is shrunk in the browser before it is sent: faster, and
+        # 3072 px still keeps a scanned page legible.
+        fileConfig: {endpoints: $files, serverFileSizeLimit: 25,
+                     clientImageResize: {enabled: true, maxWidth: 3072, maxHeight: 3072, quality: 0.9}},
         endpoints: {custom: $endpoints},
         modelSpecs: {enforce: true, prioritize: true, list: $specs}}'
 }

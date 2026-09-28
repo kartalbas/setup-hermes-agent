@@ -33,6 +33,7 @@ hermes_apply() {
         _hermes_patch_teams_links
         _hermes_patch_help
         _hermes_patch_clarify_choices
+        _hermes_patch_web_files
         return 0
     fi
 
@@ -41,6 +42,7 @@ hermes_apply() {
     _hermes_patch_teams_links
     _hermes_patch_help
     _hermes_patch_clarify_choices
+    _hermes_patch_web_files
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -499,6 +501,155 @@ _hermes_patch_clarify_choices() {
             ;;
         3) log_skip "readable choices patch present" ;;
         *) die "could not patch the adapter for readable choices" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Carried patch 5: files through the web channel (ADR 0029).
+#
+# The agent's API server takes a photo only as a picture for the model and
+# refuses documents outright ("uploaded files and document inputs are not
+# supported on this endpoint"). A chat client in front of it — LibreChat's
+# "Upload to Provider" — sends a photo as an image_url data URL and a PDF as
+# {"type": "file", "file": {"filename", "file_data"}}. With the patch both are
+# cached exactly like a Teams attachment (cache_media_bytes) and the agent is
+# told where the file is — for a document in the gateway's own words, which
+# tell it to read the file rather than ask for its contents — so a photo or a
+# PDF from the web is one the Secretary can read and file away, as from Teams.
+# The picture stays attached for the model as well. Earlier attachments that a
+# client sends again are cached once. A request may carry 40 MB instead of 10
+# (a scanned PDF in base64 is larger than 10), a file up to 25 MB.
+# Idempotent by its marker; re-applied after updates.
+# ---------------------------------------------------------------------------
+hermes_api_server_path() { printf '%s/gateway/platforms/api_server.py' "$(hermes_install_dir)"; }
+
+hermes_patch_web_files_file() {   # hermes_patch_web_files_file FILE -> 0 patched, 3 already, 1 failed
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+MARK = "setup-hermes-agent: files through the web channel"
+if MARK in s:
+    sys.exit(3)
+
+
+def once(old, new):
+    global s
+    if s.count(old) != 1:
+        sys.exit("an anchor of the web-files patch was not found exactly once "
+                 f"({old.strip().splitlines()[0][:60]!r}); the API server changed — review the patch")
+    s = s.replace(old, new)
+
+
+once("MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls\n",
+     "MAX_REQUEST_BYTES = 40_000_000  # " + MARK + ": a scanned PDF in base64 exceeds 10 MB\n")
+
+helpers = '''# ''' + MARK + '''
+# A photo or a document a chat client sends is cached like a Teams attachment
+# and the agent is told where it is; the same bytes are cached once.
+_WEB_ATTACHMENTS: Dict[str, Any] = {}
+_WEB_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _web_attachment_bytes(data_url: str):
+    """(mime, bytes) of a base64 data URL; ValueError in the API's own codes."""
+    head, sep, payload = data_url.partition(",")
+    if not sep or not head.lower().startswith("data:") or ";base64" not in head.lower():
+        raise ValueError("invalid_content_part:An attachment must be a base64 data URL.")
+    mime = head[5:].split(";", 1)[0].strip().lower() or "application/octet-stream"
+    import base64 as _b64
+    import binascii as _binascii
+    try:
+        data = _b64.b64decode(payload)
+    except (_binascii.Error, ValueError):
+        raise ValueError("invalid_content_part:An attachment is not valid base64.")
+    if len(data) > _WEB_ATTACHMENT_MAX_BYTES:
+        raise ValueError("unsupported_content_type:An attachment is larger than 25 MB.")
+    return mime, data
+
+
+def _web_attachment_note(data: bytes, filename: str, mime: str) -> str:
+    """Cache the bytes (once) and say where they are, as the gateway would."""
+    import hashlib as _hashlib
+    from gateway.platforms.base import cache_media_bytes
+    key = _hashlib.sha256(data).hexdigest()
+    cached = _WEB_ATTACHMENTS.get(key)
+    if cached is None or not os.path.exists(cached.path):
+        cached = cache_media_bytes(data, filename=filename, mime_type=mime)
+        if cached is None:
+            return f"[The user sent '{filename}', but it could not be read as {mime}.]"
+        _WEB_ATTACHMENTS[key] = cached
+    if cached.kind == "image":
+        return (f"[The user sent an image: '{cached.display_name}'. It is saved at: {cached.path} "
+                f"(the picture itself is attached as well).]")
+    try:
+        from gateway.run import _build_document_context_note
+        return _build_document_context_note(cached.display_name, cached.path, cached.media_type,
+                                            content_inlined=False)
+    except Exception:
+        return f"[The user sent a document: '{cached.display_name}'. It is saved at: {cached.path}.]"
+
+
+'''
+once("def _normalize_multimodal_content(content: Any) -> Any:\n",
+     helpers + "def _normalize_multimodal_content(content: Any) -> Any:\n")
+
+once("            normalized_parts.append(image_part)\n            continue\n",
+     "            normalized_parts.append(image_part)\n"
+     "            # " + MARK + ": the picture as a file too, to file it away\n"
+     "            if lowered.startswith(\"data:image/\"):\n"
+     "                _mime, _data = _web_attachment_bytes(url_value)\n"
+     "                _n = sum(1 for _p in normalized_parts if _p.get(\"type\") == \"image_url\")\n"
+     "                _ext = _mime.split(\"/\", 1)[-1].split(\"+\", 1)[0].replace(\"jpeg\", \"jpg\") or \"jpg\"\n"
+     "                normalized_parts.append({\"type\": \"text\", \"text\": _web_attachment_note(_data, f\"image-{_n}.{_ext}\", _mime)})\n"
+     "            continue\n")
+
+once('''        if part_type in _FILE_PART_TYPES:
+            raise ValueError(
+                "unsupported_content_type:Inline image inputs are supported, "
+                "but uploaded files and document inputs are not supported on this endpoint."
+            )
+''', '''        if part_type in _FILE_PART_TYPES:
+            # ''' + MARK + ''': a document becomes a cached file and a note
+            _file = part.get("file") if isinstance(part.get("file"), dict) else part
+            _data_url = _file.get("file_data")
+            if not isinstance(_data_url, str) or not _data_url.strip():
+                raise ValueError(
+                    "unsupported_content_type:Documents must be sent inline as file_data; "
+                    "file ids are not supported on this endpoint."
+                )
+            _mime, _data = _web_attachment_bytes(_data_url.strip())
+            _name = str(_file.get("filename") or "document")
+            normalized_parts.append({"type": "text", "text": _web_attachment_note(_data, _name, _mime)})
+            continue
+''')
+
+open(p, "w", encoding="utf-8").write(s)
+compile(s, p, "exec")
+PY
+}
+
+_hermes_patch_web_files() {
+    local f; f=$(hermes_api_server_path)
+    [[ -f $f ]] || { log_warn "API server not found at ${f}; web-files patch skipped"; return 0; }
+    if [[ $DRY_RUN == true ]]; then
+        if grep -q "setup-hermes-agent: files through the web channel" "$f"; then log_skip "web-files patch present"
+        else log_info "[dry-run] would patch ${f} so photos and documents from the web chat arrive as files"; fi
+        return 0
+    fi
+    local rc=0
+    hermes_patch_web_files_file "$f" || rc=$?
+    case $rc in
+        0)
+            mark_changed; log_ok "API server patched: photos and documents from the web chat arrive as files"
+            # Loaded at start: every bot with the web channel restarts once.
+            local key
+            while IFS= read -r key; do
+                [[ -n $key ]] && bot_has_channel "$key" web && restart_later "$(bot_field "$key" SERVICE).service"
+            done < <(bots)
+            ;;
+        3) log_skip "web-files patch present" ;;
+        *) die "could not patch the API server for files from the web chat" ;;
     esac
 }
 

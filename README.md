@@ -973,6 +973,18 @@ the bot remembers of that chat; start a new chat for a new line of thought.
 Every signed-in person sees every web bot, and a bot's memory is the bot's,
 not the person's.
 
+**Photos and documents.** The paperclip's "Upload to Provider" takes photos
+(on the phone the camera too), PDFs, Word, Excel and text files, up to 25 MB
+each and ten at once; photos are shrunk to 3072 px in the browser, which keeps
+a page legible. They reach the bot as files: a carried patch to the agent's API
+server (`_hermes_patch_web_files` in `60-hermes.sh`, re-applied after updates)
+caches each one exactly like a Teams attachment and tells the bot where it is —
+so the Secretary reads a PDF or files a photographed receipt from the web as it
+does from Teams, and a photo stays visible to the model as well. A file sent
+once is not sent again with every later message. For a clean PDF of a paper
+document, the phone's own scanner (Files or Notes on the iPhone, Google Drive on
+Android) finds the edges and straightens the page before you upload it.
+
 ```bash
 systemctl status <service>-librechat                      # up: the three containers are running
 cd /opt/hermes-librechat && docker compose ps             # which of them

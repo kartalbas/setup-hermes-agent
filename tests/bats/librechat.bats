@@ -92,7 +92,7 @@ EOF
     out=$(librechat_config_text)
     python3 - <<PY
 import yaml
-c = yaml.safe_load('''$out''')
+c = yaml.safe_load(r'''$out''')
 assert c["version"] == "1.3.13"
 eps = c["endpoints"]["custom"]
 assert [e["name"] for e in eps] == ["Secretary", "Tasks"], eps          # web bots only, not search
@@ -104,8 +104,8 @@ assert sec["headers"] == {"X-Hermes-Session-Id": "{{LIBRECHAT_BODY_CONVERSATIONI
 assert sec["titleConvo"] is False and sec["summarize"] is False        # no extra agent runs per chat
 specs = c["modelSpecs"]
 assert specs["enforce"] is True
-assert [s["preset"] for s in specs["list"]] == [{"endpoint": "Secretary", "model": "secretary"},
-                                                {"endpoint": "Tasks", "model": "tasks"}]
+assert [s["preset"] for s in specs["list"]] == [{"endpoint": "Secretary", "model": "secretary", "resendFiles": False},
+                                                {"endpoint": "Tasks", "model": "tasks", "resendFiles": False}]
 assert [s["default"] for s in specs["list"]] == [True, False]
 assert all(s["description"] for s in specs["list"]), "the role's summary line describes the entry"
 ui = c["interface"]
@@ -113,6 +113,30 @@ for off in ("modelSelect", "presets", "agents", "memories", "webSearch", "runCod
     assert ui[off] is False, off
 assert c["registration"]["socialLogins"] == ["openid"]
 PY
+}
+
+@test "librechat.yaml: photos and documents go to the bots, with the window the bot really has" {
+    BOT_SECRETARY_LLM_CONTEXT_WINDOW=512000 LLM_CONTEXT_WINDOW=400000
+    out=$(librechat_config_text)
+    python3 - <<PY
+import re, yaml
+c = yaml.safe_load(r'''$out''')
+eps = {e["name"]: e for e in c["endpoints"]["custom"]}
+assert eps["Secretary"]["tokenConfig"] == {"secretary": {"prompt": 0, "completion": 0, "context": 512000}}
+assert eps["Tasks"]["tokenConfig"]["tasks"]["context"] == 400000           # the global window
+assert all(s["preset"]["resendFiles"] is False for s in c["modelSpecs"]["list"])
+fc = c["fileConfig"]
+assert set(fc["endpoints"]) == {"Secretary", "Tasks"}
+lim = fc["endpoints"]["Secretary"]
+assert lim["fileSizeLimit"] == 25 and lim["fileLimit"] == 10
+for mime in ("image/jpeg", "image/heic", "application/pdf", "text/plain",
+             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+    assert any(re.match(p, mime) for p in lim["supportedMimeTypes"]), mime
+assert not any(re.match(p, "application/x-sh") for p in lim["supportedMimeTypes"])
+assert fc["clientImageResize"]["enabled"] is True and fc["clientImageResize"]["maxWidth"] == 3072
+PY
+    LLM_CONTEXT_WINDOW=0 BOT_SECRETARY_LLM_CONTEXT_WINDOW=0
+    [[ $(librechat_config_text) != *"tokenConfig"* ]]              # unknown: LibreChat's own guess, not a made-up number
 }
 
 @test "compose: everything on loopback, nothing published, images pinned, the database behind a password" {

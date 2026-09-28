@@ -108,3 +108,114 @@ PY
     [ "$(hermes_adapter_base_path)" = "$(hermes_install_dir)/gateway/platforms/base.py" ]
     rm -f "$f"
 }
+
+@test "the web-files patch caches a document and a photo like a Teams attachment, once, and names the file" {
+    tmp=$(mktemp -d)
+    cat >"${tmp}/api_server.py" <<'PY'
+import os
+from typing import Any, Dict, List
+
+MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+_TEXT_PART_TYPES = frozenset({"text", "input_text"})
+_IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
+_FILE_PART_TYPES = frozenset({"file", "input_file"})
+
+
+def _normalize_multimodal_content(content: Any) -> Any:
+    normalized_parts: List[Dict[str, Any]] = []
+    for part in content:
+        part_type = part.get("type")
+        if part_type in _TEXT_PART_TYPES:
+            normalized_parts.append({"type": "text", "text": part["text"]})
+            continue
+        if part_type in _IMAGE_PART_TYPES:
+            url_value = part["image_url"]["url"]
+            lowered = url_value.lower()
+            image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
+            normalized_parts.append(image_part)
+            continue
+
+        if part_type in _FILE_PART_TYPES:
+            raise ValueError(
+                "unsupported_content_type:Inline image inputs are supported, "
+                "but uploaded files and document inputs are not supported on this endpoint."
+            )
+    return normalized_parts
+PY
+    hermes_patch_web_files_file "${tmp}/api_server.py"
+    grep -q 'setup-hermes-agent: files through the web channel' "${tmp}/api_server.py"
+    grep -q '^MAX_REQUEST_BYTES = 40_000_000' "${tmp}/api_server.py"
+    bats_run hermes_patch_web_files_file "${tmp}/api_server.py"; [ "$status" -eq 3 ]
+    python3 - "${tmp}/api_server.py" "$tmp" <<'PY'
+import base64, os, sys, types
+src, tmp = sys.argv[1], sys.argv[2]
+calls = []
+class Cached:
+    def __init__(self, path, media_type, kind, display_name):
+        self.path, self.media_type, self.kind, self.display_name = path, media_type, kind, display_name
+def cache_media_bytes(data, *, filename="", mime_type=""):
+    calls.append(filename)
+    path = os.path.join(tmp, "cache-%d-%s" % (len(calls), filename))
+    open(path, "wb").write(data)
+    kind = "image" if mime_type.startswith("image/") else "document"
+    return Cached(path, mime_type, kind, filename)
+def _build_document_context_note(name, path, mime, content_inlined=True):
+    return "[DOC %s at %s (%s) inlined=%s]" % (name, path, mime, content_inlined)
+gateway = types.ModuleType("gateway"); platforms = types.ModuleType("gateway.platforms")
+base = types.ModuleType("gateway.platforms.base"); base.cache_media_bytes = cache_media_bytes
+run = types.ModuleType("gateway.run"); run._build_document_context_note = _build_document_context_note
+sys.modules.update({"gateway": gateway, "gateway.platforms": platforms, "gateway.platforms.base": base, "gateway.run": run})
+ns = {}; exec(compile(open(src).read(), src, "exec"), ns)
+norm = ns["_normalize_multimodal_content"]
+
+pdf = "data:application/pdf;base64," + base64.b64encode(b"%PDF-1.4 fake").decode()
+out = norm([{"type": "text", "text": "Bitte ablegen"},
+            {"type": "file", "file": {"filename": "Rechnung.pdf", "file_data": pdf}}])
+assert out[0] == {"type": "text", "text": "Bitte ablegen"}, out
+assert out[1]["type"] == "text" and "[DOC Rechnung.pdf at " in out[1]["text"] and "inlined=False" in out[1]["text"], out
+assert open(out[1]["text"].split(" at ")[1].split(" (")[0], "rb").read() == b"%PDF-1.4 fake"
+
+# a client that sends the same file again gets the same file, not a copy
+again = norm([{"type": "file", "file": {"filename": "Rechnung.pdf", "file_data": pdf}}])
+assert again[0]["text"] == out[1]["text"] and calls == ["Rechnung.pdf"], (again, calls)
+
+# the Responses API shape: filename and file_data at the top
+top = norm([{"type": "input_file", "filename": "Brief.pdf",
+             "file_data": "data:application/pdf;base64," + base64.b64encode(b"other").decode()}])
+assert "[DOC Brief.pdf at " in top[0]["text"], top
+
+# a photo stays a picture for the model AND becomes a file with a note
+png = "data:image/png;base64," + base64.b64encode(b"\x89PNG fake").decode()
+pic = norm([{"type": "image_url", "image_url": {"url": png}}])
+assert pic[0] == {"type": "image_url", "image_url": {"url": png}}, pic
+assert pic[1]["type"] == "text" and "The user sent an image: 'image-1.png'. It is saved at: " in pic[1]["text"], pic
+
+# a file id cannot be fetched, and an oversized file is refused, both in the API's own codes
+for bad in ({"type": "file", "file": {"file_id": "file-123"}},):
+    try:
+        norm([bad]); raise SystemExit("a file id was accepted")
+    except ValueError as exc:
+        assert str(exc).startswith("unsupported_content_type:"), exc
+ns["_WEB_ATTACHMENT_MAX_BYTES"] = 4
+try:
+    norm([{"type": "file", "file": {"filename": "big.pdf", "file_data": "data:application/pdf;base64," + base64.b64encode(b"12345").decode()}}])
+    raise SystemExit("an oversized file was accepted")
+except ValueError as exc:
+    assert "larger than 25 MB" in str(exc), exc
+print("ok")
+PY
+    rm -rf "$tmp"
+}
+
+@test "the web-files patch is applied on every run, after an update too" {
+    [ "$(grep -cE '^ +_hermes_patch_web_files$' "$REPO_ROOT/libs/60-hermes.sh")" -eq 2 ]
+}
+
+@test "the web-files patch refuses to guess when the API server changed" {
+    tmp=$(mktemp -d)
+    printf 'MAX_REQUEST_BYTES = 5\n' >"${tmp}/api_server.py"
+    bats_run hermes_patch_web_files_file "${tmp}/api_server.py"
+    [ "$status" -ne 0 ] && [ "$status" -ne 3 ]
+    [[ "$output" == *"review the patch"* ]]
+    rm -rf "$tmp"
+}
