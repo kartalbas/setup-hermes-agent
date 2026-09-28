@@ -81,7 +81,11 @@
   // ---------------------------------------------------------------------------
   // In the browser.
   // ---------------------------------------------------------------------------
-  var BASE = ((document.currentScript && document.currentScript.src) || "").replace(/scan\.js(\?.*)?$/, "");
+  var SRC = (document.currentScript && document.currentScript.src) || "";
+  var BASE = SRC.replace(/scan\.js(\?.*)?$/, "");
+  // The page's tag carries one version for the scanner and its libraries
+  // together; asking for them with it keeps a cached old library from staying.
+  var QUERY = (SRC.match(/[?&]v=([0-9a-f]+)/) || [])[1] ? "?v=" + SRC.match(/[?&]v=([0-9a-f]+)/)[1] : "";
   var DETECT_WIDTH = 480;        // the live detection runs on a small copy of the frame
   var PAGE_LONG_SIDE = 2400;     // about 200 dpi on A4: small files, sharp text
   var MIN_PAGE_SHARE = 0.12;     // a "page" smaller than this share of the frame is noise
@@ -134,9 +138,9 @@
   }
   function loadLibs() {
     if (!libs) {
-      libs = loadScript(BASE + "opencv.js")
+      libs = loadScript(BASE + "opencv.js" + QUERY)
         .then(function () { return cvReady(45000); })
-        .then(function () { return loadScript(BASE + "jscanify.js"); })
+        .then(function () { return loadScript(BASE + "jscanify.js" + QUERY); })
         .then(function () { return new window.jscanify(); })
         .catch(function (e) { libs = null; throw e; });
     }

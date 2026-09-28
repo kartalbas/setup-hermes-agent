@@ -301,3 +301,13 @@ assert b.count(b"/Filter /DCTDecode") == 2
 PY
     rm -rf "$tmp"
 }
+
+@test "a new scanner or a new library pin gives the page a new version, which the libraries are fetched with" {
+    v1=$(librechat_scanner_version)
+    [[ $v1 =~ ^[0-9a-f]{12}$ ]]
+    # the version covers the pins: the same script with another pin is another version
+    v3=$( { cat "$(librechat_scanner_source)"; printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "changed"; } | sha256sum | cut -c1-12 )
+    [ "$v1" != "$v3" ]
+    grep -q 'BASE + "opencv.js" + QUERY' "$(librechat_scanner_source)"
+    grep -q 'BASE + "jscanify.js" + QUERY' "$(librechat_scanner_source)"
+}

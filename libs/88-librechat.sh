@@ -337,6 +337,13 @@ readonly _LC_SCANNER_OPENCV_SHA="7beec9c6b373927a6d68b145bff380a7b5c7f1b4a8c32bf
 
 librechat_scanner_source() { printf '%s/bot/librechat/scanner/scan.js' "$SCRIPT_DIR"; }
 
+# One version for the scanner and its two libraries: the files are cached for
+# days, and a new script or a new pin must reach a browser that has the old.
+librechat_scanner_version() {
+    { cat "$(librechat_scanner_source)"; printf '%s %s' "$_LC_SCANNER_JSCANIFY_SHA" "$_LC_SCANNER_OPENCV_SHA"; } |
+        sha256sum | cut -c1-12
+}
+
 # LibreChat's page with the scanner's script tag before </body>, once; the
 # query carries the script's own checksum, so a new scanner is fetched fresh.
 librechat_index_with_scanner() {  # librechat_index_with_scanner VERSION < index.html -> index.html
@@ -393,7 +400,7 @@ _librechat_scanner() {
     local page version
     page=$(docker run --rm --entrypoint cat "$LIBRECHAT_IMAGE" /app/client/dist/index.html) ||
         die "could not read LibreChat's page from ${LIBRECHAT_IMAGE}"
-    version=$(sha256sum "$(librechat_scanner_source)" | cut -c1-12)
+    version=$(librechat_scanner_version)
     write_file "${LIBRECHAT_DIR}/index.html" 0644 <<<"$(librechat_index_with_scanner "$version" <<<"$page")"
 }
 
