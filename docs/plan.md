@@ -248,7 +248,8 @@ fixing whether or not the move happens.
 - [ ] The operator signs in at `chat.<zone>`, installs the PWA, and tries Tasks and the Secretary in several chats
 - [x] Photos (camera) and documents from LibreChat reach the bots as files — installed 2026-09-28; verified on the path LibreChat uses: the Secretary read a PDF and a photographed receipt and named their saved paths (the operator's own test in the web chat is the next item)
 - [ ] The operator uploads a photo from the phone's camera and a PDF in the web chat
-- [ ] The document scanner in the web chat (live edges, cropped PDF) — built and tested; install, then the operator scans a page on the phone
+- [x] The document scanner in the web chat (live edges, cropped PDF) — built, tested, installed 2026-09-28 (page and files served through the tunnel, checksums verified)
+- [ ] The operator scans a page on the phone: button next to the paperclip, green outline, PDF lands in the chat
 - [ ] Idea, not decided: the same cropping on the bot's side for photos from Teams
 - [ ] Decide after the test: keep, extend to more bots, or remove (`LIBRECHAT_ENABLED=false`, `web` out of the channels)
 - [ ] LibreChat's data (chats, accounts) is outside the agent's backup — include its Mongo volume if it stays
