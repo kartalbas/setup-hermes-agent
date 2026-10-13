@@ -393,6 +393,15 @@ they reach what the host reaches; the run writes the CLI's `read_url(*)` rule),
 or empty (the agent's `web_search` again). Commands, files and the browser
 never come back: the bridge refuses any other name.
 
+**Off the bridge the agent searches through DuckDuckGo** (ADR 0030). `ddgs`,
+the one search backend of the agent that needs no key, is pinned in
+`install.conf` (`HERMES_DDGS_VERSION`) and installed into the agent's own
+environment — again after an update, which replaces it. The run names it as
+`web.search_backend` and nothing else: ddgs cannot read a page, and
+`web_extract` keeps the keyless providers it rotated through before (Exa,
+Parallel, Firecrawl, Keenable, the next one when one throttles). A search
+backend you set yourself (`web.search_backend` or `web.backend`) stays.
+
 **Which tools the model sees.** `AGENT_TOOL_SEARCH` — `off` (default) puts
 every MCP tool in front of the model by name; `auto`/`on` hides them behind the
 agent's three meta-tools (`tool_search`, `tool_describe`, `tool_call`), which
@@ -436,9 +445,23 @@ into timeouts and `User is authenticated but not connected` (2026-09-21..27).
 `_LLM_CONTEXT_WINDOW`) replaces the global endpoint for that bot's profile — a
 real model API for the bot that needs exact tool calling and images, the bridge
 for the others. The key stays in the secrets file under the name `_LLM_TOKEN_VAR`
-gives. A hosted provider the agent knows (`deepseek`, `anthropic`, `openai`,
-`openrouter`, `kimi-coding`, …) takes no base URL; `custom` is any
+gives. A hosted provider the agent knows (`deepseek`, `gemini`, `anthropic`,
+`openai`, `openrouter`, `kimi-coding`, …) takes no base URL; `custom` is any
 OpenAI-compatible endpoint with one.
+
+**Google's models without a subscription CLI** (ADR 0030): provider `gemini`,
+Google AI Studio. A key from a project without billing is its free tier —
+limits per minute and per day, shared by every bot on it, and Google may use
+what is sent to improve its products. A spent quota means refusals until it
+resets; nothing paid stands behind it unless you configure it.
+
+```bash
+LLM_ENDPOINT_1_PROVIDER="gemini"
+LLM_ENDPOINT_1_NAME="gemini"
+LLM_ENDPOINT_1_BASE_URL=""
+LLM_ENDPOINT_1_MODEL="<a model from the key's model list>"
+LLM_ENDPOINT_1_TOKEN_VAR="GEMINI_API_KEY"     # in the secrets file
+```
 
 **The balance at the end of every answer.** `BOT_<KEY>_LLM_BALANCE=true`
 appends the account's remaining API balance to each final answer of a bot on
@@ -1278,6 +1301,15 @@ reason a CLI works interactively and then fails as a service.
 > Its own installer puts the binary in `~/.local/bin`, which is fine. systemd's
 > default `PATH` stops at `/usr/local/bin`, so the unit records the **absolute**
 > path rather than depending on a `PATH` the service never has.
+
+Without the bridge there is nothing to sign in here: the bots use a hosted
+provider's key from the secrets file. **Switching the bridge off removes it**
+(`AGY_SHIM_ENABLED=false`, ADR 0030) — unit, scripts, token, the ACP server —
+on the next run; the balance proxy beside it stays. `CLIS_REMOVE="agy"` (site
+config) takes the CLI itself off the host: its binary and the directories
+`CLI_DATA_AGY` in `install.conf` names, its sign-in among them. Take it out of
+`CLIS_INSTALL` as well; the run refuses a CLI that is both. A copy saved by
+`configs save` stays in the private repository until you remove it there.
 
 **b) The mail relay**
 

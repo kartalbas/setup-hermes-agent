@@ -35,6 +35,7 @@ hermes_apply() {
         _hermes_patch_clarify_choices
         _hermes_patch_web_files
         _hermes_patch_scan_pictures
+        _hermes_web_search
         return 0
     fi
 
@@ -45,6 +46,7 @@ hermes_apply() {
     _hermes_patch_clarify_choices
     _hermes_patch_web_files
     _hermes_patch_scan_pictures
+    _hermes_web_search
     # Tell the service module the code changed underneath the unit: the vendor
     # refreshes its unit through `gateway install`, which is otherwise skipped
     # once one exists — right for a converged run, wrong after an upgrade.
@@ -523,6 +525,42 @@ _hermes_patch_clarify_choices() {
 # (a scanned PDF in base64 is larger than 10), a file up to 25 MB.
 # Idempotent by its marker; re-applied after updates.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The web search of the bots off the bridge: DuckDuckGo through `ddgs`, the one
+# search backend of the agent that needs no key — its own auto-detection picks
+# it once the package imports. Without it, and without a key for another, the
+# agent falls back to a keyless Firecrawl that refuses a third of the searches.
+# Pinned in install.conf; installed into the agent's own environment as the
+# service account, and again after an update, which replaces that environment.
+# ---------------------------------------------------------------------------
+_hermes_web_search() {
+    [[ -n ${HERMES_DDGS_VERSION:-} ]] || { log_skip "no keyless web search pinned (HERMES_DDGS_VERSION)"; return 0; }
+    local py; py="$(hermes_install_dir)/venv/bin/python"
+    if [[ $DRY_RUN == true ]]; then
+        log_info "[dry-run] install ddgs==${HERMES_DDGS_VERSION} into the agent's environment"
+        return 0
+    fi
+    [[ -x $py ]] || { log_warn "no agent environment at ${py}; the keyless web search is not installed"; return 0; }
+    if "$py" - "$HERMES_DDGS_VERSION" <<'PY' 2>/dev/null
+import sys
+from importlib.metadata import version
+sys.exit(0 if version("ddgs") == sys.argv[1] else 1)
+PY
+    then
+        log_skip "keyless web search present (ddgs ${HERMES_DDGS_VERSION})"
+        return 0
+    fi
+    local -a as_owner=()
+    if [[ -n ${SERVICE_USER:-} && $(id -un) != "$SERVICE_USER" ]]; then
+        if have_cmd runuser; then as_owner=(runuser -u "$SERVICE_USER" --); else as_owner=(sudo -u "$SERVICE_USER" --); fi
+    fi
+    # --no-cache-dir: under runuser HOME is still root's, and pip would try its cache there
+    run ${as_owner[@]+"${as_owner[@]}"} "$py" -m pip install --quiet --no-cache-dir "ddgs==${HERMES_DDGS_VERSION}" ||
+        die "could not install ddgs ${HERMES_DDGS_VERSION} into the agent's environment"
+    mark_changed
+    log_ok "keyless web search installed: ddgs ${HERMES_DDGS_VERSION}"
+}
+
 hermes_api_server_path() { printf '%s/gateway/platforms/api_server.py' "$(hermes_install_dir)"; }
 
 hermes_patch_web_files_file() {   # hermes_patch_web_files_file FILE -> 0 patched, 3 already, 1 failed

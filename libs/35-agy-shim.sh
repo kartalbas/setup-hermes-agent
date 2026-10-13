@@ -14,7 +14,16 @@
 
 agyshim_apply() {
     if ! is_true "${AGY_SHIM_ENABLED:-false}"; then
-        log_skip "CLI bridge disabled (AGY_SHIM_ENABLED=false)"
+        # Switched off means absent, not left as it was: a bridge from an
+        # earlier run would keep running — and its CLI's quota and terms with it.
+        if _agyshim_present; then
+            log_step "CLI bridge"
+            require_root "removing the bridge"
+            agyshim_uninstall
+            log_ok "CLI bridge removed (AGY_SHIM_ENABLED=false)"
+        else
+            log_skip "CLI bridge disabled (AGY_SHIM_ENABLED=false)"
+        fi
         return 0
     fi
 
@@ -473,16 +482,34 @@ _agyshim_verify() {
     die "the bridge failed to start"
 }
 
+# Everything the bridge puts on the host: its unit, its scripts, its token,
+# the ACP server and the harness beside it, the version it stamps. Not the
+# balance proxy, which shares the directory and belongs to the apiproxy module.
+_agyshim_files() {
+    printf '%s\n' "$(agyshim_script_path)" "$(agyshim_tools_script_path)" "$(agyshim_acp_seed_path)" \
+        "${AGY_SHIM_LIB_DIR}/VERSION" "${AGY_SHIM_TOKEN_FILE}" \
+        "${AGY_SHIM_ACP_SERVER}" "${AGY_SHIM_ACP_SERVER%/*}/localharness_external"
+}
+
+_agyshim_present() {
+    local f
+    [[ -f "/etc/systemd/system/$(agyshim_unit_name).service" ]] && return 0
+    while IFS= read -r f; do [[ -n $f && -e $f ]] && return 0; done < <(_agyshim_files)
+    return 1
+}
+
 agyshim_uninstall() {
-    local unit; unit=$(agyshim_unit_name)
-    have_cmd systemctl || return 0
-    if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+    local unit f; unit=$(agyshim_unit_name)
+    if have_cmd systemctl && systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
         run systemctl disable --now "${unit}.service" || true
         run rm -f "/etc/systemd/system/${unit}.service"
         run systemctl daemon-reload
         mark_changed
     fi
-    [[ -f $(agyshim_script_path) ]] && run rm -f "$(agyshim_script_path)"
-    [[ -f $(agyshim_tools_script_path) ]] && run rm -f "$(agyshim_tools_script_path)"
+    while IFS= read -r f; do
+        [[ -n $f && -e $f ]] || continue
+        run rm -f "$f"
+        mark_changed
+    done < <(_agyshim_files)
     return 0
 }

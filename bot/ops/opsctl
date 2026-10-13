@@ -53,6 +53,12 @@ units() {
     return 0
 }
 
+# The bridge, when this installation has one: switched off, the run removes it
+# (ADR 0030), and a report that still asked for it would read as an outage.
+has_bridge() {
+    systemctl list-unit-files "${OPS_SERVICE_NAME}-bridge.service" 2>/dev/null | grep -q "^${OPS_SERVICE_NAME}-bridge\.service"
+}
+
 unit_line() {                     # unit_line UNIT -> "unit  active/enabled  since"
     local u=$1 act en since
     act=$(systemctl is-active "$u" 2>/dev/null || true)
@@ -87,12 +93,16 @@ cmd_status() {
     printf '  repository: %s\n' "$(git -C "$OPS_REPO" log -1 --format='%h %s' 2>/dev/null || printf '?')"
     local dirty; dirty=$(git -C "$OPS_REPO" status --short 2>/dev/null | wc -l | tr -d ' ')
     printf '  uncommitted files in the repository: %s\n' "$dirty"
-    printf '  agy: %s   claude: %s\n' "$("$OPS_AGY" --version 2>/dev/null | head -n1 || printf '?')" "$("$OPS_CLAUDE" --version 2>/dev/null | head -n1 || printf '?')"
+    local agy=""
+    command -v "$OPS_AGY" >/dev/null 2>&1 && agy="agy: $("$OPS_AGY" --version 2>/dev/null | head -n1 || printf '?')   "
+    printf '  %sclaude: %s\n' "$agy" "$("$OPS_CLAUDE" --version 2>/dev/null | head -n1 || printf '?')"
 
-    printf '\nBRIDGE\n'
-    local stats; stats=$(curl -s --max-time 3 "http://127.0.0.1:${OPS_BRIDGE_PORT}/stats" 2>/dev/null || true)
-    printf '  %s\n' "${stats:0:200}"
-    printf '  errors in the last 24 h: %s\n' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"
+    if has_bridge; then
+        printf '\nBRIDGE\n'
+        local stats; stats=$(curl -s --max-time 3 "http://127.0.0.1:${OPS_BRIDGE_PORT}/stats" 2>/dev/null || true)
+        printf '  %s\n' "${stats:0:200}"
+        printf '  errors in the last 24 h: %s\n' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"
+    fi
 
     printf '\nBOT ERRORS (last 24 h)\n'
     local b
@@ -112,7 +122,8 @@ cmd_report() {
     printf 'units %s/%s active; failed: %s\n' "$up" "$total" "${failed:-none}"
     df -h / 2>/dev/null | awk 'NR==2 {printf "disk / %s used; ", $5}'
     free -m 2>/dev/null | awk 'NR==2 {printf "memory %s/%s MB\n", $3, $2}'
-    printf 'bridge errors 24h: %s; bot errors 24h:' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"
+    if has_bridge; then printf 'bridge errors 24h: %s; ' "$(errors_24h "${OPS_SERVICE_NAME}-bridge")"; fi
+    printf 'bot errors 24h:'
     local b; for b in $OPS_BOTS; do printf ' %s=%s' "$b" "$(errors_24h "${OPS_SERVICE_PREFIX}-${b}")"; done; printf '\n'
     printf 'agent %s, bot %s, repo %s\n' "$(cat /var/lib/hermes-provisioner/revision 2>/dev/null | cut -c1-12 || printf '?')" \
         "$(cat "${OPS_REPO}/bot/VERSION" 2>/dev/null || printf '?')" "$(git -C "$OPS_REPO" log -1 --format=%h 2>/dev/null || printf '?')"
@@ -237,7 +248,8 @@ diagnostic_bundle() {             # diagnostic_bundle FILE
         printf '# Host snapshot %s (read-only; the live state at the start of this change)\n\n## opsctl status\n\n' "$(date -Is)"
         cmd_status 2>&1
         printf '\n## Recent warnings and errors (24 h, last 15 lines per unit, the known IMAP EOF left out)\n'
-        for u in $(for b in $OPS_BOTS; do printf '%s-%s ' "$OPS_SERVICE_PREFIX" "$b"; done) "${OPS_SERVICE_NAME}-bridge" hermes-ops-apply; do
+        bridge=""; has_bridge && bridge="${OPS_SERVICE_NAME}-bridge"
+        for u in $(for b in $OPS_BOTS; do printf '%s-%s ' "$OPS_SERVICE_PREFIX" "$b"; done) $bridge hermes-ops-apply; do
             printf '\n### %s\n' "$u"
             jctl -u "$u" --since '-24h' -q --no-pager -p warning 2>/dev/null | grep -vE 'socket error: EOF|check_fn ' | tail -n 15 | cut -c1-300
         done

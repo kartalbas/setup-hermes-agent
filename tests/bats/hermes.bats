@@ -365,3 +365,32 @@ PY
     [[ "$output" == *"review the patch"* ]]
     rm -rf "$tmp"
 }
+
+# Bots off the bridge search through DuckDuckGo: ddgs, pinned, in the agent's
+# own environment — installed once, again only when the version differs (an
+# update replaces the environment), as the account that owns it.
+@test "the keyless web search goes into the agent's environment once, pinned, as its owner" {
+    INSTALL_DIR=$(mktemp -d); mkdir -p "${INSTALL_DIR}/venv/bin"
+    calls="${INSTALL_DIR}/calls"
+    cat >"${INSTALL_DIR}/venv/bin/python" <<PY
+#!/bin/bash
+printf '%s\n' "\$*" >>"${calls}"
+if [[ \$1 == - ]]; then cat >/dev/null; [[ -f "${calls}.installed" ]]; exit; fi
+[[ \$* == "-m pip install --quiet --no-cache-dir ddgs==9.16.0" ]] && : >"${calls}.installed"
+exit 0
+PY
+    chmod +x "${INSTALL_DIR}/venv/bin/python"
+    DRY_RUN=false SERVICE_USER=$(id -un) HERMES_DDGS_VERSION=9.16.0
+
+    _hermes_web_search
+    [ "$(grep -c 'pip install' "$calls")" -eq 1 ]
+    grep -qx -- "-m pip install --quiet --no-cache-dir ddgs==9.16.0" "$calls"
+    before=$CHANGE_COUNT
+    _hermes_web_search                                       # present: nothing to do
+    [ "$CHANGE_COUNT" -eq "$before" ] && [ "$(grep -c 'pip install' "$calls")" -eq 1 ]
+
+    : >"$calls"; HERMES_DDGS_VERSION=""                      # none pinned: not even looked at
+    _hermes_web_search
+    [ ! -s "$calls" ]
+    rm -rf "$INSTALL_DIR"
+}

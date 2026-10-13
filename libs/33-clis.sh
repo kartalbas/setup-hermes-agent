@@ -16,7 +16,7 @@ clis_apply() {
         log_skip "subscription CLIs unmanaged (CLIS_MANAGE=false)"
         return 0
     fi
-    [[ -n ${CLIS_INSTALL:-} ]] || { log_skip "no CLIs listed in CLIS_INSTALL"; return 0; }
+    [[ -n ${CLIS_INSTALL:-}${CLIS_REMOVE:-} ]] || { log_skip "no CLIs listed in CLIS_INSTALL"; return 0; }
 
     log_step "Subscription CLIs"
     require_root "installing for ${SERVICE_USER:-the service account}"
@@ -26,6 +26,11 @@ clis_apply() {
     home=$(getent passwd "$user" | cut -d: -f6)
     [[ -n $home ]] || die "cannot determine the home directory of ${user}"
 
+    for cli in ${CLIS_REMOVE:-}; do
+        _cli_remove "$cli" "$home"
+    done
+    [[ -n ${CLIS_INSTALL:-} ]] || return 0
+
     local -a needs_login=()
     for cli in $CLIS_INSTALL; do
         _cli_install "$cli" "$user" "$home" || die "could not install ${cli}"
@@ -33,6 +38,35 @@ clis_apply() {
     done
 
     _cli_report_login "$user" ${needs_login+"${needs_login[@]}"}
+}
+
+# A CLI no longer wanted goes with what it keeps in the account's home: its
+# binary in ~/.local/bin and the directories CLI_DATA_<NAME> names
+# (install.conf) — its sign-in among them — then whatever they leave empty.
+_cli_remove() {                   # _cli_remove CLI HOME
+    local cli=$1 home=$2 var rel parent removed=false IFS=$' \t\n'
+    var="CLI_DATA_$(tr '[:lower:]-' '[:upper:]_' <<<"$cli")"
+    if [[ -e ${home}/.local/bin/${cli} || -L ${home}/.local/bin/${cli} ]]; then
+        run rm -f "${home}/.local/bin/${cli}"
+        removed=true
+    fi
+    for rel in ${!var:-}; do
+        if [[ $rel == /* || $rel == *..* || -z $rel ]]; then
+            log_warn "${var}: '${rel}' is not a path inside the home; left alone"
+            continue
+        fi
+        [[ -e ${home}/${rel} || -L ${home}/${rel} ]] || continue
+        run rm -rf -- "${home:?}/${rel}"
+        removed=true
+        parent=$(dirname "${home}/${rel}")
+        [[ $parent != "$home" && -d $parent ]] && run rmdir --ignore-fail-on-non-empty -- "$parent"
+    done
+    if [[ $removed == true ]]; then
+        mark_changed
+        log_ok "${cli} removed with its data and sign-in (CLIS_REMOVE)"
+    else
+        log_skip "${cli} not installed"
+    fi
 }
 
 # ---------------------------------------------------------------------------

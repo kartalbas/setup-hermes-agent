@@ -353,6 +353,8 @@ EOF
     [ "$output" = "ANTHROPIC_API_KEY" ]
     bats_run _provider_key_var google
     [ "$output" = "GOOGLE_API_KEY" ]
+    bats_run _provider_key_var gemini
+    [ "$output" = "GEMINI_API_KEY" ]
     bats_run _provider_key_var kimi-coding
     [ "$output" = "KIMI_API_KEY" ]
     bats_run _provider_key_var zai

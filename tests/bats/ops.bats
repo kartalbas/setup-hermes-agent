@@ -120,3 +120,31 @@ setup() {
     [[ $out != *sudo* && $out != *'systemctl restart'* && $out != *install.sh* && $out != *'git push'* && $out != *'m365ctl migrate'* && $out != *'opsctl apply)'* && $out != *'opsctl change'* ]]
     [[ $out != *companions\ --apply* ]]
 }
+
+# ADR 0030: a bridge switched off is removed, and agy with it. Status, report
+# and snapshot leave out what this host does not have, rather than showing an
+# empty bridge and "agy: ?" that read like an outage to the Admin bot.
+@test "status and report leave out a bridge and an agy this host does not have" {
+    tmp=$(mktemp -d)
+    snapshot() {                       # snapshot UNITS_EXIST AGY -> status + report
+        (
+            source "$REPO_ROOT/bot/ops/opsctl"
+            set +e
+            OPS_SERVICE_NAME=gw OPS_SERVICE_PREFIX=gw OPS_BOTS="news" OPS_REPO=$tmp OPS_AGY=$2 OPS_CLAUDE=true OPS_BRIDGE_PORT=1
+            if [[ $1 == yes ]]; then
+                systemctl() { [[ $1 == list-unit-files ]] && printf '%s enabled\n' "$2"; return 0; }
+            else
+                systemctl() { return 0; }
+            fi
+            jctl() { :; }
+            curl() { printf 'BRIDGE-STATS'; }
+            cmd_status; cmd_report
+        )
+    }
+    out=$(snapshot no "${tmp}/no-agy")
+    [[ $out != *BRIDGE* && $out != *"agy:"* && $out != *"bridge errors"* ]]
+    [[ $out == *"bot errors 24h: news=0"* && $out == *"claude:"* ]]
+    out=$(snapshot yes true)
+    [[ $out == *$'\nBRIDGE\n'* && $out == *BRIDGE-STATS* && $out == *"bridge errors 24h: 0; bot errors 24h:"* && $out == *"agy: "* ]]
+    rm -rf "$tmp"
+}

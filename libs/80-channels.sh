@@ -306,6 +306,7 @@ _provider_key_var() {
         anthropic)    printf 'ANTHROPIC_API_KEY' ;;
         openai)       printf 'OPENAI_API_KEY' ;;
         google)       printf 'GOOGLE_API_KEY' ;;
+        gemini)       printf 'GEMINI_API_KEY' ;;   # the agent's id for Google AI Studio; google is its alias
         openrouter)   printf 'OPENROUTER_API_KEY' ;;
         deepseek)     printf 'DEEPSEEK_API_KEY' ;;
         groq)         printf 'GROQ_API_KEY' ;;
@@ -876,7 +877,28 @@ _native_search_configure() {
             3) ;;
             *) die "could not write agent.disabled_toolsets" ;;
         esac
+        _web_search_backend_configure
     fi
+}
+
+# Off the bridge the agent searches itself — through DuckDuckGo when the hermes
+# module installed ddgs (HERMES_DDGS_VERSION). Named for search alone: ddgs
+# cannot read a page, and once a search backend is named the agent sends
+# web_extract to Firecrawl, which without a key walks the same keyless ring
+# that served both before. A backend the operator chose stays theirs.
+_web_search_backend_configure() {
+    local chosen
+    chosen=$(yaml_get web.search_backend); chosen=${chosen:-$(yaml_get web.backend)}
+    if [[ -z ${HERMES_DDGS_VERSION:-} ]]; then
+        [[ $chosen != ddgs ]] ||
+            log_warn "web.search_backend is ddgs but HERMES_DDGS_VERSION is empty; remove it from $(yaml_config_path) or pin ddgs again"
+        return 0
+    fi
+    if [[ -n $chosen && $chosen != ddgs ]]; then
+        log_skip "web search: ${chosen}, the operator's choice"
+        return 0
+    fi
+    _config_set web.search_backend ddgs
 }
 
 # ---------------------------------------------------------------------------

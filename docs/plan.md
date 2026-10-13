@@ -269,3 +269,19 @@ fixing whether or not the move happens.
 - [x] Saved from this host and verified on GitHub: the five files byte-identical under `setup-hermes-agent/hosts/<host>/`; restore and a second save change nothing; the config repository's README names the folder
 - [x] Also what lives outside the checkout and no run recreates: the sign-ins of 3.3 (the assistant's tokens, the mail relay's token block), the CLIs' sign-ins (agy and its ACP server, gh, az, gcloud, Claude Code), and the bots' memory (memories, cron jobs, the skills they wrote themselves) — stored by what they are, put back only where missing, memory only into profiles the run has made; every path checked against the list
 - [ ] The daily backup of the bots' data (conversations, memory, skills) and LibreChat's chats stay on this host only: choose a place off the host. Never a git repository — least of all this public one
+
+
+## 14 · Off the bridge: the free API tier, agy removed (ADR 0030), 2026-10-13
+
+The CLI's quota ran out for a day at a time, and the subscription's model is usable on the web only. Decided by the operator: the bots move to Google AI Studio's free tier (no billing, outages accepted), the Admin bot to the paid API the Secretary already uses (with the balance footer), agy goes from the host entirely.
+
+- [x] The scheduled jobs of every bot paused (`HERMES_HOME=<profile> hermes cron resume <id>` brings one back)
+- [x] A bridge switched off is removed by the next run (unit, scripts, token, ACP server and harness; the balance proxy stays) — built and tested
+- [x] `CLIS_REMOVE` takes a CLI off the host with its binary, its data and its sign-in (`CLI_DATA_<NAME>` in install.conf; a path leaving the home is refused; a CLI cannot be installed and removed at once) — built and tested
+- [x] Provider `gemini` maps to `GEMINI_API_KEY` — built and tested
+- [x] Off the bridge the agent searches through DuckDuckGo (`ddgs` pinned, installed into the agent's environment, named for search alone; page reads keep the keyless providers) — built and tested
+- [ ] The operator creates the AI Studio key (own Google account, a project without billing) and enters it into the secrets file
+- [ ] The key's model list and free-tier limits checked; the site config switched (endpoint 1 on `gemini`, the Admin bot on the paid API, the bridge off, agy in `CLIS_REMOVE`, a context window that fits the per-minute limit), the example config updated
+- [ ] Installed: the bridge and agy gone from the host, every bot answering a test question, search answering through DuckDuckGo
+- [ ] agy's sign-ins taken out of the private config repository by hand (`configs save` copies, never deletes), then `configs save`
+- [ ] The operator decides when to resume the scheduled jobs (the free tier's daily limit is shared with them)

@@ -288,6 +288,34 @@ setup() {
     rm -rf "$tmp"
 }
 
+# Off the bridge the agent searches itself: through DuckDuckGo when ddgs is
+# pinned, named for search alone — ddgs cannot read a page, and web_extract
+# keeps its keyless walk — unless the operator chose another backend.
+@test "off the bridge a bot searches through ddgs, named for search alone; the operator's backend stays" {
+    tmp=$(mktemp -d)
+    HERMES_CONFIG_HOME=$tmp DRY_RUN=false AGY_SHIM_ENABLED=false
+    calls=(); _config_set() { calls+=("$1=$2"); }
+    warned=""; log_warn() { warned+="$*"; }
+    HERMES_DDGS_VERSION=9.16.0
+
+    printf 'agent:\n  disabled_toolsets:\n  - search\n' >"${tmp}/config.yaml"
+    _native_search_configure
+    [ "${calls[*]}" = "web.search_backend=ddgs" ]
+
+    calls=(); printf 'web:\n  search_backend: searxng\n' >"${tmp}/config.yaml"
+    _native_search_configure
+    [ "${#calls[@]}" -eq 0 ]
+    printf 'web:\n  backend: brave-free\n' >"${tmp}/config.yaml"
+    _native_search_configure
+    [ "${#calls[@]}" -eq 0 ]
+
+    HERMES_DDGS_VERSION=""                                  # unpinned: said, not left to fail
+    printf 'web:\n  search_backend: ddgs\n' >"${tmp}/config.yaml"
+    _native_search_configure
+    [ "${#calls[@]}" -eq 0 ] && [[ $warned == *"HERMES_DDGS_VERSION is empty"* ]]
+    rm -rf "$tmp"
+}
+
 # The same list for every way into a bot: chat, mail, scheduled runs. Unset,
 # the agent hands mail and cron its full default — terminal and files.
 @test "chat, mail and scheduled runs get the bot's own toolset, not the agent's full default" {

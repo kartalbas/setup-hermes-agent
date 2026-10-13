@@ -32,3 +32,4 @@ Status is `accepted`, `superseded by NNNN`, or `proposed`.
 | [0027](0027-the-bridge-becomes-a-transport.md) | The bridge becomes a transport, and context management moves out of it | accepted; ACP reverted to print |
 | [0028](0028-the-model-searches-the-web-itself.md) | On the bridge, the model searches the web itself | accepted |
 | [0029](0029-librechat-in-front-of-selected-bots.md) | LibreChat in front of selected bots, beside Teams | accepted |
+| [0030](0030-off-the-bridge.md) | Off the bridge: a free API tier, and a bridge switched off is gone | accepted |

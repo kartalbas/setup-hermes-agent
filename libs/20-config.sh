@@ -327,6 +327,8 @@ config_defaults() {
     : "${LIBRECHAT_APP_COLOR:=#10a37f}"    # the app icon's ground, behind the title's initial
     # --- this host's settings in your own private repository (configs [save]) ---
     : "${CONFIGS_REPO:=}"                  # OWNER/NAME; empty: the command asks for it to be set
+    : "${CLIS_REMOVE:=}"                   # CLIs to take off this host, with their data (CLI_DATA_<NAME>)
+    : "${HERMES_DDGS_VERSION:=}"           # the keyless web search (ddgs) for bots off the bridge; install.conf pins it
     : "${CONFIGS_HOST:=}"                  # this host's folder there; empty: the short host name
     # --- public site: home, privacy, terms — what the OAuth providers ask for ---
     : "${SITE_ENABLED:=false}"
@@ -656,6 +658,17 @@ _check_delegation_endpoint() {    # _check_delegation_endpoint KEY
     fi
 }
 
+# A CLI is installed or removed, not both. Word by word, with the whole
+# whitespace set: IFS is newline/tab in this program, and a list may wrap.
+_check_clis_remove() {
+    local cli wanted IFS=$' \t\n'
+    for cli in ${CLIS_REMOVE:-}; do
+        for wanted in ${CLIS_INSTALL:-}; do
+            [[ $cli != "$wanted" ]] || _bad "CLIS_INSTALL and CLIS_REMOVE both name '${cli}'"
+        done
+    done
+}
+
 _check_abs_path() {
     local name=$1 value=$2
     [[ -z $value || $value == /* ]] || _bad "$name must be an absolute path, got '$value'"
@@ -665,6 +678,7 @@ config_validate() {
     _invalid=()
 
     _check_enum SERVICE_SCOPE "$SERVICE_SCOPE" system user
+    _check_clis_remove
     _check_enum LLM_STRATEGY "$LLM_STRATEGY" single failover
     _check_enum TERMINAL_BACKEND "$TERMINAL_BACKEND" docker local ssh
     _check_enum TUNNEL_MODE "$TUNNEL_MODE" api assisted none
