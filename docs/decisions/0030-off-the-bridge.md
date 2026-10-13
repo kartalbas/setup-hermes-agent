@@ -19,9 +19,12 @@ things ended that for this installation's operator:
 What the bots need from a model is ordinary: chat completions with tool calls,
 images, a long context. The agent speaks to Google AI Studio natively
 (provider `gemini`, aliases `google`, `google-gemini`, `google-ai-studio`), and
-AI Studio has a free tier: a key from a project without billing, limits per
-minute and per day, and the provider's right to use the prompts to improve its
-products. The operator chose that: free first, outages accepted.
+AI Studio has a free tier: a key from a project without billing and limits
+per minute and per day. Outside the EEA, Switzerland and the UK the provider
+may also use what is sent to improve its products, and people may read it;
+inside them the paid tier's data terms apply to the free tier as well — no use
+for product improvement, logs kept for a limited time against abuse. The
+operator chose the free tier: free first, outages accepted.
 
 Switching the bridge off, however, did not take it away. `agyshim_apply` only
 skipped when `AGY_SHIM_ENABLED=false`; the unit kept running, the token and the
@@ -73,8 +76,10 @@ searches.
 - The free tier is shared by every bot on it. Its per-minute limit counts
   tokens, so a bot's context window is set well below the model's million;
   compression keeps long chats under it.
-- The provider may use what the bots send on the free tier. Whatever a bot
-  must not hand to it belongs on a bot with a paid API.
+- Outside the EEA, Switzerland and the UK the provider may use what the bots
+  send on the free tier; whatever a bot must not hand to it belongs on a paid
+  API there. Inside them the paid tier's data terms hold, so a bot's
+  sub-agents can read private mail on the free tier.
 - `CLIS_REMOVE` deletes a sign-in. The private repository keeps a copy of
   what it saved before, in its history; the removed files are taken out of its
   folder by hand, once, since `configs save` copies and never deletes.

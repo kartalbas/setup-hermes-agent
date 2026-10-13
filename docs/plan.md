@@ -279,6 +279,7 @@ The CLI's quota ran out for a day at a time, and the subscription's model is usa
 - [x] A bridge switched off is removed by the next run (unit, scripts, token, ACP server and harness; the balance proxy stays) — built and tested
 - [x] `CLIS_REMOVE` takes a CLI off the host with its binary, its data and its sign-in (`CLI_DATA_<NAME>` in install.conf; a path leaving the home is refused; a CLI cannot be installed and removed at once) — built and tested
 - [x] Provider `gemini` maps to `GEMINI_API_KEY` — built and tested
+- [x] The Secretary's sub-agents (the operator's mail, translations) stay on endpoint 1, now the free tier: from Switzerland it keeps the paid tier's data terms (no use for product improvement) — decided by the operator 2026-10-13
 - [x] Off the bridge the agent searches through DuckDuckGo (`ddgs` pinned, installed into the agent's environment, named for search alone; page reads keep the keyless providers) — built and tested
 - [ ] The operator creates the AI Studio key (own Google account, a project without billing) and enters it into the secrets file
 - [ ] The key's model list and free-tier limits checked; the site config switched (endpoint 1 on `gemini`, the Admin bot on the paid API, the bridge off, agy in `CLIS_REMOVE`, a context window that fits the per-minute limit), the example config updated

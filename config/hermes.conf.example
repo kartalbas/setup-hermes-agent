@@ -52,9 +52,10 @@ HERMES_SKIP_SKILLS=false
 # --- inference ----------------------------------------------------------
 # One endpoint: Google AI Studio (ADR 0030). A key from a project without
 # billing is its free tier: limits per minute and per day, shared by every bot
-# and its scheduled jobs, and Google may use what is sent — a bot that handles
-# what must not go there gets its own paid model (BOT_<KEY>_LLM_*). The bridge
-# below is the alternative while a subscription CLI can serve.
+# and its scheduled jobs. Outside the EEA, Switzerland and the UK Google may use
+# what is sent — a bot that handles what must not go there gets its own paid
+# model (BOT_<KEY>_LLM_*); inside them the paid tier's data terms apply. The
+# bridge below is the alternative while a subscription CLI can serve.
 LLM_ENDPOINT_COUNT=1
 LLM_STRATEGY="single"
 
@@ -359,8 +360,7 @@ BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 
 # OPS_CLAUDE_MODEL="opus"               # the Claude Code model for `opsctl change`
 # OPS_CLAUDE_TIMEOUT=1500               # seconds one change may take
 # OPS_APPLY="ask"                       # auto: apply after a green change | ask: the bot asks first | never
-# The Admin bot on a model of its own, like the Secretary below — for instance
-# when the global endpoint is a free tier that sees what it is sent:
+# The Admin bot on a model of its own, like the Secretary below:
 # BOT_ADMIN_LLM_PROVIDER="deepseek"
 # BOT_ADMIN_LLM_NAME="deepseek"
 # BOT_ADMIN_LLM_MODEL="deepseek-v4-flash-vision-exp"

@@ -451,9 +451,11 @@ OpenAI-compatible endpoint with one.
 
 **Google's models without a subscription CLI** (ADR 0030): provider `gemini`,
 Google AI Studio. A key from a project without billing is its free tier —
-limits per minute and per day, shared by every bot on it, and Google may use
-what is sent to improve its products. A spent quota means refusals until it
-resets; nothing paid stands behind it unless you configure it.
+limits per minute and per day, shared by every bot on it. Outside the EEA,
+Switzerland and the UK Google may use what is sent to improve its products;
+inside them the paid tier's data terms apply to the free tier too. A spent
+quota means refusals until it resets; nothing paid stands behind it unless you
+configure it.
 
 ```bash
 LLM_ENDPOINT_1_PROVIDER="gemini"
