@@ -281,7 +281,7 @@ The CLI's quota ran out for a day at a time, and the subscription's model is usa
 - [x] Provider `gemini` maps to `GEMINI_API_KEY` — built and tested
 - [x] The Secretary's sub-agents (the operator's mail, translations) stay on endpoint 1, now the free tier: from Switzerland it keeps the paid tier's data terms (no use for product improvement) — decided by the operator 2026-10-13
 - [x] Off the bridge the agent searches through DuckDuckGo (`ddgs` pinned, installed into the agent's environment, named for search alone; page reads keep the keyless providers) — built and tested
-- [ ] The operator creates the AI Studio key (own Google account, a project without billing) and enters it into the secrets file
+- [ ] The operator creates the AI Studio key — with an account that pays for nothing on Google Cloud, in a new project, plan "Free", never billing — and enters it into the secrets file over SSH (a `!` command has no terminal for a hidden prompt)
 - [ ] The key's model list and free-tier limits checked; the site config switched (endpoint 1 on `gemini`, the Admin bot on the paid API, the bridge off, agy in `CLIS_REMOVE`, a context window that fits the per-minute limit), the example config updated
 - [ ] Installed: the bridge and agy gone from the host, every bot answering a test question, search answering through DuckDuckGo
 - [ ] agy's sign-ins taken out of the private config repository by hand (`configs save` copies, never deletes), then `configs save`
