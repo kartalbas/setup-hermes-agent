@@ -459,7 +459,7 @@ resets; nothing paid stands behind it unless you configure it.
 LLM_ENDPOINT_1_PROVIDER="gemini"
 LLM_ENDPOINT_1_NAME="gemini"
 LLM_ENDPOINT_1_BASE_URL=""
-LLM_ENDPOINT_1_MODEL="<a model from the key's model list>"
+LLM_ENDPOINT_1_MODEL="gemini-3.8-flash"           # on the free tier, like 3.6-flash and the flash-lite models
 LLM_ENDPOINT_1_TOKEN_VAR="GEMINI_API_KEY"     # in the secrets file
 ```
 

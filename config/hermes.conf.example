@@ -50,20 +50,23 @@ HERMES_SKIP_BROWSER=true
 HERMES_SKIP_SKILLS=false
 
 # --- inference ----------------------------------------------------------
-# One endpoint: the local bridge. It is loopback, so it needs no credential —
-# the subscription lives in the CLI behind it, signed in as the service account.
+# One endpoint: Google AI Studio (ADR 0030). A key from a project without
+# billing is its free tier: limits per minute and per day, shared by every bot
+# and its scheduled jobs, and Google may use what is sent — a bot that handles
+# what must not go there gets its own paid model (BOT_<KEY>_LLM_*). The bridge
+# below is the alternative while a subscription CLI can serve.
 LLM_ENDPOINT_COUNT=1
 LLM_STRATEGY="single"
 
-LLM_ENDPOINT_1_PROVIDER="custom"
-LLM_ENDPOINT_1_NAME="bridge"
+LLM_ENDPOINT_1_PROVIDER="gemini"
+LLM_ENDPOINT_1_NAME="gemini"
 LLM_ENDPOINT_1_BASE_URL=""
-LLM_ENDPOINT_1_MODEL="gemini-3.8-flash-high"
-LLM_ENDPOINT_1_TOKEN_VAR=""
+LLM_ENDPOINT_1_MODEL="gemini-3.8-flash"
+LLM_ENDPOINT_1_TOKEN_VAR="GEMINI_API_KEY"
 
-# Left at the endpoint's own defaults: the previous values were tuned to a
-# self-hosted model that no longer exists.
-LLM_CONTEXT_WINDOW=0
+# Of the model's 1M: compression at half keeps a request near 100k, under the
+# free tier's tokens per minute. 0 = the endpoint's own default.
+LLM_CONTEXT_WINDOW=200000
 LLM_MAX_OUTPUT=0
 LLM_REASONING_FIELD=""
 LLM_VERIFY_TOKEN=true
@@ -86,7 +89,14 @@ MAILPROXY_ENABLED=true
 MAILPROXY_FLOW="device"          # device|client
 
 # --- the bridge ---------------------------------------------------------
-AGY_SHIM_ENABLED=true
+# A subscription CLI behind an OpenAI-shaped endpoint on loopback (ADR 0012,
+# 0027). To use it: true, and endpoint 1 on it (provider custom, base URL
+# http://127.0.0.1:8787/v1, no key). Switched off, the run removes whatever an
+# earlier run installed; CLIS_REMOVE="agy" (with agy out of CLIS_INSTALL)
+# takes the CLI itself off, with its data and its sign-in.
+AGY_SHIM_ENABLED=false
+# CLIS_INSTALL="claude"                 # the CLIs to install (install.conf: "agy claude")
+# CLIS_REMOVE="agy"                     # the CLIs to take off this host, with their data and sign-in
 AGY_SHIM_BINARY="agy"
 AGY_SHIM_HOST="127.0.0.1"
 AGY_SHIM_PORT=8787
@@ -349,6 +359,15 @@ BOT_GITHUB_MCP="github"                # the official GitHub MCP server (README 
 # OPS_CLAUDE_MODEL="opus"               # the Claude Code model for `opsctl change`
 # OPS_CLAUDE_TIMEOUT=1500               # seconds one change may take
 # OPS_APPLY="ask"                       # auto: apply after a green change | ask: the bot asks first | never
+# The Admin bot on a model of its own, like the Secretary below — for instance
+# when the global endpoint is a free tier that sees what it is sent:
+# BOT_ADMIN_LLM_PROVIDER="deepseek"
+# BOT_ADMIN_LLM_NAME="deepseek"
+# BOT_ADMIN_LLM_MODEL="deepseek-v4-flash-vision-exp"
+# BOT_ADMIN_LLM_TOKEN_VAR="DEEPSEEK_API_KEY"
+# BOT_ADMIN_LLM_REASONING_FIELD="reasoning_content"
+# BOT_ADMIN_LLM_CONTEXT_WINDOW=512000
+# BOT_ADMIN_LLM_BALANCE=true
 # The Tasks bot (README 1.15): tasks per tenant in Microsoft Planner, cards
 # assigned to you. Add "tasks" to BOTS and switch on ASSISTANT_TASKS_ENABLED.
 # BOT_TASKS_NAME="Tasks"
