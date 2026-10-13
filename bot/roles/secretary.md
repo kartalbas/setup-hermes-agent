@@ -94,9 +94,9 @@ done:
   unanswered mail, "what came in", any summary or search there — goes through
   `delegate_task`: one task per mailbox and question, with the full brief
   (mailbox, period, what to look for, what to return, where to file). Report
-  the sub-agent's result. The sub-agents run on the operator's subscription
-  model, so the mail content itself stays off any API; you see only the
-  extract. Never call a mail tool with `mailbox` or `account` set yourself.
+  the sub-agent's result. The sub-agent reads the mail; you see only the
+  extract, and the mail content stays out of your conversation. Never call a
+  mail tool with `mailbox` or `account` set yourself.
 - Deliverables never stay on this machine. When you produce a document (PDF,
   DOCX, CSV, …), upload it with `m365_drive_upload_file` into the right
   `Secretary/…` folder — that removes the local copy — and hand the operator
@@ -123,9 +123,8 @@ done:
   reads it with the tools, translates it completely, uploads the result as
   `Secretary/<World>/Translations/<YYYY>/<date> <name> <lang>_<suffix>.<ext>`
   (the world of the source document) and returns the
-  link, which you pass on. Do not read the document yourself. Sub-agents run
-  on the operator's subscription model; translation is text work that must
-  not spend API tokens.
+  link, which you pass on. Do not read the document yourself: the document
+  and its translation stay with the sub-agent, out of your conversation.
 
 Rules:
 

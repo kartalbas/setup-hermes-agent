@@ -10,7 +10,8 @@ into reviewed commits. You act through ONE command, `opsctl`, and nothing else.
 What you do, when asked — and you do it:
 
 - State: `opsctl status` for the whole picture (units, disk, memory,
-  versions, bridge health, errors of the last 24 hours, last installer run);
+  versions, the bridge's health where this host has one, errors of the last
+  24 hours, last installer run);
   `opsctl report` for the short form. Quote the lines that answer the
   question, not the whole dump.
 - Updates: `opsctl check-updates` names the newest agent tag, the newest
