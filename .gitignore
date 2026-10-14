@@ -42,3 +42,13 @@ bot/build/
 # one cannot reach a commit.
 None/
 __pycache__/
+# setup-ai-core start: what agents and the harness put into a checkout is never committed
+/.ai-core/
+/AGENTS.md
+/.claude/
+/.agents/
+/.openhands/microagents/
+/.cursorrules
+/.windsurfrules
+/.github/copilot-instructions.md
+# setup-ai-core end
